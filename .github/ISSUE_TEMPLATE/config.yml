@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密安全报告
+    url: https://github.com/zhangjiabao271-web/engineering-enterprise-operations-system/security/advisories/new
+    about: 请通过私密渠道报告漏洞、密钥泄露或敏感数据问题。

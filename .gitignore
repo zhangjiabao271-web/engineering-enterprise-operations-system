@@ -1,0 +1,53 @@
+# ===== 敏感信息（绝不入库） =====
+config.ini
+.env
+*.key
+.db_key
+
+# ===== 数据库与备份 =====
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+supplier_data.backup_*.db
+supplier_data.rescue_*.db
+
+# ===== 附件 =====
+attachments/
+
+# ===== Python 环境 =====
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===== 临时与调试文件 =====
+tmp_*.py
+fix_file*.py
+*.kimi_broken_*.py
+ui_design_preview.html
+check.txt
+_cost_*.py
+_parsed_*.json
+_screenshot_*.png
+
+# ===== WorkBuddy 本地数据 =====
+.workbuddy/
+.docx_qa/
+
+# ===== QA 核查产物（一次性,不入库) =====
+核查_*/
+前后对比_*/
+.*_qa_*/
+.*_qa_*.py
+.tmp_*/
+
+# ===== 系统/编辑器 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

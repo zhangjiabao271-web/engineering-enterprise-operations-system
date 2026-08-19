@@ -1,0 +1,16 @@
+[run]
+source = services, pages, db
+omit =
+    */site-packages/*
+    */__pycache__/*
+    db/migrations/*
+    tests/*
+    scripts/*
+    .venv/*
+    venv/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+show_missing = True
