@@ -34,7 +34,8 @@ def main():
             "active_project_count"
         ]
         assert 0 <= (north_star["percent"] or 0) <= 100
-        assert len(before["projects"]) >= north_star["active_project_count"]
+        assert len(before["projects"]) == north_star["active_project_count"]
+        assert all(row["is_active"] for row in before["projects"])
 
         project = next(row for row in before["projects"] if row["is_active"])
         baseline_count = north_star["accountable_project_count"]

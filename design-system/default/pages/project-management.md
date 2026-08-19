@@ -1,6 +1,8 @@
 # Project Management Page Override
 
 - Use a master-detail layout: project list is the primary region; construction sites are the selected project's secondary region.
+- Default to the `在建项目` tab with only `筹备中 / 进行中`; keep `已完工 / 已关闭` in a one-click `历史项目` tab.
+- Project status and collection status are independent: a completed project may still remain in the finance pending-collection queue.
 - Keep project status visible as text. Color may reinforce status but must not be the only signal.
 - Primary CTA is `新增项目`; editing and closing are visually subordinate.
 - Project creation/editing uses a centered modal with visible labels, grouped dates and inline validation.

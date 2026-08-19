@@ -12,6 +12,11 @@ from ui.theme import COLORS, SPACING
 
 
 PROJECT_STATUSES = ("筹备中", "进行中", "已完工", "已关闭")
+PROJECT_STATUS_GROUPS = {
+    "active": ("筹备中", "进行中"),
+    "history": ("已完工", "已关闭"),
+}
+PROJECT_GROUP_LABELS = {"active": "在建项目", "history": "历史项目"}
 BUSINESS_MODE_LABELS = {"contract": "正式合同工程", "cash": "零星现金工程"}
 INVOICE_POLICY_LABELS = {
     "required": "需要开票", "not_required": "不要求开票", "pending": "待确认"
@@ -29,6 +34,7 @@ class ProjectManagementPage:
         self.keyword_var = ttk.StringVar()
         self.status_var = ttk.StringVar(value="全部状态")
         self.selected_project_id = None
+        self._selected_after_tab_change = None
         self.build_ui()
         safe_init_loaders("项目管理", [self.load_projects])
 
@@ -55,19 +61,21 @@ class ProjectManagementPage:
 
         keyword_entry = ttk.Entry(self.parent, textvariable=self.keyword_var, width=18)
         keyword_entry.bind("<Return>", lambda _event: self.load_projects())
-        status_combo = ttk.Combobox(
+        self.status_combo = ttk.Combobox(
             self.parent,
             textvariable=self.status_var,
-            values=("全部状态", *PROJECT_STATUSES),
+            values=("全部状态", *PROJECT_STATUS_GROUPS["active"]),
             width=8,
             state="readonly",
         )
-        status_combo.bind("<<ComboboxSelected>>", lambda _event: self.load_projects())
+        self.status_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self.load_projects()
+        )
         self.count_var = ttk.StringVar(value="0 个项目")
         FilterBar(
             self.parent,
             ("搜索项目", keyword_entry),
-            ("状态", status_combo),
+            ("状态", self.status_combo),
             ttk.Button(
                 self.parent, text="查询", bootstyle="primary",
                 command=self.load_projects,
@@ -87,31 +95,19 @@ class ProjectManagementPage:
         workspace = ttk.Panedwindow(self.parent, orient="vertical")
         workspace.pack(fill=BOTH, expand=True)
 
-        project_card = ttk.Frame(workspace, style="Card.TFrame", padding=1)
+        self.project_notebook = ttk.Notebook(workspace)
         site_card = ttk.Frame(workspace, style="Card.TFrame", padding=12)
-        workspace.add(project_card, weight=3)
+        workspace.add(self.project_notebook, weight=3)
         workspace.add(site_card, weight=2)
 
-        self.project_tree = DataTable(
-            project_card,
-            specs=(
-                ("code", "项目编码", 110, CENTER),
-                ("name", "项目名称", 185, W),
-                ("customer", "客户", 145, W),
-                ("manager", "负责人", 85, CENTER),
-                ("status", "状态", 75, CENTER),
-                ("mode", "业务模式", 105, CENTER),
-                ("sites", "地点", 55, CENTER),
-                ("schedule", "计划工期", 190, CENTER),
-            ),
-            empty_text="没有符合条件的项目，点击右上角「新增项目」",
-            stretch=("name", "customer"),
-            padding=0,
+        self.project_trees = {}
+        for group in ("active", "history"):
+            tab = ttk.Frame(self.project_notebook, padding=(0, 8, 0, 0))
+            self.project_notebook.add(tab, text=PROJECT_GROUP_LABELS[group])
+            self.project_trees[group] = self._build_project_table(tab, group)
+        self.project_notebook.bind(
+            "<<NotebookTabChanged>>", self._on_project_tab_changed
         )
-        self.project_tree.tree.configure(selectmode="extended")
-        self.project_tree.tree.tag_configure("closed", foreground=COLORS["text_muted"])
-        self.project_tree.tree.bind("<<TreeviewSelect>>", self.on_project_select)
-        self.project_tree.tree.bind("<Double-1>", lambda _event: self.edit_selected_project())
 
         site_header = ttk.Frame(site_card, style="Card.TFrame")
         site_header.pack(fill=X, pady=(0, 8))
@@ -147,16 +143,106 @@ class ProjectManagementPage:
         self.site_tree.tree.tag_configure("inactive", foreground=COLORS["text_muted"])
         self.site_tree.tree.bind("<Double-1>", lambda _event: self.edit_selected_site())
 
+    def _build_project_table(self, parent, group):
+        table = DataTable(
+            parent,
+            specs=(
+                ("code", "项目编码", 110, CENTER),
+                ("name", "项目名称", 185, W),
+                ("customer", "客户", 145, W),
+                ("manager", "负责人", 85, CENTER),
+                ("status", "状态", 75, CENTER),
+                ("mode", "业务模式", 105, CENTER),
+                ("sites", "地点", 55, CENTER),
+                ("schedule", "计划工期", 190, CENTER),
+            ),
+            empty_text=(
+                "暂无在建项目，点击右上角「新增项目」"
+                if group == "active" else "暂无已完工或已关闭项目"
+            ),
+            stretch=("name", "customer"),
+            padding=1,
+        )
+        table.tree.configure(selectmode="extended")
+        table.tree.tag_configure("closed", foreground=COLORS["text_muted"])
+        table.tree.bind(
+            "<<TreeviewSelect>>",
+            lambda event, source=table: self.on_project_select(event, source),
+        )
+        table.tree.bind(
+            "<Double-1>", lambda _event: self.edit_selected_project()
+        )
+        return table
+
+    def _current_project_group(self):
+        index = self.project_notebook.index(self.project_notebook.select())
+        return ("active", "history")[index]
+
+    def _current_project_tree(self):
+        return self.project_trees[self._current_project_group()]
+
+    def _on_project_tab_changed(self, _event=None):
+        select_id = self._selected_after_tab_change
+        self._selected_after_tab_change = None
+        group = self._current_project_group()
+        self.status_var.set("全部状态")
+        self.status_combo.configure(
+            values=("全部状态", *PROJECT_STATUS_GROUPS[group])
+        )
+        self.selected_project_id = None
+        self.site_title_var.set("施工地点 · 请先选择项目")
+        self.site_tree.clear()
+        self.load_projects(select_id=select_id)
+
     def clear_filters(self):
         self.keyword_var.set("")
         self.status_var.set("全部状态")
         self.load_projects()
 
     def load_projects(self, select_id=None):
-        status = "" if self.status_var.get() == "全部状态" else self.status_var.get()
-        rows = project_service.list_projects(
-            keyword=self.keyword_var.get().strip(), status=status
+        all_rows = project_service.list_projects(
+            keyword=self.keyword_var.get().strip()
         )
+        current_group = self._current_project_group()
+        selected_status = self.status_var.get()
+        grouped_rows = {
+            group: [
+                row for row in all_rows
+                if row["status"] in PROJECT_STATUS_GROUPS[group]
+                and (
+                    group != current_group
+                    or selected_status == "全部状态"
+                    or row["status"] == selected_status
+                )
+            ]
+            for group in ("active", "history")
+        }
+
+        if select_id:
+            selected_row = next(
+                (row for row in all_rows if row["id"] == int(select_id)), None
+            )
+            target_group = next(
+                (
+                    group for group, statuses in PROJECT_STATUS_GROUPS.items()
+                    if selected_row and selected_row["status"] in statuses
+                ),
+                current_group,
+            )
+            if target_group != current_group:
+                self._selected_after_tab_change = select_id
+                self.project_notebook.select(
+                    0 if target_group == "active" else 1
+                )
+                current_group = target_group
+                self.status_var.set("全部状态")
+                self.status_combo.configure(
+                    values=("全部状态", *PROJECT_STATUS_GROUPS[current_group])
+                )
+                grouped_rows[current_group] = [
+                    row for row in all_rows
+                    if row["status"] in PROJECT_STATUS_GROUPS[current_group]
+                ]
 
         def mapper(row):
             tags = ("closed",) if row["status"] == "已关闭" else ()
@@ -173,34 +259,45 @@ class ProjectManagementPage:
                 ),
             ), tags
 
-        self.project_tree.refresh(rows, mapper)
-        self.count_var.set(f"{len(rows)} 个项目")
+        for group, rows in grouped_rows.items():
+            self.project_trees[group].refresh(rows, mapper)
+            self.project_notebook.tab(
+                0 if group == "active" else 1,
+                text=f"{PROJECT_GROUP_LABELS[group]} · {len(rows)}",
+            )
+
+        rows = grouped_rows[current_group]
+        project_tree = self.project_trees[current_group]
+        self.count_var.set(f"当前 {len(rows)} 个项目")
         selected_item = next(
             (str(row["id"]) for row in rows if select_id and row["id"] == int(select_id)),
             None,
         )
         if selected_item:
-            self.project_tree.tree.selection_set(selected_item)
-            self.project_tree.tree.focus(selected_item)
-            self.project_tree.tree.see(selected_item)
-            self.on_project_select()
+            project_tree.tree.selection_set(selected_item)
+            project_tree.tree.focus(selected_item)
+            project_tree.tree.see(selected_item)
+            self.on_project_select(source=project_tree)
         elif not rows:
             self.selected_project_id = None
             self.site_title_var.set("施工地点 · 请先建立项目")
             self.site_tree.clear()
 
     def selected_project_ids(self):
-        return [int(item) for item in self.project_tree.tree.selection()]
+        return [
+            int(item) for item in self._current_project_tree().tree.selection()
+        ]
 
-    def on_project_select(self, _event=None):
-        selected = self.project_tree.tree.selection()
+    def on_project_select(self, _event=None, source=None):
+        project_tree = source or self._current_project_tree()
+        selected = project_tree.tree.selection()
         if not selected:
             self.selected_project_id = None
             self.site_title_var.set("施工地点 · 请先选择项目")
             self.site_tree.clear()
             return
         self.selected_project_id = int(selected[0])
-        values = self.project_tree.tree.item(selected[0], "values")
+        values = project_tree.tree.item(selected[0], "values")
         self.site_title_var.set(f"施工地点 · {values[1]}")
         self.load_sites()
 

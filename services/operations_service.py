@@ -224,6 +224,7 @@ def get_executive_overview(month=None):
             row["project_code"],
         )
     )
+    active_projects = [row for row in projects if row["is_active"]]
     return {
         "month": month,
         "north_star": {
@@ -241,7 +242,7 @@ def get_executive_overview(month=None):
                 row["gross_profit_minor"] for row in accountable_projects
             ),
             "receivable_minor": sum(
-                row["receivable_minor"] for row in accountable_projects
+                max(row["receivable_minor"], 0) for row in projects
             ),
             "cash_balance_minor": sum(
                 row["cash_balance_minor"] for row in accountable_projects
@@ -269,5 +270,5 @@ def get_executive_overview(month=None):
             "unassigned_labor_minor": unassigned_labor["amount_minor"],
             "pending_inspection_count": pending_inspection_count,
         },
-        "projects": projects,
+        "projects": active_projects,
     }

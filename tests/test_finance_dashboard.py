@@ -38,11 +38,13 @@ class FinanceDashboardTests(unittest.TestCase):
         from services import (
             contract_service,
             finance_service,
+            operations_service,
             project_service,
         )
 
         cls.contract_service = contract_service
         cls.finance_service = finance_service
+        cls.operations_service = operations_service
         cls.project_service = project_service
 
     @classmethod
@@ -305,6 +307,71 @@ class FinanceDashboardTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(receipt_actions, ["update", "void"])
+
+    def test_project_and_collection_archives_are_independent(self):
+        suffix = uuid4().hex[:8]
+        before = self.operations_service.get_executive_overview("2026-08")
+
+        completed_pending_id = self.project_service.create_project(
+            {
+                "name": f"完工待回款-{suffix}",
+                "project_code": f"DONE-PENDING-{suffix}",
+                "status": "已完工",
+                "business_mode": "cash",
+                "invoice_policy": "not_required",
+            }
+        )
+        self.contract_service.create_settlement(
+            {
+                "project_id": completed_pending_id,
+                "settlement_date": "2026-08-19",
+                "amount": "1000.00",
+            }
+        )
+
+        active_settled_id = self.project_service.create_project(
+            {
+                "name": f"在建已结清-{suffix}",
+                "project_code": f"ACTIVE-SETTLED-{suffix}",
+                "status": "进行中",
+                "business_mode": "cash",
+                "invoice_policy": "not_required",
+            }
+        )
+        active_settlement_id = self.contract_service.create_settlement(
+            {
+                "project_id": active_settled_id,
+                "settlement_date": "2026-08-19",
+                "amount": "800.00",
+            }
+        )
+        self.finance_service.create_receipt(
+            {
+                "project_id": active_settled_id,
+                "settlement_id": active_settlement_id,
+                "receipt_date": "2026-08-19",
+                "amount": "800.00",
+            }
+        )
+
+        dashboard = self.finance_service.get_finance_dashboard()
+        rows = {row["project_id"]: row for row in dashboard["projects"]}
+        self.assertEqual(
+            rows[completed_pending_id]["collection_status"], "待回款"
+        )
+        self.assertEqual(
+            rows[active_settled_id]["collection_status"], "已结清"
+        )
+
+        overview = self.operations_service.get_executive_overview("2026-08")
+        visible_ids = {row["project_id"] for row in overview["projects"]}
+        self.assertNotIn(completed_pending_id, visible_ids)
+        self.assertIn(active_settled_id, visible_ids)
+        self.assertEqual(
+            overview["summary"]["receivable_minor"]
+            - before["summary"]["receivable_minor"],
+            100_000,
+        )
 
     def test_receipt_auto_distribution_and_manual_adjustment(self):
         suffix = uuid4().hex[:8]

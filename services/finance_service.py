@@ -200,6 +200,47 @@ def _insert_invoice_revision(conn, invoice, action, changed_at):
         )
 
 
+FINANCE_SUMMARY_KEYS = (
+    "allocated_minor",
+    "settlement_minor",
+    "invoice_applicable_minor",
+    "invoice_minor",
+    "receipt_minor",
+    "pending_receipt_minor",
+    "uninvoiced_minor",
+    "receivable_minor",
+)
+
+
+def summarize_finance_projects(projects):
+    """Aggregate a project subset using the same finance-dashboard口径."""
+    summary = {
+        key: sum(int(row.get(key) or 0) for row in projects)
+        for key in FINANCE_SUMMARY_KEYS
+    }
+    summary["invoice_rate_percent"] = _percent(
+        summary["invoice_minor"], summary["invoice_applicable_minor"]
+    )
+    summary["receipt_rate_percent"] = _percent(
+        summary["receipt_minor"], summary["settlement_minor"]
+    )
+    summary["unlinked_receipt_minor"] = summary["pending_receipt_minor"]
+    summary["project_count"] = sum(
+        1
+        for row in projects
+        if any(
+            int(row.get(key) or 0)
+            for key in (
+                "allocated_minor",
+                "settlement_minor",
+                "invoice_minor",
+                "receipt_minor",
+            )
+        )
+    )
+    return summary
+
+
 def get_finance_dashboard(project_id=None):
     """Return settlement, invoice and receipt totals without merging projects."""
     conn = get_connection()
@@ -266,37 +307,19 @@ def get_finance_dashboard(project_id=None):
             row["receipt_rate_percent"] = _percent(
                 row["receipt_minor"], row["settlement_minor"]
             )
+            if (
+                row["settlement_minor"]
+                and row["receivable_minor"] == 0
+                and row["pending_receipt_minor"] == 0
+            ):
+                row["collection_status"] = "已结清"
+            elif row["receipt_minor"]:
+                row["collection_status"] = "部分回款"
+            else:
+                row["collection_status"] = "待回款"
             projects.append(row)
 
-        summary_keys = (
-            "allocated_minor",
-            "settlement_minor",
-            "invoice_applicable_minor",
-            "invoice_minor",
-            "receipt_minor",
-            "pending_receipt_minor",
-            "uninvoiced_minor",
-            "receivable_minor",
-        )
-        summary = {
-            key: sum(row[key] for row in projects) for key in summary_keys
-        }
-        summary["invoice_rate_percent"] = _percent(
-            summary["invoice_minor"], summary["invoice_applicable_minor"]
-        )
-        summary["receipt_rate_percent"] = _percent(
-            summary["receipt_minor"], summary["settlement_minor"]
-        )
-        summary["unlinked_receipt_minor"] = summary["pending_receipt_minor"]
-        activity_keys = (
-            "allocated_minor",
-            "settlement_minor",
-            "invoice_minor",
-            "receipt_minor",
-        )
-        summary["project_count"] = sum(
-            1 for row in projects if any(row[key] for key in activity_keys)
-        )
+        summary = summarize_finance_projects(projects)
         return {"summary": summary, "projects": projects}
     finally:
         conn.close()

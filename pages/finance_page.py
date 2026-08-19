@@ -214,6 +214,21 @@ class ReceivablePage:
             )
             kpi_grid.columnconfigure(index, weight=1)
 
+        self.collection_notebook = ttk.Notebook(parent)
+        self.collection_notebook.pack(fill=BOTH, expand=True)
+        self.collection_trees = {}
+        self.collection_status_vars = {}
+        for queue, label in (("pending", "待回款"), ("settled", "已结清")):
+            tab = ttk.Frame(
+                self.collection_notebook, padding=(0, 8, 0, 0)
+            )
+            self.collection_notebook.add(tab, text=label)
+            self._build_collection_panel(tab, queue)
+        self.collection_notebook.bind(
+            "<<NotebookTabChanged>>", lambda _event: self.refresh()
+        )
+
+    def _build_collection_panel(self, parent, queue):
         project_card = ttk.Frame(
             parent, style="Card.TFrame", padding=(10, 8)
         )
@@ -221,15 +236,18 @@ class ReceivablePage:
         project_header = ttk.Frame(project_card, style="Card.TFrame")
         project_header.pack(fill=X, pady=(0, 6))
         ttk.Label(
-            project_header, text="项目资金进度", style="CardTitle.TLabel"
+            project_header,
+            text=("待收项目资金进度" if queue == "pending" else "已结清项目"),
+            style="CardTitle.TLabel",
         ).pack(side=LEFT)
-        self.project_status_var = ttk.StringVar()
+        status_var = ttk.StringVar()
+        self.collection_status_vars[queue] = status_var
         ttk.Label(
             project_header,
-            textvariable=self.project_status_var,
+            textvariable=status_var,
             style="CardText.TLabel",
         ).pack(side=RIGHT)
-        self.project_tree = self._table(
+        project_tree = self._table(
             project_card,
             (
                 ("project", "项目", 180, W),
@@ -240,12 +258,27 @@ class ReceivablePage:
                 ("receivable", "未回款", 120, E),
                 ("status", "回款状态", 90, CENTER),
             ),
-            empty_text="当前筛选下尚无收入与回款数据",
+            empty_text=(
+                "当前没有待回款或部分回款项目"
+                if queue == "pending" else "当前没有已结清项目"
+            ),
             stretch=("project",),
             padding=0,
             expand=True,
         )
-        self.project_tree.tree.bind("<Double-1>", self._filter_selected_project)
+        project_tree.tree.bind(
+            "<Double-1>",
+            lambda event, source=project_tree: self._filter_selected_project(
+                event, source
+            ),
+        )
+        self.collection_trees[queue] = project_tree
+
+    def _current_collection_queue(self):
+        index = self.collection_notebook.index(
+            self.collection_notebook.select()
+        )
+        return ("pending", "settled")[index]
 
     @staticmethod
     def _table(parent, specs, *, empty_text="暂无数据", stretch=None,
@@ -280,8 +313,11 @@ class ReceivablePage:
     def selected_project_id(self):
         return self.project_map.get(self.project_var.get())
 
-    def _filter_selected_project(self, _event=None):
-        selected = self.project_tree.tree.selection()
+    def _filter_selected_project(self, _event=None, source=None):
+        project_tree = source or self.collection_trees[
+            self._current_collection_queue()
+        ]
+        selected = project_tree.tree.selection()
         if len(selected) != 1:
             return
         project_id = int(selected[0])
@@ -317,27 +353,7 @@ class ReceivablePage:
                 if row["status"] == "active" and row["unreceived_minor"] == 0
             ]
         receipts = finance_service.list_receipts(project_id)
-        summary = dashboard["summary"]
-        self.kpi_vars["settlement"].set(self.money(summary["settlement_minor"]))
-        self.kpi_vars["invoice"].set(self.money(summary["invoice_minor"]))
-        self.kpi_vars["receipt"].set(self.money(summary["receipt_minor"]))
-        self.kpi_hint_vars["settlement"].set(
-            f"{summary['project_count']} 个有资金数据的项目"
-        )
-        self.kpi_hint_vars["invoice"].set(
-            f"开票率 {self._percent(summary['invoice_rate_percent'])} · "
-            f"待开 {self.money(summary['uninvoiced_minor'])}"
-        )
-        pending_hint = (
-            f" · 待分配 {self.money(summary['pending_receipt_minor'])}"
-            if summary["pending_receipt_minor"] else ""
-        )
-        self.kpi_hint_vars["receipt"].set(
-            f"回款率 {self._percent(summary['receipt_rate_percent'])} · "
-            f"未回 {self.money(summary['receivable_minor'])}{pending_hint}"
-        )
-
-        visible_projects = [
+        finance_projects = [
             row
             for row in dashboard["projects"]
             if any(
@@ -349,9 +365,20 @@ class ReceivablePage:
                 )
             )
         ]
-        self.project_tree.refresh(
-            visible_projects,
-            lambda row: (str(row["project_id"]), (
+
+        collection_groups = {
+            "pending": [
+                row for row in finance_projects
+                if row["collection_status"] != "已结清"
+            ],
+            "settled": [
+                row for row in finance_projects
+                if row["collection_status"] == "已结清"
+            ],
+        }
+
+        def project_mapper(row):
+            return str(row["project_id"]), (
                 row["project_name"],
                 (
                     "零星工程" if row["business_mode"] == "cash"
@@ -366,18 +393,43 @@ class ReceivablePage:
                 f"{self.money(row['receipt_minor'])} · "
                 f"{self._percent(row['receipt_rate_percent'])}",
                 self.money(row["receivable_minor"]),
-                (
-                    "已结清" if row["settlement_minor"]
-                    and row["receivable_minor"] == 0
-                    else "部分回款" if row["receipt_minor"]
-                    else "待回款"
-                ),
-            )),
+                row["collection_status"],
+            )
+
+        for queue, rows in collection_groups.items():
+            self.collection_trees[queue].refresh(rows, project_mapper)
+            tab_index = 0 if queue == "pending" else 1
+            tab_label = "待回款" if queue == "pending" else "已结清"
+            self.collection_notebook.tab(
+                tab_index, text=f"{tab_label} · {len(rows)}"
+            )
+            self.collection_status_vars[queue].set(
+                f"{len(rows)} 个项目 · 双击项目筛选明细"
+                if rows else (
+                    "当前没有待收项目"
+                    if queue == "pending" else "当前没有结清项目"
+                )
+            )
+
+        current_projects = collection_groups[self._current_collection_queue()]
+        summary = finance_service.summarize_finance_projects(current_projects)
+        self.kpi_vars["settlement"].set(self.money(summary["settlement_minor"]))
+        self.kpi_vars["invoice"].set(self.money(summary["invoice_minor"]))
+        self.kpi_vars["receipt"].set(self.money(summary["receipt_minor"]))
+        self.kpi_hint_vars["settlement"].set(
+            f"当前页签 {summary['project_count']} 个有资金数据的项目"
         )
-        self.project_status_var.set(
-            f"{len(visible_projects)} 个有确认收入的项目 · 双击项目筛选明细"
-            if visible_projects
-            else "当前筛选下尚无收入与回款数据"
+        self.kpi_hint_vars["invoice"].set(
+            f"开票率 {self._percent(summary['invoice_rate_percent'])} · "
+            f"待开 {self.money(summary['uninvoiced_minor'])}"
+        )
+        pending_hint = (
+            f" · 待分配 {self.money(summary['pending_receipt_minor'])}"
+            if summary["pending_receipt_minor"] else ""
+        )
+        self.kpi_hint_vars["receipt"].set(
+            f"回款率 {self._percent(summary['receipt_rate_percent'])} · "
+            f"未回 {self.money(summary['receivable_minor'])}{pending_hint}"
         )
 
         self.notebook.tab(1, text=f"销项发票 · {len(invoices)}")
