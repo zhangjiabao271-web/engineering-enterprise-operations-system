@@ -1,5 +1,4 @@
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -75,8 +74,9 @@ def main():
         Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="supply-chain-ui-") as temp_dir:
         test_db = Path(temp_dir) / "ui-smoke.db"
-        shutil.copy2(project_root / "supplier_data.db", test_db)
         os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_db)
+        from db.backup import backup_database
+        backup_database(project_root / "supplier_data.db", test_db)
 
         import ttkbootstrap as ttk
 
@@ -94,7 +94,8 @@ def main():
         configure_design_system(root)
         content = ttk.Frame(root, padding=24)
         content.pack(fill="both", expand=True)
-        page = AIAssistantPage(content)
+        navigation = []
+        page = AIAssistantPage(content, navigation.append)
         root.update()
 
         widths = {
@@ -110,6 +111,12 @@ def main():
             raise RuntimeError(f"上下文栏过窄：{widths}")
         if not page.send_btn.winfo_ismapped() or not page.input_text.winfo_ismapped():
             raise RuntimeError("固定输入区或发送按钮不可见")
+        if screenshot_dir:
+            from PIL import ImageGrab
+
+            ImageGrab.grab(window=root.winfo_id()).save(
+                Path(screenshot_dir) / "ai-assistant-page.png"
+            )
 
         page.set_input("锦帆那里今年买了多少东西？")
         page.send()
@@ -171,7 +178,7 @@ def main():
         )
 
         page.new_conversation()
-        page.set_input("青枫今年的人工成本是多少")
+        page.set_input("青岭今年的人工成本是多少")
         page.send()
         wait_for_turn(root, page)
         labor_messages = ai_conversation_service.list_messages(
@@ -194,6 +201,44 @@ def main():
                 else None
             ),
         )
+
+        page.new_conversation()
+        page.set_input("哪些发票还有余额？")
+        page.send()
+        wait_for_turn(root, page)
+        finance_messages = ai_conversation_service.list_messages(
+            page.current_conversation_id
+        )
+        finance_answer = finance_messages[-1]
+        finance_sources = (finance_answer.get("metadata") or {}).get("sources") or []
+        if not finance_sources or finance_sources[0].get("page_key") != "finance":
+            raise RuntimeError("发票余额回答缺少财务来源或页面跳转")
+        page.set_feedback(finance_answer["id"], "useful")
+        feedback = ai_conversation_service.list_messages(
+            page.current_conversation_id
+        )[-1].get("feedback")
+        if feedback != "useful":
+            raise RuntimeError("回答反馈没有保存")
+        page.open_source_records(finance_sources[0])
+        root.update()
+        source_dialog = root.winfo_children()[-1]
+        source_children = list(descendants(source_dialog))
+        finance_trees = [
+            child for child in source_children if isinstance(child, ttk.Treeview)
+        ]
+        if not finance_trees:
+            raise RuntimeError("经营来源窗口缺少明细表")
+        open_buttons = [
+            child for child in source_children
+            if isinstance(child, ttk.Button)
+            and child.cget("text") == "打开业务页面"
+        ]
+        if not open_buttons:
+            raise RuntimeError("经营来源窗口缺少业务页面跳转")
+        open_buttons[0].invoke()
+        root.update()
+        if navigation != ["finance"]:
+            raise RuntimeError(f"业务页面跳转目标错误：{navigation}")
 
         for index in range(18):
             ai_conversation_service.add_message(
@@ -226,6 +271,9 @@ def main():
                 "source_buttons": len(metadata["sources"]),
                 "procurement_detail_rows": len(procurement_source.get("details") or []),
                 "labor_detail_rows": len(labor_source.get("details") or []),
+                "finance_detail_rows": len(finance_sources[0].get("details") or []),
+                "feedback": feedback,
+                "navigation": navigation,
                 "scroll_range": [top, bottom],
             },
         )

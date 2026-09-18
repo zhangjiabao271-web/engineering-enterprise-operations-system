@@ -15,3 +15,10 @@
 - Do not render project statuses as high-contrast square chips or tint entire active rows.
 - Express status with plain text; use muted text only for closed or inactive historical records.
 - Form dialogs use the same light surface as the application, with no contrasting frame behind field labels.
+- 正式合同工程允许修正为零星现金工程：保存前明确提示同步影响，服务层在同一事务内作废有效合同项目分配、将有效收入确认改为无需合同、保留回款金额并解除合同归属。
+- 采购、成本、工天、施工记录始终归属于项目，业务模式调整不得改写这些记录。
+- 已有有效发票、回款关联发票、回款未明确对应一笔收入确认或与其他项目共用回款时，禁止直接改为零星现金工程并给出具体原因。
+- 零星现金工程已有收入或回款时，不允许直接反向改为正式合同工程；该方向需要先建立明确的合同项目关系后另行迁移。
+- 零星现金工程可填写“约定总额”；留空表示允许按实际完工分次持续确认，填写后累计有效完工确认不得超过该金额。
+- 项目从正式合同工程转为零星现金工程且未手填约定总额时，优先带入原固定合同项目边界或现有收入确认合计。
+- 编辑零星现金项目时显示当前已确认金额；约定总额不得调低到有效完工确认合计以下。

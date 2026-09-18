@@ -10,6 +10,7 @@ from pages import (
     CostLedgerPage,
     CustomerPage,
     DataGovernancePage,
+    FundsPage,
     ImportExportPage,
     OperationsDashboardPage,
     ProductPage,
@@ -57,6 +58,7 @@ class SupplierManagerApp:
             "workspace": self.show_workspace_page,
             "contract": self.show_contract_page,
             "finance": self.show_finance_page,
+            "funds": self.show_funds_page,
             "cost": self.show_cost_page,
             "product": self.show_product_page,
             "compare": self.show_compare_page,
@@ -78,6 +80,7 @@ class SupplierManagerApp:
             ("合同资金", [
                 ("contract", "合同与结算"),
                 ("finance", "开票与回款"),
+                ("funds", "资金预算"),
                 ("cost", "成本"),
             ]),
             ("项目履约", [
@@ -220,6 +223,12 @@ class SupplierManagerApp:
         self.set_active_nav("finance")
         ReceivablePage(self.content_frame)
 
+    def show_funds_page(self):
+        self.clear_content()
+        self.current_page = "funds"
+        self.set_active_nav("funds")
+        FundsPage(self.content_frame, self.navigate_to)
+
     def show_cost_page(self):
         self.clear_content()
         self.current_page = "cost"
@@ -266,7 +275,7 @@ class SupplierManagerApp:
         self.clear_content()
         self.current_page = "ai"
         self.set_active_nav("ai")
-        AIAssistantPage(self.content_frame)
+        AIAssistantPage(self.content_frame, self.navigate_to)
 
 def main():
     root = ttk.Window(themename="flatly")

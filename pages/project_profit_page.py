@@ -113,7 +113,7 @@ class ProjectProfitPage:
             ("settlement", "已确认收入"),
             ("cost", "项目总成本"),
             ("profit", "确认口径毛利"),
-            ("cash", "经营现金净额"),
+            ("cash", "回款−已付采购"),
         ]
         for index, (key, label) in enumerate(specs):
             KpiCard(
@@ -285,7 +285,7 @@ class ProjectProfitPage:
         self.kpi_vars["cash"].set(self.money(data["cash_balance_minor"]))
         self.kpi_hint_vars["cash"].set(
             f"回款 {self.money(data['receipt_minor'])} · "
-            f"已登记支出 {self.money(data['cash_out_minor'])}"
+            f"采购已付标记 {self.money(data['cash_out_minor'])} · 非账户余额"
         )
 
         purchase_risk = data["unassigned_purchase"]
@@ -305,8 +305,8 @@ class ProjectProfitPage:
             ("已验收产值", data["accepted_minor"], "尚不等同确认收入"),
             ("已确认收入", data["settlement_minor"], "利润计算的收入"),
             ("已开票", data["invoice_minor"], "销项开票记录"),
-            ("已回款", data["receipt_minor"], "实际收到现金"),
-            ("应收未收", data["receivable_minor"], "已结算减已回款"),
+            ("已回款", data["receipt_minor"], "业务回款记录；账户到账见资金管理"),
+            ("应收未收", data["receivable_minor"], "已确认收入减已抵扣回款，预收款不冲减其他应收"),
         ]
         self.stage_tree.refresh(
             stage_rows,
@@ -341,7 +341,7 @@ class ProjectProfitPage:
             ),
             ("其他成本", data["other_cost_minor"], "手工登记成本"),
             ("项目总成本", data["total_cost_minor"], "利润计算的成本"),
-            ("已付款采购", data["purchase_paid_minor"], "采购现金流出口"),
+            ("已付款采购", data["purchase_paid_minor"], "采购付款标记；不代表账户实际支出"),
             ("现金支出合计", data["cash_out_minor"], "不含未登记人工付款"),
         ]
         self.cost_tree.refresh(

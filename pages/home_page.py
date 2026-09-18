@@ -204,7 +204,7 @@ class OperationsDashboardPage:
             ("settlement", "结算确认", 98, E),
             ("cost", "已归集成本", 98, E),
             ("profit", "确认毛利", 98, E),
-            ("cash", "现金余额", 98, E),
+            ("cash", "回款−已付采购", 126, E),
             ("gap", "当前数据缺口", 190, W),
         )
         for column, title, width, anchor in column_specs:

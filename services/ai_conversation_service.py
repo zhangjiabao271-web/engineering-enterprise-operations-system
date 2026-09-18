@@ -124,7 +124,28 @@ def list_messages(conversation_id, limit=None, db_path=None):
                    WHERE conversation_id=? ORDER BY id""",
                 (int(conversation_id),),
             ).fetchall()
-        return [_message_dict(row) for row in rows]
+        messages = [_message_dict(row) for row in rows]
+        if not messages:
+            return messages
+        has_feedback_table = conn.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type='table' AND name='ai_message_feedback'"""
+        ).fetchone()
+        feedback = {}
+        if has_feedback_table:
+            feedback = {
+                row["message_id"]: row["rating"]
+                for row in conn.execute(
+                    """SELECT message_id, rating FROM ai_message_feedback
+                       WHERE message_id IN ({})""".format(
+                        ",".join("?" for _item in messages)
+                    ),
+                    [item["id"] for item in messages],
+                ).fetchall()
+            }
+        for message in messages:
+            message["feedback"] = feedback.get(message["id"])
+        return messages
     finally:
         conn.close()
 
@@ -171,6 +192,38 @@ def add_message(
             "SELECT * FROM ai_messages WHERE id=?", (cursor.lastrowid,)
         ).fetchone()
         return _message_dict(row)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def set_message_feedback(message_id, rating, db_path=None):
+    if rating not in ("useful", "not_useful"):
+        raise ValueError("AI 回答反馈值不正确")
+    conn = get_connection(db_path)
+    now = _now()
+    try:
+        message = conn.execute(
+            "SELECT role, message_type FROM ai_messages WHERE id=?",
+            (int(message_id),),
+        ).fetchone()
+        if not message:
+            raise ValueError("AI 消息不存在")
+        if message["role"] != "assistant" or message["message_type"] != "answer":
+            raise ValueError("只能评价助手的经营回答")
+        conn.execute(
+            """INSERT INTO ai_message_feedback (
+                   message_id, rating, created_at, updated_at
+               ) VALUES (?, ?, ?, ?)
+               ON CONFLICT(message_id) DO UPDATE SET
+                   rating=excluded.rating,
+                   updated_at=excluded.updated_at""",
+            (int(message_id), rating, now, now),
+        )
+        conn.commit()
+        return rating
     except Exception:
         conn.rollback()
         raise

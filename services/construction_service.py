@@ -8,8 +8,19 @@ database.py keeps a thin delegation for legacy callers.
 from datetime import datetime
 from uuid import uuid4
 
-from db.connection import get_connection
+from db.connection import db_read, db_transaction
 from services import project_service
+from services.business_profile import SITE_DISPLAY_ORDER
+
+
+INSPECTION_STATUSES = ("待验收", "已验收", "需整改")
+
+# 验收状态机：已验收只允许回炉整改，不允许直接退回待验收
+INSPECTION_TRANSITIONS = {
+    "待验收": ("已验收", "需整改"),
+    "需整改": ("待验收", "已验收"),
+    "已验收": ("需整改",),
+}
 
 
 def get_projects(active_only=False):
@@ -31,8 +42,7 @@ def _now_text():
 
 
 def get_construction_sites(active_only=True):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """
             SELECT cs.*, p.name AS project_name, p.project_code
             FROM construction_sites cs
@@ -40,16 +50,21 @@ def get_construction_sites(active_only=True):
         """
         if active_only:
             sql += " WHERE cs.is_active=1"
-        sql += " ORDER BY CASE cs.site_name WHEN '澄湖药业' THEN 1 WHEN '屹峰药业' THEN 2 WHEN '朗润' THEN 3 ELSE 4 END, cs.site_name"
-        rows = conn.execute(sql).fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        conn.close()
+        sql += " ORDER BY cs.site_name"
+        rows = [dict(row) for row in conn.execute(sql).fetchall()]
+        # 部署相关的展示优先顺序集中在 business_profile
+        priority = {name: index for index, name in enumerate(SITE_DISPLAY_ORDER)}
+        rows.sort(
+            key=lambda row: (
+                priority.get(row["site_name"], len(priority)),
+                row["site_name"],
+            )
+        )
+        return rows
 
 
 def get_construction_work_areas(project_id=None):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """
             SELECT DISTINCT TRIM(cr.work_area) AS work_area
             FROM construction_records cr
@@ -63,8 +78,6 @@ def get_construction_work_areas(project_id=None):
         sql += " ORDER BY work_area"
         rows = conn.execute(sql, params).fetchall()
         return [row["work_area"] for row in rows]
-    finally:
-        conn.close()
 
 
 def _ensure_v3_project_site(conn, construction_site):
@@ -186,8 +199,7 @@ def _legacy_construction_details(data):
 
 
 def add_construction_record(data):
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         now = _now_text()
         site_id = data.get("site_id")
         if data.get("project_id"):
@@ -210,23 +222,19 @@ def add_construction_record(data):
             data["start_date"], data["end_date"], data.get("work_amount_cents", 0),
             work_details, now, now
         ))
-        conn.commit()
         return cursor.lastrowid
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def update_construction_record(record_id, data):
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         existing = conn.execute(
-            "SELECT site_id FROM construction_records WHERE id=?", (record_id,)
+            "SELECT site_id, record_status FROM construction_records WHERE id=?",
+            (record_id,),
         ).fetchone()
         if not existing:
             raise ValueError("施工记录不存在")
+        if existing["record_status"] != "有效":
+            raise ValueError("施工记录已作废，不能修改")
         site_id = data.get("site_id") or existing["site_id"]
         if data.get("project_id"):
             current_project = conn.execute(
@@ -252,17 +260,10 @@ def update_construction_record(record_id, data):
             data["start_date"], data["end_date"], data.get("work_amount_cents", 0),
             work_details, _now_text(), record_id
         ))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def get_construction_record(record_id):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         row = conn.execute("""
             SELECT cr.*, cs.site_name, p.id AS project_id, p.name AS project_name,
                    (SELECT COUNT(*) FROM construction_photos cp WHERE cp.record_id=cr.id) AS photo_count
@@ -272,13 +273,10 @@ def get_construction_record(record_id):
             WHERE cr.id=?
         """, (record_id,)).fetchone()
         return dict(row) if row else None
-    finally:
-        conn.close()
 
 
 def get_construction_records(month="", project_id=None, inspection_status="", keyword=""):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """
             SELECT cr.*, cs.site_name, p.id AS project_id, p.name AS project_name,
                    (SELECT COUNT(*) FROM construction_photos cp WHERE cp.record_id=cr.id) AS photo_count
@@ -312,52 +310,55 @@ def get_construction_records(month="", project_id=None, inspection_status="", ke
         sql += " ORDER BY COALESCE(cr.end_date, cr.record_date) DESC, cr.id DESC"
         rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
-    finally:
-        conn.close()
 
 
 def update_construction_inspection(record_id, data):
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
+        record = conn.execute(
+            """SELECT inspection_status, record_status
+               FROM construction_records WHERE id=?""",
+            (record_id,),
+        ).fetchone()
+        if not record:
+            raise ValueError("施工记录不存在")
+        if record["record_status"] != "有效":
+            raise ValueError("施工记录已作废，不能再验收")
+        new_status = data["inspection_status"]
+        if new_status not in INSPECTION_STATUSES:
+            raise ValueError("验收结论无效")
+        current_status = record["inspection_status"]
+        if (
+            new_status != current_status
+            and new_status not in INSPECTION_TRANSITIONS.get(current_status, ())
+        ):
+            raise ValueError(
+                f"当前状态为“{current_status}”，不能直接改为“{new_status}”"
+            )
         conn.execute("""
             UPDATE construction_records
             SET inspection_status=?, inspector=?, inspection_date=?,
                 inspection_notes=?, updated_at=?
             WHERE id=? AND record_status='有效'
         """, (
-            data["inspection_status"], data.get("inspector", ""),
+            new_status, data.get("inspector", ""),
             data.get("inspection_date") or None, data.get("inspection_notes", ""),
             _now_text(), record_id
         ))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def void_construction_records(record_ids):
     if not record_ids:
         return
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         placeholders = ",".join("?" * len(record_ids))
         conn.execute(
             f"UPDATE construction_records SET record_status='作废', updated_at=? WHERE id IN ({placeholders})",
             (_now_text(), *record_ids)
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def add_construction_photo(record_id, file_path, original_name, photo_type="施工现场", notes=""):
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         cursor = conn.execute("""
             INSERT INTO construction_photos (
                 record_id, photo_type, file_path, original_name, notes, created_at
@@ -386,29 +387,19 @@ def add_construction_photo(record_id, file_path, original_name, photo_type="施�
                 photo_type, file_path, original_name, notes, now, now,
             ),
         )
-        conn.commit()
         return cursor.lastrowid
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def get_construction_photos(record_id):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         rows = conn.execute("""
             SELECT * FROM construction_photos WHERE record_id=? ORDER BY id
         """, (record_id,)).fetchall()
         return [dict(row) for row in rows]
-    finally:
-        conn.close()
 
 
 def delete_construction_photo(photo_id):
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         row = conn.execute("SELECT * FROM construction_photos WHERE id=?", (photo_id,)).fetchone()
         conn.execute("DELETE FROM construction_photos WHERE id=?", (photo_id,))
         if row:
@@ -418,18 +409,11 @@ def delete_construction_photo(photo_id):
                    WHERE construction_record_id=? AND file_path=? AND status='active'""",
                 (_now_text(), row["record_id"], row["file_path"]),
             )
-        conn.commit()
         return dict(row) if row else None
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def get_construction_dashboard(month, project_id=None):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         month_start, next_month = _construction_month_bounds(month)
         where = """
             cr.record_status='有效'
@@ -480,5 +464,3 @@ def get_construction_dashboard(month, project_id=None):
             "by_site": [dict(row) for row in by_site],
             "by_area": [dict(row) for row in by_area],
         }
-    finally:
-        conn.close()

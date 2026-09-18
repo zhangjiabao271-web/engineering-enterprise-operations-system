@@ -277,7 +277,7 @@ class ConstructionRecordPage:
         data = db.get_construction_record(record_id) if record_id else {}
         projects = db.get_projects(active_only=not bool(record_id))
         if not projects:
-            messagebox.showwarning("提示", "请先在项目管理中建立澄湖等项目。")
+            messagebox.showwarning("提示", "请先在项目管理中建立项目。")
             return
         project_map = {
             f"{project['name']} · {project['project_code']}": project["id"]
@@ -556,12 +556,18 @@ class ConstructionRecordPage:
         )
         details_view.configure(state="disabled")
 
-        status_var = ttk.StringVar(value=data.get("inspection_status", "待验收"))
+        current_status = data.get("inspection_status", "待验收")
+        status_var = ttk.StringVar(value=current_status)
+        # 验收结论按状态机限制可选值（当前状态 + 允许流转的目标状态）
+        status_options = [current_status] + [
+            status
+            for status in db.INSPECTION_TRANSITIONS.get(current_status, ())
+        ]
         inspector_var = ttk.StringVar(value=data.get("inspector", ""))
         date_var = ttk.StringVar(value=data.get("inspection_date") or datetime.now().strftime("%Y-%m-%d"))
         notes_var = ttk.StringVar(value=data.get("inspection_notes", ""))
         for row, (label, variable, values) in enumerate([
-            ("验收结论 *", status_var, ["待验收", "已验收", "需整改"]),
+            ("验收结论 *", status_var, status_options),
             ("验收人", inspector_var, None), ("验收日期", date_var, None), ("验收意见", notes_var, None),
         ], 3):
             ttk.Label(body, text=label).grid(row=row, column=0, sticky=E, padx=(0, 12), pady=8)
@@ -602,10 +608,14 @@ class ConstructionRecordPage:
                 except ValueError:
                     messagebox.showwarning("提示", "验收日期格式必须为 YYYY-MM-DD", parent=dialog)
                     return
-            db.update_construction_inspection(record_id, {
-                "inspection_status": status_var.get(), "inspector": inspector_var.get().strip(),
-                "inspection_date": date_var.get().strip(), "inspection_notes": notes_var.get().strip(),
-            })
+            try:
+                db.update_construction_inspection(record_id, {
+                    "inspection_status": status_var.get(), "inspector": inspector_var.get().strip(),
+                    "inspection_date": date_var.get().strip(), "inspection_notes": notes_var.get().strip(),
+                })
+            except ValueError as error:
+                messagebox.showwarning("无法验收", str(error), parent=dialog)
+                return
             self.store_photos(record_id, acceptance_files, "验收照片")
             dialog.destroy()
             self.refresh_all()

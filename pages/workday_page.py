@@ -1,4 +1,5 @@
 import ttkbootstrap as ttk
+import sqlite3
 from ttkbootstrap.constants import *
 from tkinter import messagebox, filedialog, simpledialog, Listbox, EXTENDED, END as TK_END
 from services import labor_service as db
@@ -460,7 +461,7 @@ class WorkdayDashboardPage:
             return
         try:
             db.delete_workers(ids)
-        except ValueError as error:
+        except (ValueError, sqlite3.IntegrityError) as error:
             messagebox.showwarning("无法删除", str(error))
             return
         self.refresh_workers()
@@ -643,7 +644,7 @@ class WorkdayDashboardPage:
                 return
             try:
                 applied = db.apply_rate_adjustment(request_payload())
-            except ValueError as error:
+            except (ValueError, sqlite3.IntegrityError) as error:
                 messagebox.showwarning("无法调薪", str(error), parent=dialog)
                 return
             dialog.destroy()
@@ -876,7 +877,7 @@ class WorkdayDashboardPage:
                     payload["project_site_id"] = project_site_id
             try:
                 db.update_work_log(log_id, payload)
-            except ValueError as error:
+            except (ValueError, sqlite3.IntegrityError) as error:
                 messagebox.showwarning("无法保存", str(error), parent=dialog)
                 return
             except Exception as error:
@@ -1143,7 +1144,7 @@ class WorkdayDashboardPage:
             return
         try:
             db.delete_work_logs(ids)
-        except ValueError as error:
+        except (ValueError, sqlite3.IntegrityError) as error:
             messagebox.showwarning("无法删除", str(error))
             return
         self.refresh_all()

@@ -464,8 +464,14 @@ class ProjectManagementPage:
             choice_widgets[key] = combo
 
         def sync_policy(_event=None):
-            if mode_by_label[mode_var.get()] == "cash":
+            is_cash = mode_by_label[mode_var.get()] == "cash"
+            if is_cash:
                 policy_var.set(INVOICE_POLICY_LABELS["not_required"])
+            for widget in cash_limit_widgets:
+                if is_cash:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
 
         def sync_customer_entity(_event=None):
             customer = customer_rows.get(fields["customer_name"].get().strip())
@@ -477,11 +483,52 @@ class ProjectManagementPage:
         fields["customer_name"].bind("<<ComboboxSelected>>", sync_customer_entity)
         choice_widgets["mode"].bind("<<ComboboxSelected>>", sync_policy)
 
+        cash_agreed_minor = data.get("cash_agreed_amount_minor")
+        cash_agreed_var = ttk.StringVar(
+            value=(
+                f"{cash_agreed_minor / 100:.2f}"
+                if cash_agreed_minor is not None
+                else ""
+            )
+        )
+        cash_limit_label = ttk.Label(body, text="约定总额（元，可选）")
+        cash_limit_label.grid(
+            row=8, column=0, sticky=E, padx=(0, 8), pady=7
+        )
+        cash_limit_entry = ttk.Entry(
+            body, textvariable=cash_agreed_var, width=22
+        )
+        cash_limit_entry.grid(
+            row=8, column=1, sticky=EW, padx=(0, 14), pady=7
+        )
+        confirmed_minor = int(data.get("cash_confirmed_minor") or 0)
+        cash_limit_help = ttk.Label(
+            body,
+            text=(
+                f"当前已确认 ¥{confirmed_minor / 100:,.2f}；"
+                "约定总额不能低于该金额。"
+                if confirmed_minor
+                else "留空表示不设上限；正式项目转入时会优先带入原固定边界。"
+            ),
+            style="Muted.TLabel",
+            wraplength=250,
+            justify=LEFT,
+        )
+        cash_limit_help.grid(
+            row=8, column=2, columnspan=2, sticky=W, pady=7
+        )
+        cash_limit_widgets = (
+            cash_limit_label,
+            cash_limit_entry,
+            cash_limit_help,
+        )
+        sync_policy()
+
         ttk.Label(body, text="备注").grid(
-            row=8, column=0, sticky="ne", padx=(0, 8), pady=7
+            row=9, column=0, sticky="ne", padx=(0, 8), pady=7
         )
         notes = ttk.Text(body, height=5, width=55, wrap="word")
-        notes.grid(row=8, column=1, columnspan=3, sticky=EW, pady=7)
+        notes.grid(row=9, column=1, columnspan=3, sticky=EW, pady=7)
         notes.insert("1.0", data.get("notes", ""))
         body.columnconfigure(1, weight=1)
         body.columnconfigure(3, weight=1)
@@ -494,6 +541,11 @@ class ProjectManagementPage:
             values["status"] = status_var.get()
             values["business_mode"] = mode_by_label[mode_var.get()]
             values["invoice_policy"] = policy_by_label[policy_var.get()]
+            values["cash_agreed_amount"] = (
+                cash_agreed_var.get().strip()
+                if values["business_mode"] == "cash"
+                else ""
+            )
             values["customer_entity_type"] = entity_by_label[entity_var.get()]
             values["notes"] = notes.get("1.0", END).strip()
             if not values["name"]:
@@ -514,6 +566,23 @@ class ProjectManagementPage:
                     )
                     fields[key].focus_set()
                     return
+            switching_to_cash = (
+                project_id
+                and data.get("business_mode", "contract") == "contract"
+                and values["business_mode"] == "cash"
+            )
+            if switching_to_cash and not messagebox.askyesno(
+                "确认调整业务模式",
+                "改为零星现金工程后，系统将同步：\n"
+                "1. 作废有效的合同项目分配；\n"
+                "2. 将收入确认改为无需合同；\n"
+                "3. 保留回款金额并解除合同归属。\n\n"
+                "采购、成本、工天和施工记录不会改变。\n"
+                "如果项目已经开过发票，系统仍会阻止转换。\n\n"
+                "确定继续吗？",
+                parent=dialog,
+            ):
+                return
             try:
                 if project_id:
                     project_service.update_project(project_id, values)

@@ -41,7 +41,7 @@ class ContractManagementPage:
         PageHeader(
             self.parent,
             "合同与结算",
-            "年度合同可以分配到多个项目，但每个项目仍独立核算",
+            "固定总价控制边界，年度框架可按实际工程量持续确认收入",
             actions=[
                 ttk.Button(
                     self.parent, text="新增合同", bootstyle="primary",
@@ -70,14 +70,16 @@ class ContractManagementPage:
         self.contract_tree = self._table(
             contract_tab,
             (
-                ("contract_no", "合同编号", 145, W),
-                ("name", "合同名称", 220, W),
-                ("customer", "客户", 145, W),
-                ("type", "类型", 105, CENTER),
-                ("amount", "合同金额", 115, E),
-                ("allocated", "已分配", 115, E),
-                ("remaining", "待分配", 115, E),
-                ("status", "状态", 80, CENTER),
+                ("contract_no", "合同编号", 125, W),
+                ("name", "合同名称", 175, W),
+                ("customer", "客户", 125, W),
+                ("type", "类型", 95, CENTER),
+                ("pricing", "计价方式", 105, CENTER),
+                ("amount", "约定金额", 105, E),
+                ("limit", "控制上限", 105, E),
+                ("settled", "已确认收入", 125, E),
+                ("projects", "项目数", 65, CENTER),
+                ("status", "状态", 72, CENTER),
             ),
             empty_text="暂无合同，点击右上角「新增合同」",
             stretch=("contract_no", "name", "customer"),
@@ -103,17 +105,21 @@ class ContractManagementPage:
             (
                 ("contract", "合同", 230, W),
                 ("project", "独立核算项目", 210, W),
-                ("amount", "分配金额", 130, E),
+                ("amount", "分配/关联", 130, E),
                 ("notes", "说明", 280, W),
             ),
-            empty_text="暂无项目分配，点击右上角「分配到项目」",
+            empty_text="暂无项目关联，点击右上角「分配到项目」",
             stretch=("contract", "project", "notes"),
         )
         BottomToolbar(
             allocation_tab,
             ttk.Button(
-                allocation_tab, text="新增分配", bootstyle="primary-outline",
+                allocation_tab, text="新增关联/分配", bootstyle="primary-outline",
                 command=self.open_allocation_dialog,
+            ),
+            ttk.Button(
+                allocation_tab, text="调整金额", bootstyle="primary-outline",
+                command=self.open_adjust_allocation_dialog,
             ),
             ttk.Button(
                 allocation_tab, text="作废分配", bootstyle="danger-outline",
@@ -153,7 +159,7 @@ class ContractManagementPage:
                 command=self.void_settlement,
             ),
             ttk.Button(
-                settlement_tab, text="确认附件", bootstyle="secondary-outline",
+                settlement_tab, text="结算附件", bootstyle="secondary-outline",
                 command=self.open_settlement_attachments,
             ),
         )
@@ -166,18 +172,36 @@ class ContractManagementPage:
         return DataTable(parent, specs=specs, empty_text=empty_text, stretch=stretch)
 
     def refresh(self):
-        self.contract_tree.refresh(
-            contract_service.list_contracts(),
-            lambda row: (str(row["id"]), (
+        def contract_mapper(row):
+            agreed_amount = (
+                "据实结算"
+                if row["pricing_mode"] == "actual"
+                else self.money(row["tax_inclusive_amount_minor"])
+            )
+            control_limit = (
+                self.money(row["control_limit_minor"])
+                if row["control_limit_minor"] is not None
+                else "—"
+            )
+            settled = self.money(row["settled_minor"])
+            if row["pricing_warning"]:
+                settled += " · 超额"
+            return str(row["id"]), (
                 row["contract_no"],
                 row["name"],
                 row["customer_name"],
                 contract_service.CONTRACT_TYPES[row["contract_type"]],
-                self.money(row["tax_inclusive_amount_minor"]),
-                self.money(row["allocated_minor"]),
-                self.money(row["remaining_minor"]),
+                contract_service.PRICING_MODES[row["pricing_mode"]],
+                agreed_amount,
+                control_limit,
+                settled,
+                row["project_count"],
                 contract_service.CONTRACT_STATUSES[row["status"]],
-            )),
+            )
+
+        self.contract_tree.refresh(
+            contract_service.list_contracts(),
+            contract_mapper,
         )
 
         self.allocation_tree.refresh(
@@ -185,7 +209,11 @@ class ContractManagementPage:
             lambda row: (str(row["id"]), (
                 f"{row['contract_no']} · {row['contract_name']}",
                 f"{row['project_name']} · {row['project_code']}",
-                self.money(row["allocated_amount_minor"]),
+                (
+                    "据实关联"
+                    if row["pricing_mode"] == "actual"
+                    else self.money(row["allocated_amount_minor"])
+                ),
                 row["notes"] or "",
             )),
         )
@@ -237,6 +265,9 @@ class ContractManagementPage:
         reverse_type = {
             value: key for key, value in contract_service.CONTRACT_TYPES.items()
         }
+        reverse_pricing = {
+            value: key for key, value in contract_service.PRICING_MODES.items()
+        }
         reverse_status = {
             value: key
             for key, value in contract_service.CONTRACT_STATUSES.items()
@@ -264,19 +295,29 @@ class ContractManagementPage:
             ),
             data.get("customer_name", ""),
         )
+        initial_contract_type = data.get("contract_type", "annual")
+        initial_pricing_mode = data.get("pricing_mode") or (
+            "actual" if initial_contract_type == "annual" else "fixed"
+        )
+        from services.invoice_income_service import INCOME_MODES
+        reverse_income = {label: key for key, label in INCOME_MODES.items()}
         dialog = ttk.Toplevel(self.parent)
         dialog.title("编辑合同" if contract_id else "新增合同")
         body, footer = build_form_dialog(
             dialog, self.parent, 720, 650, min_width=600, min_height=480
         )
         variables = {
+            "income_mode": ttk.StringVar(value=INCOME_MODES[data.get('income_mode', 'manual')]),
             "contract_no": ttk.StringVar(value=data.get("contract_no", "")),
             "name": ttk.StringVar(value=data.get("name", "")),
             "customer": ttk.StringVar(value=selected_customer),
             "type": ttk.StringVar(
                 value=contract_service.CONTRACT_TYPES.get(
-                    data.get("contract_type", "annual")
+                    initial_contract_type
                 )
+            ),
+            "pricing": ttk.StringVar(
+                value=contract_service.PRICING_MODES[initial_pricing_mode]
             ),
             "parent": ttk.StringVar(value=selected_parent),
             "sign_date": ttk.StringVar(
@@ -287,7 +328,14 @@ class ContractManagementPage:
             "amount": ttk.StringVar(
                 value=(
                     f"{data.get('tax_inclusive_amount_minor', 0) / 100:.2f}"
-                    if contract_id else ""
+                    if contract_id and initial_pricing_mode != "actual" else ""
+                )
+            ),
+            "control_limit": ttk.StringVar(
+                value=(
+                    f"{data['control_limit_minor'] / 100:.2f}"
+                    if data.get("control_limit_minor") is not None
+                    else ""
                 )
             ),
             "status": ttk.StringVar(
@@ -296,24 +344,29 @@ class ContractManagementPage:
                 )
             ),
         }
-        ttk.Label(
-            body, text="合同金额是收入边界，不直接等于已结算收入。",
-            style="PageSub.TLabel",
-        ).grid(row=0, column=0, columnspan=2, sticky=W, pady=(0, 12))
+        pricing_help = ttk.Label(body, style="PageSub.TLabel")
+        pricing_help.grid(
+            row=0, column=0, columnspan=2, sticky=W, pady=(0, 12)
+        )
         specs = (
             ("合同编号", "contract_no"),
             ("合同名称 *", "name"),
             ("客户", "customer"),
             ("合同类型 *", "type"),
+            ("计价方式 *", "pricing"),
+            ("收入确认方式 *", "income_mode"),
             ("上级合同 / 原合同", "parent"),
             ("签订日期 *", "sign_date"),
             ("开始日期", "start_date"),
             ("结束日期", "end_date"),
             ("含税合同金额（元）*", "amount"),
+            ("控制上限（元，可选）", "control_limit"),
             ("状态 *", "status"),
         )
+        field_rows = {}
         for row, (label, key) in enumerate(specs, 1):
-            ttk.Label(body, text=label).grid(
+            label_widget = ttk.Label(body, text=label)
+            label_widget.grid(
                 row=row, column=0, sticky=E, padx=(0, 12), pady=7
             )
             if key == "customer":
@@ -325,6 +378,16 @@ class ContractManagementPage:
                 widget = ttk.Combobox(
                     body, textvariable=variables[key],
                     values=list(reverse_type), state="readonly"
+                )
+            elif key == "income_mode":
+                widget = ttk.Combobox(
+                    body, textvariable=variables[key],
+                    values=list(reverse_income), state="readonly"
+                )
+            elif key == "pricing":
+                widget = ttk.Combobox(
+                    body, textvariable=variables[key],
+                    values=list(reverse_pricing), state="readonly"
                 )
             elif key == "parent":
                 widget = ttk.Combobox(
@@ -349,13 +412,51 @@ class ContractManagementPage:
             if not isinstance(widget, DatePicker):
                 grid_options["ipady"] = 4
             widget.grid(**grid_options)
+            field_rows[key] = (label_widget, widget)
         ttk.Label(body, text="备注").grid(
-            row=11, column=0, sticky=NE, padx=(0, 12), pady=7
+            row=len(specs) + 1, column=0, sticky=NE, padx=(0, 12), pady=7
         )
         notes = ttk.Text(body, height=5, wrap="word")
-        notes.grid(row=11, column=1, sticky=EW, pady=7)
+        notes.grid(row=len(specs) + 1, column=1, sticky=EW, pady=7)
         notes.insert("1.0", data.get("notes") or "")
         body.columnconfigure(1, weight=1)
+
+        def sync_pricing(_event=None):
+            pricing_mode = reverse_pricing[variables["pricing"].get()]
+            amount_label, amount_widget = field_rows["amount"]
+            control_label, control_widget = field_rows["control_limit"]
+            if pricing_mode == "actual":
+                amount_label.grid_remove()
+                amount_widget.grid_remove()
+            else:
+                amount_label.configure(
+                    text=(
+                        "含税合同金额（元）*"
+                        if pricing_mode == "fixed"
+                        else "暂定金额（元）*"
+                    )
+                )
+                amount_label.grid()
+                amount_widget.grid()
+            if pricing_mode == "fixed":
+                control_label.grid_remove()
+                control_widget.grid_remove()
+                pricing_help.configure(
+                    text="固定总价作为合同边界，项目分配和收入确认不得超出。"
+                )
+            else:
+                control_label.grid()
+                control_widget.grid()
+                pricing_help.configure(
+                    text=(
+                        "暂定金额用于经营参考，超额会提示但不会阻止登记。"
+                        if pricing_mode == "provisional"
+                        else "按实际工程量 × 协议单价结算，不预设合同总额。"
+                    )
+                )
+
+        field_rows["pricing"][1].bind("<<ComboboxSelected>>", sync_pricing)
+        sync_pricing()
 
         def save():
             customer_label = variables["customer"].get().strip()
@@ -365,14 +466,41 @@ class ContractManagementPage:
                 "customer_partner_id": customer_map.get(customer_label),
                 "customer_name": customer_label.split(" · ")[0],
                 "contract_type": reverse_type[variables["type"].get()],
+                "pricing_mode": reverse_pricing[variables["pricing"].get()],
+                "income_mode": reverse_income[variables["income_mode"].get()],
                 "parent_contract_id": parent_map[variables["parent"].get()],
                 "sign_date": variables["sign_date"].get().strip(),
                 "start_date": variables["start_date"].get().strip(),
                 "end_date": variables["end_date"].get().strip(),
                 "amount": variables["amount"].get().strip(),
+                "control_limit": variables["control_limit"].get().strip(),
                 "status": reverse_status[variables["status"].get()],
                 "notes": notes.get("1.0", END).strip(),
             }
+            if (payload['income_mode'] == 'invoice'
+                    and data.get('income_mode', 'manual') != 'invoice'
+                    and not messagebox.askyesno(
+                        '确认随开票收入',
+                        '仅用于先确认实际结算、再开票的年度框架合同。\n'
+                        '启用后登记多少价税合计，就自动确认多少收入；无需重复登记。\n'
+                        '已有收入将先核对，不一致时不会切换。确定继续吗？', parent=dialog)):
+                return
+            switching_to_actual = (
+                contract_id
+                and initial_pricing_mode != "actual"
+                and payload["pricing_mode"] == "actual"
+                and (data.get("allocated_minor") or data.get("settled_minor"))
+            )
+            if switching_to_actual and not messagebox.askyesno(
+                "确认调整计价方式",
+                "改为单价据实结算后，系统将同步：\n"
+                "1. 不再保留预设合同总额；\n"
+                "2. 原项目分配改为据实关联；\n"
+                "3. 已有收入确认、发票和回款保持不变。\n\n"
+                "确定继续吗？",
+                parent=dialog,
+            ):
+                return
             try:
                 if contract_id:
                     contract_service.update_contract(contract_id, payload)
@@ -399,22 +527,37 @@ class ContractManagementPage:
     def open_allocation_dialog(self):
         contracts = [
             row for row in contract_service.list_contracts()
-            if row["status"] in ("draft", "active") and row["remaining_minor"] > 0
+            if row["status"] in ("draft", "active")
+            and (
+                row["pricing_mode"] != "fixed"
+                or row["remaining_minor"] > 0
+            )
         ]
-        projects = project_service.list_projects()
+        projects = project_service.list_projects(active_only=False)
         if not contracts or not projects:
-            messagebox.showwarning("提示", "请先建立可分配合同和项目")
+            messagebox.showwarning(
+                "提示", "请先建立可关联的合同和正式项目"
+            )
             return
-        contract_map = {
-            f"{row['contract_no']} · 可分配 {self.money(row['remaining_minor'])}": row["id"]
-            for row in contracts
-        }
+
+        def contract_label(row):
+            pricing_label = contract_service.PRICING_MODES[row["pricing_mode"]]
+            if row["pricing_mode"] == "fixed":
+                detail = f"可分配 {self.money(row['remaining_minor'])}"
+            elif row["pricing_mode"] == "provisional":
+                detail = f"暂定 {self.money(row['tax_inclusive_amount_minor'])}"
+            else:
+                detail = "仅建立项目关联"
+            return f"{row['contract_no']} · {pricing_label} · {detail}"
+
+        contract_map = {contract_label(row): row for row in contracts}
         project_map = {
-            f"{row['name']} · {row['project_code']}": row["id"]
+            f"{row['name']} · {row['project_code']} · "
+            f"{'无需开票' if row['invoice_policy'] == 'not_required' else '可开票'}": row["id"]
             for row in projects
         }
         dialog = ttk.Toplevel(self.parent)
-        dialog.title("合同分配到项目")
+        dialog.title("合同关联/分配到项目")
         body, footer = build_form_dialog(
             dialog, self.parent, 680, 470, min_width=560, min_height=400
         )
@@ -423,36 +566,58 @@ class ContractManagementPage:
             "project": ttk.StringVar(value=next(iter(project_map))),
             "amount": ttk.StringVar(),
         }
-        for row, (label, key, values) in enumerate(
-            (
-                ("合同 *", "contract", list(contract_map)),
-                ("独立核算项目 *", "project", list(project_map)),
-                ("分配金额（元）*", "amount", None),
-            )
-        ):
-            ttk.Label(body, text=label).grid(
-                row=row, column=0, sticky=E, padx=(0, 12), pady=8
-            )
-            widget = (
-                ttk.Combobox(
-                    body, textvariable=variables[key],
-                    values=values, state="readonly"
-                )
-                if values else ttk.Entry(body, textvariable=variables[key])
-            )
-            widget.grid(row=row, column=1, sticky=EW, pady=8, ipady=5)
+        ttk.Label(body, text="合同 *").grid(
+            row=0, column=0, sticky=E, padx=(0, 12), pady=8
+        )
+        contract_combo = ttk.Combobox(
+            body, textvariable=variables["contract"],
+            values=list(contract_map), state="readonly"
+        )
+        contract_combo.grid(row=0, column=1, sticky=EW, pady=8, ipady=5)
+        ttk.Label(body, text="独立核算项目 *").grid(
+            row=1, column=0, sticky=E, padx=(0, 12), pady=8
+        )
+        ttk.Combobox(
+            body, textvariable=variables["project"],
+            values=list(project_map), state="readonly"
+        ).grid(row=1, column=1, sticky=EW, pady=8, ipady=5)
+        amount_label = ttk.Label(body, text="分配金额（元）*")
+        amount_label.grid(row=2, column=0, sticky=E, padx=(0, 12), pady=8)
+        amount_entry = ttk.Entry(body, textvariable=variables["amount"])
+        amount_entry.grid(row=2, column=1, sticky=EW, pady=8, ipady=5)
         ttk.Label(body, text="分配说明").grid(
             row=3, column=0, sticky=NE, padx=(0, 12), pady=8
         )
         notes = ttk.Text(body, height=5, wrap="word")
         notes.grid(row=3, column=1, sticky=EW, pady=8)
+        ttk.Label(
+            body, text="无需开票也可关联合同；关联后按合同管理，保留原开票要求。",
+            wraplength=480,
+        ).grid(row=4, column=0, columnspan=2, sticky=W, pady=8)
         body.columnconfigure(1, weight=1)
+
+        def sync_pricing_mode(_event=None):
+            contract = contract_map[variables["contract"].get()]
+            if contract["pricing_mode"] == "actual":
+                variables["amount"].set("0.00")
+                amount_label.grid_remove()
+                amount_entry.grid_remove()
+            else:
+                if variables["amount"].get() == "0.00":
+                    variables["amount"].set("")
+                amount_label.grid()
+                amount_entry.grid()
+
+        contract_combo.bind("<<ComboboxSelected>>", sync_pricing_mode)
+        sync_pricing_mode()
 
         def save():
             try:
                 contract_service.create_allocation(
                     {
-                        "contract_id": contract_map[variables["contract"].get()],
+                        "contract_id": contract_map[
+                            variables["contract"].get()
+                        ]["id"],
                         "project_id": project_map[variables["project"].get()],
                         "amount": variables["amount"].get(),
                         "notes": notes.get("1.0", END).strip(),
@@ -466,29 +631,124 @@ class ContractManagementPage:
 
         add_form_actions(
             footer, cancel_command=dialog.destroy,
-            primary_text="确认分配", primary_command=save,
+            primary_text="确认关联/分配", primary_command=save,
+        )
+
+    def open_adjust_allocation_dialog(self):
+        allocation_id = self.selected_id(self.allocation_tree)
+        if not allocation_id:
+            messagebox.showwarning("提示", "请先选择项目分配")
+            return
+        allocation = next(
+            (
+                row
+                for row in contract_service.list_allocations()
+                if row["id"] == allocation_id
+            ),
+            None,
+        )
+        if not allocation:
+            messagebox.showwarning("提示", "所选项目分配已不存在")
+            self.refresh()
+            return
+        if allocation["pricing_mode"] == "actual":
+            messagebox.showinfo(
+                "提示", "单价据实结算合同只建立项目关联，没有分配金额"
+            )
+            return
+        settled_minor = sum(
+            row["amount_minor"]
+            for row in contract_service.list_settlements(
+                project_id=allocation["project_id"],
+                contract_id=allocation["contract_id"],
+            )
+            if row["status"] == "active"
+        )
+        dialog = ttk.Toplevel(self.parent)
+        dialog.title("调整分配金额")
+        body, footer = build_form_dialog(
+            dialog, self.parent, 560, 430, min_width=480, min_height=360
+        )
+        info_rows = (
+            ("合同", f"{allocation['contract_no']} · {allocation['contract_name']}"),
+            ("项目", f"{allocation['project_name']} · {allocation['project_code']}"),
+            ("当前分配额", self.money(allocation["allocated_amount_minor"])),
+            ("已结算（调减下限）", self.money(settled_minor)),
+        )
+        for row, (label, text) in enumerate(info_rows):
+            ttk.Label(body, text=label).grid(
+                row=row, column=0, sticky=E, padx=(0, 12), pady=6
+            )
+            ttk.Label(body, text=text).grid(row=row, column=1, sticky=W, pady=6)
+        amount_var = ttk.StringVar(
+            value=f"{allocation['allocated_amount_minor'] / 100:.2f}"
+        )
+        ttk.Label(body, text="新分配金额（元）*").grid(
+            row=4, column=0, sticky=E, padx=(0, 12), pady=8
+        )
+        ttk.Entry(body, textvariable=amount_var).grid(
+            row=4, column=1, sticky=EW, pady=8, ipady=5
+        )
+        ttk.Label(body, text="调整原因").grid(
+            row=5, column=0, sticky=NE, padx=(0, 12), pady=8
+        )
+        reason = ttk.Text(body, height=3, wrap="word")
+        reason.grid(row=5, column=1, sticky=EW, pady=8)
+        body.columnconfigure(1, weight=1)
+
+        def save():
+            try:
+                contract_service.update_allocation_amount(
+                    allocation_id,
+                    amount_var.get(),
+                    notes=reason.get("1.0", END).strip(),
+                )
+            except Exception as error:
+                messagebox.showwarning("无法调整", str(error), parent=dialog)
+                return
+            dialog.destroy()
+            self.refresh()
+
+        add_form_actions(
+            footer, cancel_command=dialog.destroy,
+            primary_text="确认调整", primary_command=save,
         )
 
     def open_settlement_dialog(self, settlement_id=None):
-        allocations = contract_service.list_allocations()
-        allocation_map = {
-            f"{row['contract_no']} → {row['project_name']}": row
-            for row in allocations
-        }
         editing = settlement_id is not None
         current = (
             contract_service.get_settlement(settlement_id) if editing else {}
         ) or {}
-        cash_projects = [
-            row for row in project_service.list_projects(active_only=not editing)
-            if row["business_mode"] == "cash"
-        ]
-        cash_project_map = {
-            f"{row['project_code']} · {row['name']}": row for row in cash_projects
+        available_projects = project_service.list_projects(active_only=not editing)
+        contract_project_map = {
+            (
+                f"{row['contract_no']} · "
+                f"{contract_service.PRICING_MODES[row['pricing_mode']]} → "
+                f"{row['project_code']} · {row['project_name']}"
+            ): row
+            for row in contract_service.list_allocations()
         }
-        if not allocation_map and not cash_project_map:
+        cash_projects = [
+            row for row in available_projects if row["business_mode"] == "cash"
+        ]
+        def cash_project_label(row):
+            agreed_minor = row.get("cash_agreed_amount_minor")
+            if agreed_minor is None:
+                boundary = "未设总额"
+            else:
+                remaining_minor = max(
+                    int(agreed_minor) - int(row.get("cash_confirmed_minor") or 0),
+                    0,
+                )
+                boundary = f"还可确认 {self.money(remaining_minor)}"
+            return f"{row['project_code']} · {row['name']} · {boundary}"
+
+        cash_project_map = {
+            cash_project_label(row): row for row in cash_projects
+        }
+        if not contract_project_map and not cash_project_map:
             messagebox.showwarning(
-                "提示", "请先建立合同项目分配，或建立零星现金工程项目"
+                "提示", "请先建立可结算合同与正式项目，或建立零星现金工程项目"
             )
             return
         current_is_cash = current.get("source_type") == "cash_job"
@@ -499,7 +759,7 @@ class ContractManagementPage:
             dialog, self.parent, 710, 620, min_width=590, min_height=450
         )
         current_allocation = ""
-        for label, row in allocation_map.items():
+        for label, row in contract_project_map.items():
             if (
                 row["contract_id"] == current.get("contract_id")
                 and row["project_id"] == current.get("project_id")
@@ -518,7 +778,7 @@ class ContractManagementPage:
                 value="零星现金工程" if current_is_cash else "正式合同工程"
             ),
             "allocation": ttk.StringVar(
-                value=current_allocation or next(iter(allocation_map), "")
+                value=current_allocation or next(iter(contract_project_map), "")
             ),
             "cash_project": ttk.StringVar(
                 value=current_cash_project or next(iter(cash_project_map), "")
@@ -555,7 +815,7 @@ class ContractManagementPage:
             if key in ("source", "allocation", "cash_project"):
                 values = (
                     source_labels if key == "source"
-                    else list(allocation_map) if key == "allocation"
+                    else list(contract_project_map) if key == "allocation"
                     else list(cash_project_map)
                 )
                 widget = ttk.Combobox(
@@ -581,6 +841,43 @@ class ContractManagementPage:
             target_key = "cash_project" if current_is_cash else "allocation"
             field_rows[target_key][1].configure(state="disabled")
 
+        cash_capacity_var = ttk.StringVar()
+        cash_capacity_help = ttk.Label(
+            body,
+            textvariable=cash_capacity_var,
+            style="Muted.TLabel",
+            wraplength=500,
+            justify=LEFT,
+        )
+        cash_capacity_help.grid(row=8, column=1, sticky=W, pady=(0, 7))
+
+        def sync_cash_capacity(_event=None):
+            project = cash_project_map.get(variables["cash_project"].get())
+            amount_widget = field_rows["amount"][1]
+            if not project:
+                cash_capacity_var.set("请选择零星工程项目。")
+                amount_widget.configure(state="normal")
+                return
+            agreed_minor = project.get("cash_agreed_amount_minor")
+            if agreed_minor is None:
+                cash_capacity_var.set(
+                    "该项目未设置约定总额，可分次确认；如有明确总价，建议先在项目台账补充。"
+                )
+                amount_widget.configure(state="normal")
+                return
+            confirmed_minor = int(project.get("cash_confirmed_minor") or 0)
+            if editing and project["id"] == current.get("project_id"):
+                confirmed_minor -= int(current.get("amount_minor") or 0)
+            available_minor = max(int(agreed_minor) - confirmed_minor, 0)
+            cash_capacity_var.set(
+                f"约定总额 {self.money(agreed_minor)} · "
+                f"除本笔外已确认 {self.money(confirmed_minor)} · "
+                f"本笔最多 {self.money(available_minor)}"
+            )
+            amount_widget.configure(
+                state="normal" if available_minor > 0 else "disabled"
+            )
+
         def sync_source(_event=None):
             is_cash = variables["source"].get() == "零星现金工程"
             visible_key = "cash_project" if is_cash else "allocation"
@@ -589,14 +886,23 @@ class ContractManagementPage:
                 widget.grid()
             for widget in field_rows[hidden_key]:
                 widget.grid_remove()
+            if is_cash:
+                cash_capacity_help.grid()
+                sync_cash_capacity()
+            else:
+                cash_capacity_help.grid_remove()
+                field_rows["amount"][1].configure(state="normal")
 
         field_rows["source"][1].bind("<<ComboboxSelected>>", sync_source)
+        field_rows["cash_project"][1].bind(
+            "<<ComboboxSelected>>", sync_cash_capacity
+        )
         sync_source()
         ttk.Label(body, text="确认依据").grid(
-            row=8, column=0, sticky=NE, padx=(0, 12), pady=7
+            row=9, column=0, sticky=NE, padx=(0, 12), pady=7
         )
         basis = ttk.Text(body, height=5, wrap="word")
-        basis.grid(row=8, column=1, sticky=EW, pady=7)
+        basis.grid(row=9, column=1, sticky=EW, pady=7)
         if editing and current.get("basis"):
             basis.insert("1.0", current["basis"])
         body.columnconfigure(1, weight=1)
@@ -607,15 +913,16 @@ class ContractManagementPage:
                 selected = cash_project_map.get(variables["cash_project"].get())
                 contract_id = None
             else:
-                selected = allocation_map.get(variables["allocation"].get())
+                selected = contract_project_map.get(variables["allocation"].get())
                 contract_id = selected["contract_id"] if selected else None
             if not selected:
                 messagebox.showwarning("提示", "请选择有效的项目来源", parent=dialog)
                 return
+            project_id = selected["id"] if is_cash else selected["project_id"]
             payload = {
                 "settlement_no": variables["no"].get(),
                 "contract_id": contract_id,
-                "project_id": selected.get("project_id", selected.get("id")),
+                "project_id": project_id,
                 "settlement_date": variables["date"].get(),
                 "period_start": variables["start"].get(),
                 "period_end": variables["end"].get(),
@@ -632,6 +939,10 @@ class ContractManagementPage:
                 return
             dialog.destroy()
             self.refresh()
+            if contract_id:
+                warning = contract_service.contract_pricing_warning(contract_id)
+                if warning:
+                    messagebox.showwarning("额度提示", warning, parent=self.parent)
 
         add_form_actions(
             footer, cancel_command=dialog.destroy,

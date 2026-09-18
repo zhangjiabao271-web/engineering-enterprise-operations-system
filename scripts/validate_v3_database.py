@@ -26,13 +26,19 @@ REQUIRED_TABLES = {
     "sales_invoices",
     "receipts",
     "receipt_allocations",
+    "receipt_allocation_revisions",
+    "invoice_receipt_allocations",
     "cost_entries",
     "cost_allocation_lines",
+    "purchase_cost_allocation_lines",
     "business_attachments",
     "worker_rate_versions",
     "labor_rate_adjustments",
     "labor_rate_adjustment_items",
     "labor_rate_lock_events",
+    "ai_conversations",
+    "ai_messages",
+    "ai_message_feedback",
 }
 
 
@@ -91,7 +97,7 @@ def validate(path):
             "unmapped_formal_purchase_orders": scalar(
                 conn,
                 """SELECT COUNT(*) FROM purchase_orders
-                   WHERE purchase_type='正式采购' AND status='有效'
+                   WHERE purchase_type='正式采购' AND status='active'
                      AND supplier_partner_id IS NULL""",
             ),
             "unmapped_legacy_purchase_items": scalar(
@@ -137,7 +143,7 @@ def validate(path):
                        FROM contracts c
                        JOIN contract_project_allocations a
                          ON a.contract_id=c.id AND a.status='active'
-                       WHERE c.status<>'void'
+                       WHERE c.status<>'void' AND c.pricing_mode='fixed'
                        GROUP BY c.id, c.tax_inclusive_amount_minor
                        HAVING SUM(a.allocated_amount_minor)
                               > c.tax_inclusive_amount_minor
@@ -148,7 +154,8 @@ def validate(path):
                 """SELECT COUNT(*) FROM (
                        SELECT r.id
                        FROM receipts r
-                       LEFT JOIN receipt_allocations ra ON ra.receipt_id=r.id
+                       LEFT JOIN receipt_allocations ra
+                         ON ra.receipt_id=r.id AND ra.status='active'
                        WHERE r.status='active'
                        GROUP BY r.id, r.amount_minor
                        HAVING COALESCE(SUM(ra.allocated_amount_minor), 0)
@@ -164,7 +171,8 @@ def validate(path):
                          ON s.contract_id=a.contract_id
                         AND s.project_id=a.project_id
                         AND s.status='active'
-                       WHERE a.status='active'
+                       JOIN contracts c ON c.id=a.contract_id
+                       WHERE a.status='active' AND c.pricing_mode='fixed'
                        GROUP BY a.contract_id, a.project_id,
                                 a.allocated_amount_minor
                        HAVING COALESCE(SUM(s.amount_minor), 0)
@@ -189,18 +197,92 @@ def validate(path):
             "overreceived_projects": scalar(
                 conn,
                 """SELECT COUNT(*) FROM (
-                       SELECT ra.contract_id, ra.project_id
+                       SELECT ra.settlement_id
                        FROM receipt_allocations ra
                        JOIN receipts r ON r.id=ra.receipt_id
-                       WHERE r.status='active'
-                       GROUP BY ra.contract_id, ra.project_id
+                       WHERE r.status='active' AND ra.status='active'
+                         AND ra.settlement_id IS NOT NULL
+                       GROUP BY ra.settlement_id
                        HAVING SUM(ra.allocated_amount_minor) > COALESCE((
-                           SELECT SUM(s.amount_minor) FROM settlements s
-                           WHERE s.contract_id=ra.contract_id
-                             AND s.project_id=ra.project_id
+                           SELECT s.amount_minor FROM settlements s
+                           WHERE s.id=ra.settlement_id
                              AND s.status='active'
                        ), 0)
                    )""",
+            ),
+            "overallocated_invoices": scalar(
+                conn,
+                """SELECT COUNT(*) FROM (
+                       SELECT i.id
+                       FROM sales_invoices i
+                       LEFT JOIN invoice_receipt_allocations ira
+                         ON ira.invoice_id=i.id AND ira.status='active'
+                       WHERE i.status='active'
+                       GROUP BY i.id, i.amount_minor
+                       HAVING COALESCE(SUM(ira.allocated_amount_minor), 0)
+                              > i.amount_minor
+                   )""",
+            ),
+            "overallocated_receipts": scalar(
+                conn,
+                """SELECT COUNT(*) FROM (
+                       SELECT r.id
+                       FROM receipts r
+                       LEFT JOIN invoice_receipt_allocations ira
+                         ON ira.receipt_id=r.id AND ira.status='active'
+                       WHERE r.status='active'
+                       GROUP BY r.id, r.amount_minor
+                       HAVING COALESCE(SUM(ira.allocated_amount_minor), 0)
+                              > r.amount_minor
+                   )""",
+            ),
+            "inactive_invoice_receipt_links": scalar(
+                conn,
+                """SELECT COUNT(*)
+                   FROM invoice_receipt_allocations ira
+                   JOIN sales_invoices i ON i.id=ira.invoice_id
+                   JOIN receipts r ON r.id=ira.receipt_id
+                   WHERE ira.status='active'
+                     AND (i.status<>'active' OR r.status<>'active')""",
+            ),
+            "invoice_receipt_customer_mismatches": scalar(
+                conn,
+                """SELECT COUNT(*)
+                   FROM invoice_receipt_allocations ira
+                   JOIN sales_invoices i ON i.id=ira.invoice_id
+                   JOIN projects ip ON ip.id=i.project_id
+                   LEFT JOIN contracts ic ON ic.id=i.contract_id
+                   WHERE ira.status='active'
+                     AND (
+                         COALESCE(
+                             ip.customer_partner_id,
+                             ic.customer_partner_id
+                         ) IS NOT ira.customer_partner_id
+                         OR NOT EXISTS (
+                             SELECT 1
+                             FROM receipt_allocations ra
+                             JOIN projects rp ON rp.id=ra.project_id
+                             LEFT JOIN contracts rc ON rc.id=ra.contract_id
+                             WHERE ra.receipt_id=ira.receipt_id
+                               AND ra.status='active'
+                               AND COALESCE(
+                                   rp.customer_partner_id,
+                                   rc.customer_partner_id
+                               ) IS ira.customer_partner_id
+                         )
+                         OR EXISTS (
+                             SELECT 1
+                             FROM receipt_allocations ra
+                             JOIN projects rp ON rp.id=ra.project_id
+                             LEFT JOIN contracts rc ON rc.id=ra.contract_id
+                             WHERE ra.receipt_id=ira.receipt_id
+                               AND ra.status='active'
+                               AND COALESCE(
+                                   rp.customer_partner_id,
+                                   rc.customer_partner_id
+                               ) IS NOT ira.customer_partner_id
+                         )
+                     )""",
             ),
         }
         failed = (
@@ -227,6 +309,10 @@ def validate(path):
                     "oversettled_allocations",
                     "overinvoiced_projects",
                     "overreceived_projects",
+                    "overallocated_invoices",
+                    "overallocated_receipts",
+                    "inactive_invoice_receipt_links",
+                    "invoice_receipt_customer_mismatches",
                 )
             )
         )

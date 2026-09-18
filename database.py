@@ -2,6 +2,8 @@ import logging
 from datetime import datetime
 
 from db import get_connection, run_migrations
+from db.connection import db_read
+from db.connection import db_read
 from services import master_data_service as master_service
 from services import procurement_service
 from services import project_service
@@ -137,7 +139,7 @@ def _init_business_schema(conn):
             invoice_status TEXT NOT NULL DEFAULT '未确认',
             purchaser TEXT,
             total_amount_cents INTEGER NOT NULL DEFAULT 0 CHECK(total_amount_cents >= 0),
-            status TEXT NOT NULL DEFAULT '有效',
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','void')),
             notes TEXT,
             legacy_purchase_id INTEGER UNIQUE,
             created_at TEXT NOT NULL,
@@ -358,34 +360,8 @@ def _init_construction_schema(conn):
     if applied:
         return
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    site_specs = [
-        ("澄湖药业", ["澄湖药业", "澄湖"]),
-        ("屹峰药业", ["屹峰药业", "屹峰"]),
-        ("朗润", ["朗润药业", "朗润"]),
-    ]
-    for index, (site_name, project_names) in enumerate(site_specs, 1):
-        project = None
-        for name in project_names:
-            project = cursor.execute(
-                "SELECT id FROM projects WHERE name=? ORDER BY id LIMIT 1", (name,)
-            ).fetchone()
-            if project:
-                break
-        if not project:
-            code = f"SITE-{index:03d}"
-            cursor.execute("""
-                INSERT INTO projects (
-                    project_code, name, status, notes, created_at, updated_at
-                ) VALUES (?, ?, '进行中', '施工记录模块初始化创建', ?, ?)
-            """, (code, site_name, now, now))
-            project_id = cursor.lastrowid
-        else:
-            project_id = project["id"]
-        cursor.execute("""
-            INSERT OR IGNORE INTO construction_sites (
-                project_id, site_name, is_active, notes, created_at
-            ) VALUES (?, ?, 1, '默认厂区', ?)
-        """, (project_id, site_name, now))
+    # 历史版本曾在此为演示预置特定客户项目，已移除：
+    # 全新部署不再自动创建任何项目，仅记录版本标记以保持迁移序号连续。
     cursor.execute("""
         INSERT INTO schema_migrations(version, description, applied_at)
         VALUES (2, '施工工程量、照片与验收模块', ?)
@@ -452,71 +428,69 @@ def get_products_with_suppliers(keyword=""):
 
 
 def get_price_history(product_keywords=None, limit=20):
-    """按产品关键词统计历史采购价（均价、最低、最高、最近）"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    product_keywords = product_keywords or []
-    conditions = []
-    params = []
-    for kw in product_keywords:
-        conditions.append("(poi.material_name_snapshot LIKE ? OR poi.specification_snapshot LIKE ?)")
-        params.extend([f"%{kw}%", f"%{kw}%"])
-    where_clause = " OR ".join(conditions) if conditions else "1=1"
-    sql = f"""
-        SELECT poi.material_name_snapshot as product_name,
-               poi.specification_snapshot as specification,
-               poi.unit_snapshot as unit,
-               COUNT(po.id) as purchase_count,
-               ROUND(AVG(poi.unit_price_cents) / 100.0, 2) as avg_price,
-               ROUND(MIN(poi.unit_price_cents) / 100.0, 2) as min_price,
-               ROUND(MAX(poi.unit_price_cents) / 100.0, 2) as max_price,
-               MAX(po.purchase_date) as latest_date
-        FROM purchase_orders po
-        JOIN purchase_order_items poi ON poi.purchase_order_id = po.id
-        WHERE po.status='有效' AND ({where_clause})
-        GROUP BY poi.material_name_snapshot, poi.specification_snapshot, poi.unit_snapshot
-        ORDER BY latest_date DESC
-        LIMIT ?
-    """
-    params.append(limit)
-    cursor.execute(sql, params)
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    with db_read() as conn:
+        """按产品关键词统计历史采购价（均价、最低、最高、最近）"""
+        cursor = conn.cursor()
+        product_keywords = product_keywords or []
+        conditions = []
+        params = []
+        for kw in product_keywords:
+            conditions.append("(poi.material_name_snapshot LIKE ? OR poi.specification_snapshot LIKE ?)")
+            params.extend([f"%{kw}%", f"%{kw}%"])
+        where_clause = " OR ".join(conditions) if conditions else "1=1"
+        sql = f"""
+            SELECT poi.material_name_snapshot as product_name,
+                   poi.specification_snapshot as specification,
+                   poi.unit_snapshot as unit,
+                   COUNT(po.id) as purchase_count,
+                   ROUND(AVG(poi.unit_price_cents) / 100.0, 2) as avg_price,
+                   ROUND(MIN(poi.unit_price_cents) / 100.0, 2) as min_price,
+                   ROUND(MAX(poi.unit_price_cents) / 100.0, 2) as max_price,
+                   MAX(po.purchase_date) as latest_date
+            FROM purchase_orders po
+            JOIN purchase_order_items poi ON poi.purchase_order_id = po.id
+            WHERE po.status='active' AND ({where_clause})
+            GROUP BY poi.material_name_snapshot, poi.specification_snapshot, poi.unit_snapshot
+            ORDER BY latest_date DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 def get_similar_projects(keywords=None, limit=15):
-    """按关键词查找类似项目的采购记录"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    keywords = keywords or []
-    conditions = []
-    params = []
-    for kw in keywords:
-        conditions.append("(pr.name LIKE ? OR po.notes LIKE ? OR poi.material_name_snapshot LIKE ? OR poi.specification_snapshot LIKE ?)")
-        params.extend([f"%{kw}%", f"%{kw}%", f"%{kw}%", f"%{kw}%"])
-    where_clause = " OR ".join(conditions) if conditions else "1=1"
-    sql = f"""
-        SELECT po.purchase_date, COALESCE(pr.name, '待归集') as construction_site,
-               po.merchant_name_snapshot as supplier_name,
-               poi.material_name_snapshot as product_name,
-               poi.specification_snapshot as specification,
-               poi.unit_snapshot as unit, poi.quantity,
-               poi.unit_price_cents / 100.0 as unit_price,
-               poi.line_amount_cents / 100.0 as total_price,
-               po.notes
-        FROM purchase_orders po
-        JOIN purchase_order_items poi ON poi.purchase_order_id=po.id
-        LEFT JOIN projects pr ON po.project_id=pr.id
-        WHERE po.status='有效' AND ({where_clause})
-        ORDER BY po.purchase_date DESC
-        LIMIT ?
-    """
-    params.append(limit)
-    cursor.execute(sql, params)
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    with db_read() as conn:
+        """按关键词查找类似项目的采购记录"""
+        cursor = conn.cursor()
+        keywords = keywords or []
+        conditions = []
+        params = []
+        for kw in keywords:
+            conditions.append("(pr.name LIKE ? OR po.notes LIKE ? OR poi.material_name_snapshot LIKE ? OR poi.specification_snapshot LIKE ?)")
+            params.extend([f"%{kw}%", f"%{kw}%", f"%{kw}%", f"%{kw}%"])
+        where_clause = " OR ".join(conditions) if conditions else "1=1"
+        sql = f"""
+            SELECT po.purchase_date, COALESCE(pr.name, '待归集') as construction_site,
+                   po.merchant_name_snapshot as supplier_name,
+                   poi.material_name_snapshot as product_name,
+                   poi.specification_snapshot as specification,
+                   poi.unit_snapshot as unit, poi.quantity,
+                   poi.unit_price_cents / 100.0 as unit_price,
+                   poi.line_amount_cents / 100.0 as total_price,
+                   po.notes
+            FROM purchase_orders po
+            JOIN purchase_order_items poi ON poi.purchase_order_id=po.id
+            LEFT JOIN projects pr ON po.project_id=pr.id
+            WHERE po.status='active' AND ({where_clause})
+            ORDER BY po.purchase_date DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 def get_recommended_suppliers(category="", limit=10):
@@ -602,18 +576,6 @@ def add_project(data):
     return project_service.create_project(data)
 
 
-def _next_purchase_no(conn, purchase_type, purchase_date):
-    prefix = "LS" if purchase_type == "零星采购" else "CG"
-    date_part = purchase_date.replace("-", "")
-    base = f"{prefix}-{date_part}-"
-    row = conn.execute(
-        "SELECT order_no FROM purchase_orders WHERE order_no LIKE ? ORDER BY order_no DESC LIMIT 1",
-        (base + "%",)
-    ).fetchone()
-    sequence = int(row["order_no"].split("-")[-1]) + 1 if row else 1
-    return f"{base}{sequence:03d}"
-
-
 def add_purchase_order(header, item):
     return procurement_service.add_purchase_order(header, item)
 
@@ -623,110 +585,25 @@ def get_purchase_orders(month="", purchase_type="", project_id=None, keyword="",
 
 
 def assign_purchase_project(order_ids, project_id):
-    if not order_ids:
-        return
-    conn = get_connection()
-    placeholders = ",".join("?" * len(order_ids))
-    conn.execute(
-        f"UPDATE purchase_orders SET project_id=?, updated_at=? WHERE id IN ({placeholders})",
-        (project_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), *order_ids)
-    )
-    conn.commit()
-    conn.close()
+    return procurement_service.assign_purchase_project(order_ids, project_id)
 
 
 def update_purchase_order_status(order_ids, payment_method, payment_status, invoice_status):
-    if not order_ids:
-        return
-    conn = get_connection()
-    placeholders = ",".join("?" * len(order_ids))
-    conn.execute(f"""
-        UPDATE purchase_orders
-        SET payment_method=?, payment_status=?, invoice_status=?, updated_at=?
-        WHERE id IN ({placeholders}) AND status='有效'
-    """, (
-        payment_method, payment_status, invoice_status,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), *order_ids
-    ))
-    conn.commit()
-    conn.close()
+    return procurement_service.update_purchase_order_status(
+        order_ids, payment_method, payment_status, invoice_status
+    )
 
 
 def void_purchase_orders(order_ids):
-    if not order_ids:
-        return
-    conn = get_connection()
-    placeholders = ",".join("?" * len(order_ids))
-    conn.execute(
-        f"UPDATE purchase_orders SET status='作废', updated_at=? WHERE id IN ({placeholders})",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), *order_ids)
-    )
-    conn.commit()
-    conn.close()
+    return procurement_service.void_purchase_orders(order_ids)
 
 
 def get_purchase_months():
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT DISTINCT substr(purchase_date, 1, 7) AS month
-        FROM purchase_orders WHERE status='有效'
-        ORDER BY month DESC
-    """).fetchall()
-    conn.close()
-    return [row["month"] for row in rows if row["month"]]
+    return procurement_service.list_purchase_months()
 
 
 def get_purchase_dashboard(month, project_id=None):
-    conn = get_connection()
-    where = "po.status='有效' AND substr(po.purchase_date, 1, 7)=?"
-    params = [month]
-    if project_id:
-        where += " AND po.project_id=?"
-        params.append(project_id)
-    summary = conn.execute(f"""
-        SELECT
-            COALESCE(SUM(po.total_amount_cents), 0) AS total_cents,
-            COALESCE(SUM(CASE WHEN po.purchase_type='正式采购' THEN po.total_amount_cents ELSE 0 END), 0) AS formal_cents,
-            COALESCE(SUM(CASE WHEN po.purchase_type='零星采购' THEN po.total_amount_cents ELSE 0 END), 0) AS petty_cents,
-            COUNT(DISTINCT po.merchant_name_snapshot) AS merchant_count,
-            COALESCE(SUM(CASE WHEN po.project_id IS NULL THEN po.total_amount_cents ELSE 0 END), 0) AS unassigned_cents,
-            COALESCE(SUM(CASE WHEN po.invoice_status IN ('无发票', '未确认') THEN po.total_amount_cents ELSE 0 END), 0) AS no_invoice_cents,
-            COALESCE(SUM(CASE WHEN po.payment_method='员工垫付' AND po.payment_status<>'已付款' THEN po.total_amount_cents ELSE 0 END), 0) AS reimbursement_cents,
-            COUNT(*) AS order_count
-        FROM purchase_orders po WHERE {where}
-    """, params).fetchone()
-    by_project = conn.execute(f"""
-        SELECT COALESCE(pr.name, '待归集') AS label,
-               SUM(po.total_amount_cents) AS amount_cents,
-               COUNT(*) AS order_count
-        FROM purchase_orders po LEFT JOIN projects pr ON po.project_id=pr.id
-        WHERE {where}
-        GROUP BY COALESCE(pr.name, '待归集')
-        ORDER BY amount_cents DESC LIMIT 8
-    """, params).fetchall()
-    by_merchant = conn.execute(f"""
-        SELECT po.merchant_name_snapshot AS label,
-               SUM(po.total_amount_cents) AS amount_cents,
-               COUNT(*) AS order_count
-        FROM purchase_orders po WHERE {where}
-        GROUP BY po.merchant_name_snapshot
-        ORDER BY amount_cents DESC LIMIT 8
-    """, params).fetchall()
-    year, mon = map(int, month.split("-"))
-    prev_month = f"{year - 1}-12" if mon == 1 else f"{year}-{mon - 1:02d}"
-    prev_params = [prev_month] + ([project_id] if project_id else [])
-    previous_cents = conn.execute(
-        f"SELECT COALESCE(SUM(po.total_amount_cents), 0) FROM purchase_orders po WHERE {where}",
-        prev_params
-    ).fetchone()[0]
-    conn.close()
-    result = dict(summary)
-    result["previous_cents"] = previous_cents
-    return {
-        "summary": result,
-        "by_project": [dict(row) for row in by_project],
-        "by_merchant": [dict(row) for row in by_merchant],
-    }
+    return procurement_service.get_purchase_dashboard(month, project_id)
 
 
 # ==================== 施工工程量与验收 ====================

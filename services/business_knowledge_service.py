@@ -188,11 +188,7 @@ _LABOR_COST_WORDS = (
     "工钱",
 )
 
-_PROJECT_ALIASES = {
-    "澄湖": "澄湖药业",
-    "屹峰": "屹峰药业",
-    "朗润": "朗润药业",
-}
+from services.business_profile import PROJECT_ALIASES as _PROJECT_ALIASES
 
 
 def normalize_text(value):

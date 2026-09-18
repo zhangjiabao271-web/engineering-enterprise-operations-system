@@ -1,10 +1,13 @@
 # ===== 敏感信息（绝不入库） =====
 config.ini
+ai_credentials.dat
 .env
 *.key
 .db_key
 
 # ===== 数据库与备份 =====
+backups/
+qa/
 *.db
 *.db-journal
 *.db-wal
@@ -34,6 +37,7 @@ check.txt
 _cost_*.py
 _parsed_*.json
 _screenshot_*.png
+qa_ai_ui_*/
 
 # ===== WorkBuddy 本地数据 =====
 .workbuddy/
@@ -51,3 +55,5 @@ _screenshot_*.png
 Thumbs.db
 .idea/
 .vscode/
+
+# 开源发布副本（独立 git 仓库）

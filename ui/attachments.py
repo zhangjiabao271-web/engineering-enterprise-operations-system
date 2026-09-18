@@ -8,7 +8,9 @@ from services import attachment_service
 from ui.theme import style_dialog
 
 
-def open_attachment_manager(parent, entity_type, entity_id, title):
+def open_attachment_manager(
+    parent, entity_type, entity_id, title, on_change=None
+):
     dialog = ttk.Toplevel(parent)
     dialog.title(f"{title} · 附件")
     style_dialog(
@@ -58,7 +60,7 @@ def open_attachment_manager(parent, entity_type, entity_id, title):
                 "", END, iid=str(row["id"]),
                 values=(
                     row["id"],
-                    row["original_name"],
+                    row["original_name"] if row["file_exists"] else f"[文件缺失] {row['original_name']}",
                     row["category"],
                     row["description"] or "",
                     row["created_at"][:19].replace("T", " "),
@@ -85,6 +87,8 @@ def open_attachment_manager(parent, entity_type, entity_id, title):
             )
             return
         refresh()
+        if on_change:
+            on_change()
 
     def open_file():
         selected = tree.selection()
@@ -121,6 +125,8 @@ def open_attachment_manager(parent, entity_type, entity_id, title):
             [int(item) for item in selected]
         )
         refresh()
+        if on_change:
+            on_change()
 
     footer = ttk.Frame(dialog, padding=(18, 8, 18, 16))
     footer.pack(fill=X)

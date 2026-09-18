@@ -11,15 +11,18 @@ def _target_project(conn, name):
     rows = conn.execute(
         "SELECT id FROM projects WHERE name=? ORDER BY id", (name,)
     ).fetchall()
-    if len(rows) != 1:
+    if len(rows) > 1:
         raise RuntimeError(f"项目“{name}”必须唯一存在")
-    return rows[0]["id"]
+    # 全新部署没有历史项目，本迁移无事可做，跳过而非报错
+    return rows[0]["id"] if rows else None
 
 
 def normalize_project_aliases(conn):
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     for alias, canonical in ALIASES.items():
         project_id = _target_project(conn, canonical)
+        if project_id is None:
+            continue
         duplicate_project = conn.execute(
             "SELECT id FROM projects WHERE name=?", (alias,)
         ).fetchone()

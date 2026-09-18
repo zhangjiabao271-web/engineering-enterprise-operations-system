@@ -2,3 +2,5 @@ ttkbootstrap==1.20.4
 openpyxl==3.1.5
 requests==2.34.2
 charset-normalizer==3.4.4
+pypdf==6.10.0
+pypdf==6.10.0

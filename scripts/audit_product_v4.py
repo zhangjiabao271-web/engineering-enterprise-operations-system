@@ -69,7 +69,7 @@ coverage = conn.execute(
                                   THEN ra.receipt_id END) AS receipt_entries
        FROM projects p
        LEFT JOIN project_sites ps ON ps.project_id=p.id AND ps.is_active=1
-       LEFT JOIN purchase_orders po ON po.project_id=p.id AND po.status='有效'
+       LEFT JOIN purchase_orders po ON po.project_id=p.id AND po.status='active'
        LEFT JOIN construction_sites cs ON cs.project_id=p.id
        LEFT JOIN construction_records cr
          ON cr.site_id=cs.id AND cr.record_status='有效'
@@ -90,12 +90,12 @@ print(
     {
         "purchase_orders": scalar(
             conn,
-            "SELECT COUNT(*) FROM purchase_orders WHERE project_id IS NULL AND status='有效'",
+            "SELECT COUNT(*) FROM purchase_orders WHERE project_id IS NULL AND status='active'",
         ),
         "purchase_amount_cents": scalar(
             conn,
             """SELECT COALESCE(SUM(total_amount_cents), 0)
-               FROM purchase_orders WHERE project_id IS NULL AND status='有效'""",
+               FROM purchase_orders WHERE project_id IS NULL AND status='active'""",
         ),
     }
 )

@@ -16,6 +16,7 @@ from .finance_page import ReceivablePage
 from .cost_page import CostLedgerPage
 from .project_workspace_page import ProjectWorkspacePage
 from .data_governance_page import DataGovernancePage
+from .funds_page import FundsPage
 
 __all__ = [
     "SupplierPage",
@@ -34,4 +35,5 @@ __all__ = [
     "CostLedgerPage",
     "ProjectWorkspacePage",
     "DataGovernancePage",
+    "FundsPage",
 ]

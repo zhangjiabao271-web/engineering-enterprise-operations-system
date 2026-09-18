@@ -3,14 +3,14 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import uuid4
 
-from db.connection import get_connection
+from db.connection import db_transaction, db_read
+from services.business_profile import PROJECT_ALIASES as _PROJECT_ALIASES
 
 
+# 别名→标准项目名（含标准名自身），部署相关名称集中在 business_profile
 PROJECT_SITE_ALIASES = {
-    "澄湖": "澄湖药业",
-    "澄湖药业": "澄湖药业",
-    "屹峰": "屹峰药业",
-    "屹峰药业": "屹峰药业",
+    **_PROJECT_ALIASES,
+    **{name: name for name in _PROJECT_ALIASES.values()},
 }
 
 RATE_ADJUSTMENT_MODES = {
@@ -141,8 +141,7 @@ def _resolve_attribution(conn, data):
 
 def suggest_project_for_site(site_text):
     """Best-effort project suggestion for a site name (exact match only)."""
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         project_id, site_id = _resolve_project(
             conn, {"construction_site": site_text}
         )
@@ -156,14 +155,10 @@ def suggest_project_for_site(site_text):
         if result:
             result["project_site_id"] = site_id
         return result
-    finally:
-        conn.close()
 
 
 def add_worker(data):
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         now = _now()
         rate_minor = _minor(data.get("daily_rate", 0))
         if rate_minor < 0:
@@ -191,18 +186,11 @@ def add_worker(data):
                          'worker_creation', 'active', ?)""",
             (str(uuid4()), worker_id, rate_minor, date.today().isoformat(), now),
         )
-        conn.commit()
         return worker_id
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def update_worker(worker_id, data):
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         existing = conn.execute(
             "SELECT daily_rate FROM workers WHERE id=?", (worker_id,)
         ).fetchone()
@@ -221,19 +209,12 @@ def update_worker(worker_id, data):
                 worker_id,
             ),
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def delete_workers(worker_ids):
     if not worker_ids:
         return
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         placeholders = ",".join("?" * len(worker_ids))
         worker_ids = [int(value) for value in worker_ids]
         count = conn.execute(
@@ -242,21 +223,24 @@ def delete_workers(worker_ids):
         ).fetchone()[0]
         if count:
             raise ValueError("所选工人已有工天记录，不能删除；可以将状态改为“离职”。")
+        adjusted = conn.execute(
+            f"SELECT COUNT(*) FROM labor_rate_adjustments WHERE worker_id IN ({placeholders})",
+            tuple(worker_ids),
+        ).fetchone()[0]
+        if adjusted:
+            raise ValueError("所选工人已有调薪记录，不能删除；可以将状态改为“离职”。")
+        conn.execute(
+            f"DELETE FROM worker_rate_versions WHERE worker_id IN ({placeholders})",
+            tuple(worker_ids),
+        )
         conn.execute(
             f"DELETE FROM workers WHERE id IN ({placeholders})",
             tuple(worker_ids),
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def get_workers(keyword="", active_only=False):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = "SELECT * FROM workers WHERE 1=1"
         params = []
         if keyword:
@@ -267,17 +251,12 @@ def get_workers(keyword="", active_only=False):
         sql += " ORDER BY CASE status WHEN '在职' THEN 1 ELSE 2 END, name"
         rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
-    finally:
-        conn.close()
 
 
 def get_worker_by_id(worker_id):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         row = conn.execute("SELECT * FROM workers WHERE id=?", (worker_id,)).fetchone()
         return dict(row) if row else None
-    finally:
-        conn.close()
 
 
 def _effective_rate_minor(conn, worker_id, work_date):
@@ -300,27 +279,21 @@ def _effective_rate_minor(conn, worker_id, work_date):
 
 def get_effective_worker_rate(worker_id, work_date):
     work_date = _iso_date(work_date, "工天日期").isoformat()
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         return _effective_rate_minor(conn, int(worker_id), work_date) / 100
-    finally:
-        conn.close()
 
 
 def get_effective_worker_rates(worker_ids, work_date):
     if not worker_ids:
         return {}
     work_date = _iso_date(work_date, "工天日期").isoformat()
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         return {
             int(worker_id): _effective_rate_minor(
                 conn, int(worker_id), work_date
             ) / 100
             for worker_id in worker_ids
         }
-    finally:
-        conn.close()
 
 
 def _work_log_amounts(conn, data):
@@ -394,9 +367,7 @@ def _validate_daily_work_limit(conn, entries, exclude_log_id=None):
 
 def add_work_log(data):
     data = _normalize_work_log_data(data)
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         project_id, site_id = _resolve_attribution(conn, data)
         amounts = _work_log_amounts(conn, data)
         _validate_daily_work_limit(conn, [(data, amounts)])
@@ -429,22 +400,14 @@ def add_work_log(data):
                 now,
             ),
         )
-        conn.commit()
         return cursor.lastrowid
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def add_work_logs_batch(entries):
     if not entries:
         return 0
     entries = [_normalize_work_log_data(data) for data in entries]
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         now = _now()
         organization_id = _organization_id(conn)
         prepared = []
@@ -484,20 +447,12 @@ def add_work_logs_batch(entries):
                     now,
                 ),
             )
-        conn.commit()
         return len(entries)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def update_work_log(log_id, data):
     data = _normalize_work_log_data(data)
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         project_id, site_id = _resolve_attribution(conn, data)
         amounts = _work_log_amounts(conn, data)
         _validate_daily_work_limit(conn, [(data, amounts)], exclude_log_id=log_id)
@@ -535,19 +490,12 @@ def update_work_log(log_id, data):
             if locked and locked["rate_locked"]:
                 raise ValueError("工天记录的工资已锁定，请先解除锁定")
             raise ValueError("工天记录不存在或已作废")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def set_work_logs_overtime(log_ids, is_overtime):
     if not log_ids:
         return 0
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         placeholders = ",".join("?" * len(log_ids))
         result = conn.execute(
             f"""UPDATE work_logs
@@ -556,13 +504,7 @@ def set_work_logs_overtime(log_ids, is_overtime):
                   AND COALESCE(status, 'active')='active'""",
             (1 if is_overtime else 0, _now(), *log_ids),
         )
-        conn.commit()
         return result.rowcount
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def list_work_log_project_options(include_project_id=None):
@@ -572,8 +514,7 @@ def list_work_log_project_options(include_project_id=None):
     still retain its closed project while being edited, so callers can include
     that one project explicitly.
     """
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         where_clause = "status<>'已关闭'"
         params = []
         if include_project_id:
@@ -594,8 +535,6 @@ def list_work_log_project_options(include_project_id=None):
                      id DESC
         """
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
-    finally:
-        conn.close()
 
 
 def list_work_log_site_options(project_id):
@@ -606,8 +545,7 @@ def list_work_log_site_options(project_id):
     """
     if not project_id:
         return []
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         rows = conn.execute(
             """SELECT id, project_id, site_code, name
                FROM project_sites
@@ -616,15 +554,12 @@ def list_work_log_site_options(project_id):
             (int(project_id),),
         ).fetchall()
         return [dict(row) for row in rows]
-    finally:
-        conn.close()
 
 
 def delete_work_logs(log_ids):
     if not log_ids:
         return
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         placeholders = ",".join("?" * len(log_ids))
         locked = conn.execute(
             f"""SELECT COUNT(*) FROM work_logs
@@ -639,30 +574,20 @@ def delete_work_logs(log_ids):
                   AND COALESCE(status, 'active')='active'""",
             (_now(), *log_ids),
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def get_work_log_by_id(log_id):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         row = conn.execute(
             """SELECT * FROM work_logs
                WHERE id=? AND COALESCE(status, 'active')='active'""",
             (log_id,),
         ).fetchone()
         return dict(row) if row else None
-    finally:
-        conn.close()
 
 
 def get_work_logs(month="", keyword=""):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """
             SELECT wl.*, w.name AS worker_name, w.trade,
                    COALESCE(p.name, '') AS project_name
@@ -684,14 +609,11 @@ def get_work_logs(month="", keyword=""):
             params.extend([f"%{keyword}%"] * 6)
         sql += " ORDER BY wl.work_date DESC, wl.id DESC"
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
-    finally:
-        conn.close()
 
 
 def get_labor_cost_summary(start_date=None, end_date=None, project_id=None):
     """Aggregate labor cost with chart-ready breakdowns and traceable rows."""
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         conditions = ["COALESCE(wl.status, 'active')='active'"]
         params = []
         if start_date:
@@ -779,13 +701,10 @@ def get_labor_cost_summary(start_date=None, end_date=None, project_id=None):
             ),
             "details": details,
         }
-    finally:
-        conn.close()
 
 
 def get_work_months():
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         return [
             row["month"]
             for row in conn.execute(
@@ -797,8 +716,6 @@ def get_work_months():
             ).fetchall()
             if row["month"]
         ]
-    finally:
-        conn.close()
 
 
 def _adjustment_parameters(data):
@@ -992,19 +909,14 @@ def _preview_rate_adjustment(conn, data):
 
 
 def preview_rate_adjustment(data):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         preview = _preview_rate_adjustment(conn, data)
         preview.pop("_rows", None)
         return preview
-    finally:
-        conn.close()
 
 
 def apply_rate_adjustment(data):
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         preview = _preview_rate_adjustment(conn, data)
         now = _now()
         effective_from = preview["effective_from"]
@@ -1109,21 +1021,14 @@ def apply_rate_adjustment(data):
                     row["work_log_id"],
                 ),
             )
-        conn.commit()
         result = dict(preview)
         result.pop("_rows", None)
         result["adjustment_id"] = adjustment_id
         return result
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def list_rate_adjustments(worker_id, limit=20):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         return [
             dict(row)
             for row in conn.execute(
@@ -1135,17 +1040,13 @@ def list_rate_adjustments(worker_id, limit=20):
                 (int(worker_id), int(limit)),
             ).fetchall()
         ]
-    finally:
-        conn.close()
 
 
 def set_work_logs_rate_locked(log_ids, locked, reason=""):
     if not log_ids:
         return 0
     ids = [int(value) for value in log_ids]
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         placeholders = ",".join("?" * len(ids))
         rows = conn.execute(
             f"""SELECT id, COALESCE(rate_locked, 0) AS rate_locked
@@ -1181,18 +1082,11 @@ def set_work_logs_rate_locked(log_ids, locked, reason=""):
                     now,
                 ),
             )
-        conn.commit()
         return len(changed)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def get_work_dashboard(month):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         params = (month,)
         summary = conn.execute(
             """SELECT COALESCE(SUM(work_days), 0) AS total_days,
@@ -1252,8 +1146,6 @@ def get_work_dashboard(month):
             "by_worker": [dict(row) for row in by_worker],
             "by_site": [dict(row) for row in by_site],
         }
-    finally:
-        conn.close()
 
 
 def get_construction_sites(active_only=True):

@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import sqlite3
 import sys
 import tempfile
@@ -31,9 +30,10 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="project_aliases_") as temp_dir:
         test_database = Path(temp_dir) / "supplier_data.db"
-        shutil.copy2(args.database, test_database)
-        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        from db.backup import backup_database
+        backup_database(args.database, test_database)
 
         before = sqlite3.connect(test_database)
         if scalar(

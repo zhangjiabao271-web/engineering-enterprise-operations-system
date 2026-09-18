@@ -10,7 +10,11 @@ from ttkbootstrap.widgets.scrolled import ScrolledFrame
 
 import ai_engine
 from ai_client import AIError, DEFAULT_API_BASE, DEFAULT_MODEL
-from services import ai_conversation_service, project_service
+from services import (
+    ai_conversation_service,
+    ai_operating_query_service,
+    project_service,
+)
 from ui.charts import HorizontalBreakdown, MonthlyBarChart
 from ui.dialogs import add_form_actions, build_form_dialog, safe_init_loaders
 from ui.theme import COLORS, FONT_BODY, style_dialog
@@ -19,8 +23,9 @@ from ui.theme import COLORS, FONT_BODY, style_dialog
 class AIAssistantPage:
     """Continuous, read-only operating conversation workspace."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, navigate_to=None):
         self.parent = parent
+        self.navigate_to = navigate_to
         self.scope_map = {"全公司经营总览": None}
         self.scope_var = ttk.StringVar(value="全公司经营总览")
         self.model_status_var = ttk.StringVar()
@@ -43,10 +48,19 @@ class AIAssistantPage:
         self._context_labels = []
         self._turn_results = queue.Queue()
         self._turn_poll_scheduled = False
+        self._generation_token = 0
+        self._cancel_event = None
+        self._stream_text = ""
+        self._stream_label = None
         self.build_ui()
         safe_init_loaders(
             "AI 经营助手",
-            [self.load_projects, self.check_config, self.refresh_conversation_list],
+            [
+                self.load_projects,
+                self.check_config,
+                self.refresh_conversation_list,
+                self.load_daily_briefing,
+            ],
         )
 
     def build_ui(self):
@@ -183,21 +197,10 @@ class AIAssistantPage:
         composer = ttk.Frame(panel, style="ChatPane.TFrame", padding=(14, 10))
         composer.grid(row=2, column=0, sticky=EW)
         composer.columnconfigure(0, weight=1)
-        suggestions = ttk.Frame(composer, style="ChatPane.TFrame")
-        suggestions.grid(row=0, column=0, columnspan=2, sticky=EW, pady=(0, 7))
-        for index, question in enumerate(
-            (
-                "按项目拆开看",
-                "查看数据缺口",
-                "和去年比较",
-            )
-        ):
-            ttk.Button(
-                suggestions,
-                text=question,
-                bootstyle="secondary-outline",
-                command=lambda value=question: self.set_input(value),
-            ).pack(side=LEFT, padx=(0 if index == 0 else 6, 0))
+        self.suggestions = ttk.Frame(composer, style="ChatPane.TFrame")
+        self.suggestions.grid(
+            row=0, column=0, columnspan=2, sticky=EW, pady=(0, 7)
+        )
 
         self.input_text = scrolledtext.ScrolledText(
             composer,
@@ -223,6 +226,14 @@ class AIAssistantPage:
             command=self.send,
         )
         self.send_btn.grid(row=1, column=1, sticky=NS)
+        self.stop_btn = ttk.Button(
+            composer,
+            text="停止生成",
+            bootstyle="danger-outline",
+            command=self.stop_generation,
+        )
+        self.stop_btn.grid(row=1, column=1, sticky=NS)
+        self.stop_btn.grid_remove()
         ttk.Label(
             composer,
             text="Ctrl + Enter 发送 · 当前对话会继承右侧范围",
@@ -230,10 +241,11 @@ class AIAssistantPage:
         ).grid(row=2, column=0, columnspan=2, sticky=W, pady=(6, 0))
 
     def _build_context_panel(self, workspace):
-        panel = ttk.Frame(
+        panel = ScrolledFrame(
             workspace,
             style="Card.TFrame",
             padding=(13, 12),
+            autohide=False,
         )
         panel.grid(row=0, column=2, sticky=NSEW)
         self.context_panel = panel
@@ -252,18 +264,18 @@ class AIAssistantPage:
             justify=LEFT,
         ).grid(row=1, column=0, sticky=EW, pady=(3, 12))
 
-        self._context_section(panel, 2, "项目范围")
+        self._context_section(panel, 4, "项目范围")
         self.scope_combo = ttk.Combobox(
             panel,
             textvariable=self.scope_var,
             state="readonly",
         )
-        self.scope_combo.grid(row=3, column=0, sticky=EW, pady=(4, 10))
+        self.scope_combo.grid(row=5, column=0, sticky=EW, pady=(4, 10))
         self.scope_combo.bind("<<ComboboxSelected>>", self.on_scope_changed)
 
-        self._context_section(panel, 4, "已识别条件")
+        self._context_section(panel, 6, "已识别条件")
         context_box = ttk.Frame(panel, style="Card.TFrame")
-        context_box.grid(row=5, column=0, sticky=EW, pady=(4, 10))
+        context_box.grid(row=7, column=0, sticky=EW, pady=(4, 10))
         context_box.columnconfigure(0, weight=1)
         for row, variable in enumerate(
             (
@@ -283,7 +295,7 @@ class AIAssistantPage:
             label.grid(row=row, column=0, sticky=EW, pady=(0, 5))
             self._context_labels.append(label)
 
-        self._context_section(panel, 6, "数据口径")
+        self._context_section(panel, 8, "数据口径")
         policy = ttk.Label(
             panel,
             text=(
@@ -294,10 +306,10 @@ class AIAssistantPage:
             wraplength=205,
             justify=LEFT,
         )
-        policy.grid(row=7, column=0, sticky=EW, pady=(4, 10))
+        policy.grid(row=9, column=0, sticky=EW, pady=(4, 10))
         self._context_labels.append(policy)
 
-        self._context_section(panel, 8, "本次已加载")
+        self._context_section(panel, 10, "本次已加载")
         modules_label = ttk.Label(
             panel,
             textvariable=self.context_modules_var,
@@ -305,8 +317,13 @@ class AIAssistantPage:
             wraplength=205,
             justify=LEFT,
         )
-        modules_label.grid(row=9, column=0, sticky=EW, pady=(4, 10))
+        modules_label.grid(row=11, column=0, sticky=EW, pady=(4, 10))
         self._context_labels.append(modules_label)
+
+        self._context_section(panel, 2, "今日经营行动")
+        self.reminder_frame = ttk.Frame(panel, style="Card.TFrame")
+        self.reminder_frame.grid(row=3, column=0, sticky=NSEW, pady=(4, 10))
+        self.reminder_frame.columnconfigure(0, weight=1)
 
         ttk.Button(
             panel,
@@ -328,6 +345,58 @@ class AIAssistantPage:
             label = f"{project['name']} · {project['project_code']}"
             self.scope_map[label] = project["id"]
         self.scope_combo["values"] = list(self.scope_map)
+
+    def load_daily_briefing(self):
+        briefing = ai_operating_query_service.get_daily_briefing()
+        for widget in self.suggestions.winfo_children():
+            widget.destroy()
+        suggestions = briefing.get("suggestions") or [
+            {"label": "数据缺口", "question": "哪些项目还有数据缺口？"}
+        ]
+        for index, suggestion in enumerate(suggestions[:3]):
+            question = suggestion.get("question") or ""
+            ttk.Button(
+                self.suggestions,
+                text=suggestion.get("label") or question,
+                bootstyle="secondary-outline",
+                command=lambda value=question: self.set_input(value),
+            ).pack(side=LEFT, padx=(0 if index == 0 else 6, 0))
+
+        for widget in self.reminder_frame.winfo_children():
+            widget.destroy()
+        for row, reminder in enumerate((briefing.get("reminders") or [])[:5]):
+            card = ttk.Frame(
+                self.reminder_frame,
+                style="ChatCandidate.TFrame",
+                padding=(8, 7),
+            )
+            card.grid(row=row, column=0, sticky=EW, pady=(0, 5))
+            card.columnconfigure(0, weight=1)
+            ttk.Label(
+                card,
+                text=reminder.get("title") or "经营提醒",
+                style="ChatCandidateTitle.TLabel",
+            ).grid(row=0, column=0, sticky=W)
+            ttk.Label(
+                card,
+                text=reminder.get("value") or "--",
+                style="ChatCandidateText.TLabel",
+            ).grid(row=1, column=0, sticky=W, pady=(2, 0))
+            actions = ttk.Frame(card, style="ChatCandidate.TFrame")
+            actions.grid(row=2, column=0, sticky=W, pady=(5, 0))
+            ttk.Button(
+                actions,
+                text="问助手",
+                bootstyle="link",
+                command=lambda value=reminder.get("question"): self.set_input(value),
+            ).pack(side=LEFT)
+            if self.navigate_to and reminder.get("page_key"):
+                ttk.Button(
+                    actions,
+                    text="打开页面",
+                    bootstyle="link",
+                    command=lambda key=reminder.get("page_key"): self.open_business_page(key),
+                ).pack(side=LEFT, padx=(5, 0))
 
     def check_config(self):
         cfg = ai_engine.get_ai_config()
@@ -455,7 +524,7 @@ class AIAssistantPage:
         if message.get("message_type") == "confirmation":
             self._render_confirmation_actions(content, message, metadata)
         elif message.get("message_type") == "answer":
-            self._render_answer_actions(content, metadata)
+            self._render_answer_actions(content, message, metadata)
         elif message.get("message_type") == "error":
             ttk.Button(
                 content,
@@ -526,7 +595,7 @@ class AIAssistantPage:
             command=self.cancel_confirmation,
         ).pack(anchor=W, pady=(8, 0))
 
-    def _render_answer_actions(self, parent, metadata):
+    def _render_answer_actions(self, parent, message, metadata):
         sources = metadata.get("sources") or []
         if sources:
             ttk.Separator(parent).pack(fill=X, pady=(10, 8))
@@ -547,6 +616,34 @@ class AIAssistantPage:
                 bootstyle="link",
                 command=lambda value=question: self.retry_question(value),
             ).pack(anchor=W, pady=(7, 0))
+        feedback = ttk.Frame(parent, style="ChatAssistant.TFrame")
+        feedback.pack(anchor=W, pady=(4, 0))
+        ttk.Label(
+            feedback,
+            text="这条回答有帮助吗？",
+            style="ChatAssistant.TLabel",
+        ).pack(side=LEFT)
+        selected = message.get("feedback")
+        for rating, text in (("useful", "有用"), ("not_useful", "没用")):
+            ttk.Button(
+                feedback,
+                text=("✓ " if selected == rating else "") + text,
+                bootstyle="link",
+                command=lambda value=rating, message_id=message.get("id"): self.set_feedback(
+                    message_id, value
+                ),
+            ).pack(side=LEFT, padx=(5, 0))
+
+    def set_feedback(self, message_id, rating):
+        if not message_id:
+            return
+        ai_conversation_service.set_message_feedback(message_id, rating)
+        if self.current_conversation_id:
+            self.load_conversation(self.current_conversation_id)
+
+    def open_business_page(self, page_key):
+        if self.navigate_to and page_key:
+            self.navigate_to(page_key)
 
     def send(self):
         self.dispatch_question(
@@ -593,8 +690,22 @@ class AIAssistantPage:
         conversation = ai_conversation_service.get_conversation(conversation_id)
         project_id = conversation.get("project_id")
         context = dict(conversation.get("context") or {})
+        self._generation_token += 1
+        generation_token = self._generation_token
+        cancel_event = threading.Event()
+        self._cancel_event = cancel_event
         self._set_busy(True)
         self._schedule_turn_poll()
+
+        def on_chunk(value):
+            if not cancel_event.is_set():
+                self._turn_results.put(
+                    {
+                        "type": "stream",
+                        "token": generation_token,
+                        "text": value,
+                    }
+                )
 
         def task():
             try:
@@ -603,7 +714,11 @@ class AIAssistantPage:
                     project_id=project_id,
                     conversation_context=context,
                     history=history,
+                    on_chunk=on_chunk,
+                    cancel_event=cancel_event,
                 )
+                if cancel_event.is_set():
+                    return
                 updated = ai_conversation_service.update_context(
                     conversation_id,
                     result.get("context_updates") or {},
@@ -634,6 +749,8 @@ class AIAssistantPage:
                         {"pending_confirmation": pending},
                     )
             except AIError as error:
+                if error.code == "cancelled" or cancel_event.is_set():
+                    return
                 error_text = str(error or "未知 AI 错误")
                 ai_conversation_service.add_message(
                     conversation_id,
@@ -647,6 +764,8 @@ class AIAssistantPage:
                     },
                 )
             except Exception as error:
+                if cancel_event.is_set():
+                    return
                 ai_conversation_service.add_message(
                     conversation_id,
                     "assistant",
@@ -658,7 +777,15 @@ class AIAssistantPage:
                     message_type="error",
                     metadata={"question": question},
                 )
-            self._turn_results.put(conversation_id)
+            finally:
+                self._turn_results.put(
+                    {
+                        "type": "done",
+                        "token": generation_token,
+                        "conversation_id": conversation_id,
+                        "cancelled": cancel_event.is_set(),
+                    }
+                )
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -671,17 +798,34 @@ class AIAssistantPage:
     def _poll_turn_results(self):
         self._turn_poll_scheduled = False
         try:
-            conversation_id = self._turn_results.get_nowait()
+            event = self._turn_results.get_nowait()
         except queue.Empty:
             if self.busy and self.parent.winfo_exists():
                 self._schedule_turn_poll()
             return
-        self._finish_turn(conversation_id)
+        if event.get("token") != self._generation_token:
+            if self.busy:
+                self._schedule_turn_poll()
+            return
+        if event.get("type") == "stream":
+            self._update_stream(event.get("text") or "")
+            self._schedule_turn_poll()
+            return
+        self._finish_turn(
+            event.get("conversation_id"), cancelled=event.get("cancelled", False)
+        )
 
     def _set_busy(self, busy):
         self.busy = busy
         self.send_btn.config(state="disabled" if busy else "normal")
         if busy:
+            self.send_btn.grid_remove()
+            self.stop_btn.grid()
+        else:
+            self.stop_btn.grid_remove()
+            self.send_btn.grid()
+        if busy:
+            self._stream_text = ""
             self.turn_status_var.set("正在读取本地经营台账并分析…")
             self.pending_frame = ttk.Frame(
                 self.thread,
@@ -694,19 +838,44 @@ class AIAssistantPage:
                 padx=(4, 44),
                 pady=(0, 12),
             )
-            ttk.Label(
+            self._stream_label = ttk.Label(
                 self.pending_frame,
                 text="正在核对项目、供应商、材料、时间范围和数据口径…",
                 style="ChatAssistant.TLabel",
-            ).pack(anchor=W)
+                justify=LEFT,
+                wraplength=500,
+            )
+            self._stream_label.pack(anchor=W, fill=X)
             self.thread.after_idle(lambda: self.thread.yview_moveto(1.0))
         elif self.pending_frame and self.pending_frame.winfo_exists():
             self.pending_frame.destroy()
             self.pending_frame = None
+            self._stream_label = None
 
-    def _finish_turn(self, conversation_id):
+    def _update_stream(self, text):
+        self._stream_text += text
+        if self._stream_label and self._stream_label.winfo_exists():
+            self.turn_status_var.set("DeepSeek 正在生成回答，可随时停止")
+            self._stream_label.configure(
+                text=self._stream_text or "正在生成回答…"
+            )
+            self.thread.after_idle(lambda: self.thread.yview_moveto(1.0))
+
+    def stop_generation(self):
+        if not self.busy or not self._cancel_event:
+            return
+        self._cancel_event.set()
+        self.turn_status_var.set("正在停止；不会保存未完成的回答…")
+        self.stop_btn.config(state="disabled")
+
+    def _finish_turn(self, conversation_id, cancelled=False):
         self._set_busy(False)
+        self.stop_btn.config(state="normal")
+        self._cancel_event = None
+        if cancelled:
+            self.turn_status_var.set("本次生成已停止，未保存未完成回答")
         self.check_config()
+        self.load_daily_briefing()
         self.refresh_conversation_list(
             select_id=(
                 conversation_id
@@ -791,6 +960,8 @@ class AIAssistantPage:
 
     @staticmethod
     def _source_kpis(source):
+        if source.get("kpis"):
+            return tuple(tuple(item) for item in source["kpis"][:4])
         summary = source.get("summary") or {}
         if source.get("view_type") == "labor":
             return (
@@ -811,7 +982,36 @@ class AIAssistantPage:
         )
 
     @staticmethod
-    def _source_table_spec(view_type):
+    def _source_table_spec(source):
+        view_type = source.get("view_type") or "procurement"
+        custom_columns = source.get("columns") or []
+        if custom_columns:
+            columns = tuple(item["key"] for item in custom_columns)
+            headings = {item["key"]: item["label"] for item in custom_columns}
+            widths = {
+                item["key"]: max(90, min(180, len(item["label"]) * 22))
+                for item in custom_columns
+            }
+            numeric = {
+                item["key"]
+                for item in custom_columns
+                if item.get("kind") in ("money", "integer", "percent")
+            }
+
+            def values(row):
+                rendered = []
+                for item in custom_columns:
+                    value = row.get(item["key"])
+                    if item.get("kind") == "money":
+                        value = AIAssistantPage._money(value)
+                    elif item.get("kind") == "percent":
+                        value = "--" if value is None else f"{float(value):.1f}%"
+                    elif item.get("kind") == "integer":
+                        value = int(value or 0)
+                    rendered.append("" if value is None else value)
+                return tuple(rendered)
+
+            return columns, headings, widths, numeric, values
         if view_type == "labor":
             columns = (
                 "date", "worker", "project", "site", "work_type",
@@ -921,46 +1121,47 @@ class AIAssistantPage:
             monthly_subtitle = "按工天日期汇总，金额从零基线比较"
             ranking_title = "人员人工成本排行"
             ranking_subtitle = "按金额排序，同时显示工天与记录数"
-        else:
+        elif view_type == "procurement":
             monthly, ranking, ranking_title, ranking_subtitle = (
                 self._procurement_breakdowns(details)
             )
             monthly_title = "月度含税材料金额"
             monthly_subtitle = "按采购日期汇总，不含运费"
 
-        charts = ttk.Frame(body)
-        charts.pack(fill=X, pady=(0, 10))
-        trend_card = ttk.Frame(charts, style="Card.TFrame", padding=(12, 10))
-        trend_card.grid(row=0, column=0, sticky=NSEW, padx=(0, 5))
-        ttk.Label(trend_card, text=monthly_title, style="CardTitle.TLabel").pack(anchor=W)
-        ttk.Label(trend_card, text=monthly_subtitle, style="CardText.TLabel").pack(
-            anchor=W, pady=(2, 6)
-        )
-        trend_chart = MonthlyBarChart(trend_card, height=220)
-        trend_chart.pack(fill=BOTH, expand=True)
-        trend_chart.set_data(monthly)
+        if view_type in ("labor", "procurement"):
+            charts = ttk.Frame(body)
+            charts.pack(fill=X, pady=(0, 10))
+            trend_card = ttk.Frame(charts, style="Card.TFrame", padding=(12, 10))
+            trend_card.grid(row=0, column=0, sticky=NSEW, padx=(0, 5))
+            ttk.Label(trend_card, text=monthly_title, style="CardTitle.TLabel").pack(anchor=W)
+            ttk.Label(trend_card, text=monthly_subtitle, style="CardText.TLabel").pack(
+                anchor=W, pady=(2, 6)
+            )
+            trend_chart = MonthlyBarChart(trend_card, height=220)
+            trend_chart.pack(fill=BOTH, expand=True)
+            trend_chart.set_data(monthly)
 
-        rank_card = ttk.Frame(charts, style="Card.TFrame", padding=(12, 10))
-        rank_card.grid(row=0, column=1, sticky=NSEW, padx=(5, 0))
-        ttk.Label(rank_card, text=ranking_title, style="CardTitle.TLabel").pack(anchor=W)
-        ttk.Label(rank_card, text=ranking_subtitle, style="CardText.TLabel").pack(
-            anchor=W, pady=(2, 6)
-        )
-        rank_chart = HorizontalBreakdown(
-            rank_card,
-            limit=6,
-            height=220,
-            empty_text=(
-                "当前范围暂无人工成本"
-                if view_type == "labor"
-                else "当前范围暂无材料采购"
-            ),
-            other_label="其他人员" if view_type == "labor" else "其他材料",
-        )
-        rank_chart.pack(fill=BOTH, expand=True)
-        rank_chart.set_data(ranking)
-        charts.columnconfigure(0, weight=1, uniform="source_chart")
-        charts.columnconfigure(1, weight=1, uniform="source_chart")
+            rank_card = ttk.Frame(charts, style="Card.TFrame", padding=(12, 10))
+            rank_card.grid(row=0, column=1, sticky=NSEW, padx=(5, 0))
+            ttk.Label(rank_card, text=ranking_title, style="CardTitle.TLabel").pack(anchor=W)
+            ttk.Label(rank_card, text=ranking_subtitle, style="CardText.TLabel").pack(
+                anchor=W, pady=(2, 6)
+            )
+            rank_chart = HorizontalBreakdown(
+                rank_card,
+                limit=6,
+                height=220,
+                empty_text=(
+                    "当前范围暂无人工成本"
+                    if view_type == "labor"
+                    else "当前范围暂无材料采购"
+                ),
+                other_label="其他人员" if view_type == "labor" else "其他材料",
+            )
+            rank_chart.pack(fill=BOTH, expand=True)
+            rank_chart.set_data(ranking)
+            charts.columnconfigure(0, weight=1, uniform="source_chart")
+            charts.columnconfigure(1, weight=1, uniform="source_chart")
 
         detail_header = ttk.Frame(body)
         detail_header.pack(fill=X, pady=(0, 6))
@@ -972,9 +1173,7 @@ class AIAssistantPage:
         ).pack(side=LEFT, padx=(10, 0))
         table_box = ttk.Frame(body)
         table_box.pack(fill=BOTH, expand=True)
-        columns, headings, widths, numeric, row_values = self._source_table_spec(
-            view_type
-        )
+        columns, headings, widths, numeric, row_values = self._source_table_spec(source)
         tree = ttk.Treeview(table_box, columns=columns, show="headings")
         for column in columns:
             tree.heading(column, text=headings[column])
@@ -1009,6 +1208,16 @@ class AIAssistantPage:
             bootstyle="secondary",
             command=dialog.destroy,
         ).pack(side=RIGHT)
+        if self.navigate_to and source.get("page_key"):
+            ttk.Button(
+                footer,
+                text="打开业务页面",
+                bootstyle="primary",
+                command=lambda: (
+                    dialog.destroy(),
+                    self.open_business_page(source.get("page_key")),
+                ),
+            ).pack(side=RIGHT, padx=(0, 8))
 
     def new_conversation(self):
         if self.busy:
@@ -1195,7 +1404,7 @@ class AIAssistantPage:
             body,
             text=(
                 "本地事实查询不依赖模型；复杂经营分析使用 DeepSeek。"
-                "密钥只保存在本机 config.ini。"
+                "密钥使用当前 Windows 账户加密保存，不写入配置文件。"
             ),
             style="PageSub.TLabel",
             wraplength=470,

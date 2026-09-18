@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -23,9 +22,10 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="v4_full_cycle_") as temp_dir:
         test_database = Path(temp_dir) / "supplier_data.db"
-        shutil.copy2(args.database, test_database)
-        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        from db.backup import backup_database
+        backup_database(args.database, test_database)
 
         import database
         from db.connection import get_connection
@@ -58,7 +58,7 @@ def main():
                 "end_date": "2026-12-31",
                 "amount": "10000.00",
                 "status": "active",
-                "customer_name": "测试客户",
+                "customer_partner_id": project.get("customer_partner_id"),
             }
         )
         allocation_id = contract_service.create_allocation(
@@ -80,7 +80,7 @@ def main():
         )
         settlement_id = contract_service.create_settlement(
             {
-                "settlement_no": "TEST-V4-CH-001",
+                "settlement_no": "TEST-V4-JS-001",
                 "contract_id": contract_id,
                 "project_id": project["id"],
                 "settlement_date": "2026-07-30",

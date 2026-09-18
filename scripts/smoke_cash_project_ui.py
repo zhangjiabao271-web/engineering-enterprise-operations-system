@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -56,13 +55,18 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="cash_project_ui_") as temp_dir:
         test_database = Path(temp_dir) / "supplier_data.db"
-        shutil.copy2(args.database, test_database)
-        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        from db.backup import backup_database
+        backup_database(args.database, test_database)
 
         import database as db
         import ttkbootstrap as ttk
-        from pages import ContractManagementPage, ReceivablePage
+        from pages import (
+            ContractManagementPage,
+            ProjectManagementPage,
+            ReceivablePage,
+        )
         from services import contract_service, finance_service, project_service
         from tkinter import messagebox
         from ui.theme import configure_design_system
@@ -90,6 +94,7 @@ def main():
                 "customer_entity_type": "individual_business",
                 "business_mode": "cash",
                 "invoice_policy": "not_required",
+                "cash_agreed_amount": "1200.00",
                 "status": "进行中",
             }
         )
@@ -109,6 +114,7 @@ def main():
                 "customer_entity_type": "individual_business",
                 "business_mode": "cash",
                 "invoice_policy": "not_required",
+                "cash_agreed_amount": "800.00",
                 "status": "已完工",
             }
         )
@@ -170,6 +176,19 @@ def main():
         root.withdraw()
         configure_design_system(root)
         try:
+            project_host = ttk.Frame(root)
+            project_host.pack(fill="both", expand=True)
+            project_page = ProjectManagementPage(project_host)
+            project_page.open_project_dialog(project_id)
+            project_dialog = root.winfo_children()[-1]
+            agreed_amount = field_by_label(
+                project_dialog, ttk, "约定总额（元，可选）"
+            )
+            assert agreed_amount.grid_info(), "现金项目未显示约定总额"
+            assert agreed_amount.get() == "1200.00"
+            project_dialog.destroy()
+            project_host.destroy()
+
             contract_host = ttk.Frame(root)
             contract_host.pack(fill="both", expand=True)
             contract_page = ContractManagementPage(contract_host)
@@ -225,7 +244,8 @@ def main():
             finance_page.open_receipt_dialog()
             receipt_dialog = root.winfo_children()[-1]
             formal_allocation_label = (
-                "FORMAL-UI-CONTRACT → 正式发票余额界面验收项目"
+                "FORMAL-UI-CONTRACT · 固定总价 → "
+                "FORMAL-INVOICE-UI · 正式发票余额界面验收项目"
             )
             allocation_combo = combo_containing(
                 receipt_dialog, ttk, formal_allocation_label
@@ -280,12 +300,18 @@ def main():
             cash_project_combo.set(existing_project_label)
             cash_project_combo.event_generate("<<ComboboxSelected>>")
             root.update_idletasks()
-            settlement_combo = combo_containing(
-                receipt_dialog, ttk, "新增完工金额确认（本次同步建立）"
+            settlement_combo = field_by_label(
+                receipt_dialog, ttk, "完工金额确认 *"
             )
             existing_settlement_label = next(
                 label for label in settlement_combo.cget("values")
                 if label != "新增完工金额确认（本次同步建立）"
+            )
+            assert (
+                "新增完工金额确认（本次同步建立）"
+                not in settlement_combo.cget("values")
+            ), (
+                "已达到约定总额的现金项目仍允许新建完工确认"
             )
             settlement_combo.set(existing_settlement_label)
             settlement_combo.event_generate("<<ComboboxSelected>>")

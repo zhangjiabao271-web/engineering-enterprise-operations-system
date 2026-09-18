@@ -1,10 +1,15 @@
 from datetime import datetime
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 
-from services import contract_service, finance_service, project_service
+from services import (
+    collection_service,
+    contract_service,
+    finance_service,
+    project_service,
+)
 from ui.components import (
     BottomToolbar,
     DataTable,
@@ -24,6 +29,7 @@ class ReceivablePage:
         self.parent = parent
         self.show_void_var = ttk.BooleanVar(value=False)
         self.invoice_queue_var = ttk.StringVar(value="全部发票")
+        self.missing_attachments_var = ttk.BooleanVar(value=False)
         self.build_ui()
         safe_init_loaders("开票与回款", [self.refresh])
 
@@ -87,12 +93,21 @@ class ReceivablePage:
         overview_tab = ttk.Frame(self.notebook, padding=(0, 10, 0, 0))
         invoice_tab = ttk.Frame(self.notebook, padding=(0, 10, 0, 0))
         receipt_tab = ttk.Frame(self.notebook, padding=(0, 10, 0, 0))
+        collection_tab = ttk.Frame(self.notebook, padding=(0, 10, 0, 0))
         self.notebook.add(overview_tab, text="资金总览")
         self.notebook.add(invoice_tab, text="销项发票")
         self.notebook.add(receipt_tab, text="回款记录")
+        self.notebook.add(collection_tab, text="回款跟进")
+        from pages.historical_receivable_page import HistoricalReceivablePage
+        historical_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(historical_tab, text="历史旧账回收")
+        self.historical_page = HistoricalReceivablePage(historical_tab)
 
         self._build_overview(overview_tab)
+        self._build_collection_workbench(collection_tab)
 
+        invoice_filters = ttk.Frame(invoice_tab)
+        invoice_filters.pack(fill=X, pady=(0, 8))
         invoice_bar = BottomToolbar(
             invoice_tab,
             ttk.Button(
@@ -114,7 +129,7 @@ class ReceivablePage:
             variable=self.show_void_var,
             bootstyle="round-toggle",
             command=self.refresh,
-        ).pack(in_=invoice_bar, side=RIGHT)
+        ).pack(in_=invoice_filters, side=RIGHT)
         invoice_queue_combo = ttk.Combobox(
             invoice_tab,
             textvariable=self.invoice_queue_var,
@@ -125,18 +140,23 @@ class ReceivablePage:
         invoice_queue_combo.bind(
             "<<ComboboxSelected>>", lambda _event: self.refresh()
         )
-        invoice_queue_combo.pack(in_=invoice_bar, side=RIGHT, padx=(8, 12))
+        invoice_queue_combo.pack(in_=invoice_filters, side=RIGHT, padx=(8, 12))
         ttk.Label(invoice_tab, text="发票队列").pack(
-            in_=invoice_bar, side=RIGHT
+            in_=invoice_filters, side=RIGHT
         )
+        ttk.Checkbutton(
+            invoice_tab, text="仅看附件待补", variable=self.missing_attachments_var,
+            command=self.refresh,
+        ).pack(in_=invoice_filters, side=LEFT, padx=8)
         self.invoice_tree = self._table(
             invoice_tab,
             (
                 ("no", "发票号码", 150, W),
                 ("date", "开票日期", 95, CENTER),
+                ("attachment", "附件", 120, CENTER),
                 ("project", "项目", 150, W),
                 ("amount", "价税合计", 120, E),
-                ("received", "已关联回款", 120, E),
+                ("received", "已核销回款", 120, E),
                 ("balance", "发票余额", 120, E),
                 ("status", "回款状态", 85, CENTER),
                 ("buyer", "购买方", 150, W),
@@ -151,6 +171,10 @@ class ReceivablePage:
 
         BottomToolbar(
             receipt_tab,
+            ttk.Button(
+                receipt_tab, text="登记到账账户", bootstyle="primary-outline",
+                command=self.record_fund_receipt,
+            ),
             ttk.Button(
                 receipt_tab, text="修改回款", bootstyle="primary-outline",
                 command=self.edit_receipt,
@@ -172,7 +196,9 @@ class ReceivablePage:
                 ("amount", "回款金额", 130, E),
                 ("status", "收入归属", 120, CENTER),
                 ("method", "收款方式", 100, CENTER),
-                ("invoice", "关联发票", 145, W),
+                ("invoice", "核销发票", 145, W),
+                ("matched", "已抵发票", 115, E),
+                ("unmatched", "待匹配发票", 115, E),
                 ("settlement", "收入确认", 165, W),
                 ("payer", "付款方", 175, W),
                 ("contract", "合同 / 业务类型", 150, W),
@@ -228,6 +254,416 @@ class ReceivablePage:
             "<<NotebookTabChanged>>", lambda _event: self.refresh()
         )
 
+    def _build_collection_workbench(self, parent):
+        self.collection_view_var = ttk.StringVar(value="项目视图")
+        self.collection_action_filter_var = ttk.StringVar(value="全部应收")
+        self.collection_customer_filter = None
+        self.collection_project_rows = []
+        self.collection_customer_rows = []
+        self.collection_hint_var = ttk.StringVar()
+
+        view_combo = ttk.Combobox(
+            parent,
+            textvariable=self.collection_view_var,
+            values=("项目视图", "客户视图"),
+            state="readonly",
+            width=10,
+        )
+        view_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._refresh_collection_workbench(),
+        )
+        action_combo = ttk.Combobox(
+            parent,
+            textvariable=self.collection_action_filter_var,
+            values=("全部应收", "今日需跟进", "承诺逾期", "90天以上"),
+            state="readonly",
+            width=12,
+        )
+        action_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._refresh_collection_workbench(),
+        )
+        FilterBar(
+            parent,
+            ("查看", view_combo),
+            ("筛选", action_combo),
+            ttk.Label(
+                parent,
+                textvariable=self.collection_hint_var,
+                style="CardText.TLabel",
+            ),
+        )
+        actions = ttk.Frame(parent)
+        actions.pack(fill=X, pady=(0, 8))
+        for text, style, command in (
+            ("更新跟进", "primary-outline", self.open_collection_case_dialog),
+            ("查看跟进历史", "secondary-outline", self.open_collection_history),
+            ("显示全部客户", "secondary-outline", self.clear_collection_customer_filter),
+        ):
+            ttk.Button(
+                actions,
+                text=text,
+                bootstyle=style,
+                command=command,
+            ).pack(side=RIGHT, padx=(6, 0))
+
+        self.collection_table_host = ttk.Frame(parent)
+        self.collection_table_host.pack(fill=BOTH, expand=True)
+        self.collection_project_tree = self._table(
+            self.collection_table_host,
+            (
+                ("project", "项目 / 客户", 320, W),
+                ("receivable", "未回款", 120, E),
+                ("schedule", "承诺 / 跟进", 180, CENTER),
+                ("owner", "责任人", 90, CENTER),
+                ("status", "状态 / 账龄", 130, CENTER),
+                ("action", "下一步动作", 240, W),
+            ),
+            empty_text="当前没有待回款项目",
+            stretch=("project", "action"),
+            padding=10,
+        )
+        self.collection_project_tree.tree.bind(
+            "<Double-1>", lambda _event: self.open_collection_case_dialog()
+        )
+        self.collection_customer_tree = self._table(
+            self.collection_table_host,
+            (
+                ("customer", "客户", 280, W),
+                ("receivable", "未回款", 130, E),
+                ("aging", "最老账龄", 90, CENTER),
+                ("followup", "最近应跟进", 110, CENTER),
+                ("owner", "责任人", 100, CENTER),
+                ("status", "当前状态", 120, CENTER),
+                ("action", "下一步动作", 250, W),
+            ),
+            empty_text="当前没有待回款客户",
+            stretch=("customer", "action"),
+            padding=10,
+        )
+        self.collection_customer_tree.tree.bind(
+            "<Double-1>", lambda _event: self.drill_collection_customer()
+        )
+        self.collection_customer_tree.pack_forget()
+
+    def _collection_filtered_rows(self):
+        rows = list(self.collection_project_rows)
+        if self.collection_customer_filter is not None:
+            rows = [
+                row for row in rows
+                if row["customer_key"] == self.collection_customer_filter
+            ]
+        filter_label = self.collection_action_filter_var.get()
+        if filter_label == "今日需跟进":
+            rows = [row for row in rows if row["needs_action_today"]]
+        elif filter_label == "承诺逾期":
+            rows = [
+                row for row in rows
+                if row["attention_status"] == "承诺逾期"
+            ]
+        elif filter_label == "90天以上":
+            rows = [
+                row for row in rows
+                if (row["aging_days"] or 0) > 90
+            ]
+        return rows
+
+    def _refresh_collection_workbench(self, project_id=None):
+        if not hasattr(self, "collection_project_tree"):
+            return
+        if project_id is None:
+            project_id = self.selected_project_id()
+        if project_id is not None:
+            self.collection_customer_filter = None
+        self.collection_project_rows = collection_service.list_project_cases(
+            project_id
+        )
+        rows = self._collection_filtered_rows()
+        summary = collection_service.summarize_project_cases(rows)
+        self.collection_hint_var.set(
+            f"{summary['project_count']} 个项目 · "
+            f"未回 {self.money(summary['receivable_minor'])} · "
+            f"今日需处理 {summary['action_count']} 个"
+        )
+        self.notebook.tab(3, text=f"回款跟进 · {len(self.collection_project_rows)}")
+
+        if self.collection_view_var.get() == "客户视图":
+            self.collection_project_tree.pack_forget()
+            self.collection_customer_tree.pack(fill=BOTH, expand=True)
+            self.collection_customer_rows = collection_service.list_customer_cases(
+                rows
+            )
+            self.collection_customer_tree.refresh(
+                self.collection_customer_rows,
+                lambda row: (row["customer_key"], (
+                    f"{row['customer_name']} · {row['project_count']}个项目",
+                    self.money(row["receivable_minor"]),
+                    row["aging_bucket"],
+                    row["next_followup_date"] or "未安排",
+                    row["owner_name"] or "未指定",
+                    (
+                        f"{row['attention_status']} · {row['action_count']}项"
+                        if row["action_count"]
+                        else row["attention_status"]
+                    ),
+                    row["next_action"] or "未填写",
+                )),
+            )
+            return
+
+        self.collection_customer_tree.pack_forget()
+        self.collection_project_tree.pack(fill=BOTH, expand=True)
+        self.collection_project_tree.refresh(
+            rows,
+            lambda row: (str(row["project_id"]), (
+                f"{row['project_name']} · {row['customer_name']}",
+                self.money(row["receivable_minor"]),
+                (
+                    f"{row['promised_date'] or '未承诺'} / "
+                    f"{row['next_followup_date'] or '未安排'}"
+                ),
+                row["owner_name"] or "未指定",
+                f"{row['attention_status']} · {row['aging_bucket']}",
+                row["next_action"] or "未填写",
+            )),
+        )
+
+    def clear_collection_customer_filter(self):
+        self.collection_customer_filter = None
+        self._refresh_collection_workbench()
+
+    def drill_collection_customer(self):
+        selected = self.collection_customer_tree.tree.selection()
+        if len(selected) != 1:
+            return
+        key = selected[0]
+        customer = next(
+            (
+                row for row in self.collection_customer_rows
+                if row["customer_key"] == key
+            ),
+            None,
+        )
+        if not customer:
+            return
+        self.collection_customer_filter = customer["customer_key"]
+        self.collection_view_var.set("项目视图")
+        self._refresh_collection_workbench()
+
+    def _selected_collection_project_id(self):
+        if self.collection_view_var.get() != "项目视图":
+            return None
+        return self.selected_id(self.collection_project_tree)
+
+    def open_collection_case_dialog(self):
+        project_id = self._selected_collection_project_id()
+        if not project_id:
+            messagebox.showwarning(
+                "提示", "请在项目视图中选择一个待回款项目"
+            )
+            return
+        case = collection_service.get_project_case(project_id)
+        if not case or case["receivable_minor"] <= 0:
+            messagebox.showwarning("提示", "该项目当前没有待回款余额")
+            return
+
+        dialog = ttk.Toplevel(self.parent)
+        dialog.title("更新回款跟进")
+        body, footer = build_form_dialog(
+            dialog, self.parent, 840, 700, min_width=700, min_height=560
+        )
+        status_labels = {
+            label: code
+            for code, label in collection_service.CASE_STATUSES.items()
+            if code != "closed"
+        }
+        variables = {
+            "due_date": ttk.StringVar(
+                value=case["due_date"] or case["oldest_unpaid_date"] or ""
+            ),
+            "promised_date": ttk.StringVar(value=case["promised_date"] or ""),
+            "next_followup_date": ttk.StringVar(
+                value=case["next_followup_date"] or ""
+            ),
+            "owner_name": ttk.StringVar(value=case["owner_name"] or ""),
+            "status": ttk.StringVar(
+                value=collection_service.CASE_STATUSES.get(
+                    case["case_status"], "待跟进"
+                )
+            ),
+            "followup_date": ttk.StringVar(
+                value=datetime.now().strftime("%Y-%m-%d")
+            ),
+        }
+
+        summary = ttk.Frame(body, style="Card.TFrame", padding=14)
+        summary.pack(fill=X)
+        ttk.Label(
+            summary, text=case["project_name"], style="CardTitle.TLabel"
+        ).pack(anchor=W)
+        ttk.Label(
+            summary,
+            text=(
+                f"{case['customer_name']} · 未回 {self.money(case['receivable_minor'])}"
+                f" · {case['aging_bucket']} · {case['attention_status']}"
+            ),
+            style="CardText.TLabel",
+        ).pack(anchor=W, pady=(4, 0))
+
+        plan = ttk.Frame(body, style="Card.TFrame", padding=14)
+        plan.pack(fill=X, pady=(12, 0))
+        ttk.Label(plan, text="跟进计划", style="CardTitle.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky=W, pady=(0, 8)
+        )
+        fields = (
+            ("应收到期日", "due_date", "date"),
+            ("客户承诺付款日", "promised_date", "date"),
+            ("下次跟进日", "next_followup_date", "date"),
+            ("责任人", "owner_name", "text"),
+            ("跟进状态", "status", "status"),
+            ("本次跟进日期", "followup_date", "date"),
+        )
+        for index, (label, key, kind) in enumerate(fields):
+            field = ttk.Frame(plan, style="Card.TFrame")
+            field.grid(
+                row=index // 2 + 1,
+                column=index % 2,
+                sticky=EW,
+                padx=(0, 10) if index % 2 == 0 else (10, 0),
+                pady=6,
+            )
+            ttk.Label(field, text=label, style="CardText.TLabel").pack(anchor=W)
+            if kind == "date":
+                widget = DatePicker(
+                    field,
+                    textvariable=variables[key],
+                    allow_empty=key != "followup_date",
+                    popup_title=f"选择{label}",
+                )
+                widget.pack(fill=X, pady=(4, 0))
+            elif kind == "status":
+                ttk.Combobox(
+                    field,
+                    textvariable=variables[key],
+                    values=tuple(status_labels),
+                    state="readonly",
+                ).pack(fill=X, pady=(4, 0), ipady=4)
+            else:
+                ttk.Entry(field, textvariable=variables[key]).pack(
+                    fill=X, pady=(4, 0), ipady=4
+                )
+        plan.columnconfigure(0, weight=1)
+        plan.columnconfigure(1, weight=1)
+
+        details = ttk.Frame(body, style="Card.TFrame", padding=14)
+        details.pack(fill=BOTH, expand=True, pady=(12, 0))
+        text_fields = {}
+        for label, key, height, initial in (
+            ("本次跟进记录（未联系可留空）", "followup_content", 3, ""),
+            ("下一步动作", "next_action", 2, case["next_action"] or ""),
+            ("逾期原因", "overdue_reason", 2, case["overdue_reason"] or ""),
+            ("补充说明", "notes", 2, case["notes"] or ""),
+        ):
+            ttk.Label(details, text=label, style="CardText.TLabel").pack(
+                anchor=W, pady=(8 if text_fields else 0, 4)
+            )
+            widget = ttk.Text(details, height=height, wrap="word")
+            widget.pack(fill=X)
+            widget.insert("1.0", initial)
+            text_fields[key] = widget
+
+        form_error = ttk.StringVar()
+        ttk.Label(
+            body,
+            textvariable=form_error,
+            style="FormError.TLabel",
+            wraplength=700,
+        ).pack(anchor=W, pady=(8, 0))
+
+        def save():
+            form_error.set("")
+            try:
+                collection_service.save_project_case(
+                    project_id,
+                    {
+                        "due_date": variables["due_date"].get(),
+                        "promised_date": variables["promised_date"].get(),
+                        "next_followup_date": variables["next_followup_date"].get(),
+                        "owner_name": variables["owner_name"].get(),
+                        "status": status_labels[variables["status"].get()],
+                        "followup_date": variables["followup_date"].get(),
+                        **{
+                            key: widget.get("1.0", END).strip()
+                            for key, widget in text_fields.items()
+                        },
+                    },
+                )
+            except Exception as error:
+                form_error.set(str(error))
+                return
+            dialog.destroy()
+            self.refresh()
+
+        add_form_actions(
+            footer,
+            cancel_command=dialog.destroy,
+            primary_text="保存跟进",
+            primary_command=save,
+        )
+
+    def open_collection_history(self):
+        project_id = self._selected_collection_project_id()
+        if not project_id:
+            messagebox.showwarning(
+                "提示", "请在项目视图中选择一个待回款项目"
+            )
+            return
+        case = collection_service.get_project_case(project_id)
+        logs = collection_service.list_followup_logs(project_id)
+        dialog = ttk.Toplevel(self.parent)
+        dialog.title("回款跟进历史")
+        body, footer = build_form_dialog(
+            dialog, self.parent, 920, 560, min_width=760, min_height=480
+        )
+        ttk.Label(
+            body,
+            text=(
+                f"{case['project_name']} · {case['customer_name']} · "
+                f"未回 {self.money(case['receivable_minor'])}"
+            ),
+            style="CardTitle.TLabel",
+        ).pack(anchor=W, pady=(0, 8))
+        history = self._table(
+            body,
+            (
+                ("date", "跟进日期", 100, CENTER),
+                ("content", "跟进内容", 300, W),
+                ("promised", "承诺付款日", 105, CENTER),
+                ("next", "下次跟进", 100, CENTER),
+                ("action", "下一步动作", 240, W),
+            ),
+            empty_text="尚无跟进历史",
+            stretch=("content", "action"),
+            padding=0,
+        )
+        history.refresh(
+            logs,
+            lambda row: (str(row["id"]), (
+                row["followup_date"],
+                row["content"],
+                row["promised_date"] or "—",
+                row["next_followup_date"] or "—",
+                row["next_action"] or "—",
+            )),
+        )
+        add_form_actions(
+            footer,
+            cancel_command=dialog.destroy,
+            primary_text="关闭",
+            primary_command=dialog.destroy,
+        )
+
     def _build_collection_panel(self, parent, queue):
         project_card = ttk.Frame(
             parent, style="Card.TFrame", padding=(10, 8)
@@ -242,6 +678,10 @@ class ReceivablePage:
         ).pack(side=LEFT)
         status_var = ttk.StringVar()
         self.collection_status_vars[queue] = status_var
+        ttk.Button(project_header, text='收款完毕', bootstyle='primary-outline',
+                   command=lambda: self.open_cash_closure(queue)).pack(side=LEFT, padx=(12, 4))
+        ttk.Button(project_header, text='结清记录 / 撤销', bootstyle='secondary-outline',
+                   command=lambda: self.open_cash_closure(queue, history=True)).pack(side=LEFT, padx=4)
         ttk.Label(
             project_header,
             textvariable=status_var,
@@ -273,6 +713,71 @@ class ReceivablePage:
             ),
         )
         self.collection_trees[queue] = project_tree
+
+    def open_cash_closure(self, queue, history=False):
+        from services import cash_closure_service
+        selected = self.collection_trees[queue].tree.selection()
+        if not selected:
+            messagebox.showinfo('提示', '请先在下方选择一个零星工程项目', parent=self.parent)
+            return
+        project_id = int(selected[0])
+        try:
+            if history:
+                records = cash_closure_service.history(project_id)
+                if not records:
+                    messagebox.showinfo('结清记录', '该项目尚无抹零结清记录', parent=self.parent)
+                    return
+                active = next((r for r in records if r['status'] == 'active'), None)
+                text = '\n'.join(
+                    f"{r['created_at'][:10]} · {r['reason']} · 调减 {self.money(r['reduction_minor'])}"
+                    f" · {'有效' if r['status'] == 'active' else '已撤销'}\n{r['notes']}"
+                    for r in records)
+                if not active:
+                    messagebox.showinfo('结清历史', text, parent=self.parent)
+                elif messagebox.askyesno('结清记录 / 撤销', text + '\n\n是否撤销当前结清调整？\n'
+                                        '将恢复调整前的确认收入和应收差额，实际回款不变。', parent=self.parent):
+                    cash_closure_service.revoke(active['id'])
+                    self.refresh()
+                return
+            data = cash_closure_service.preview(project_id)
+        except Exception as error:
+            messagebox.showwarning('无法结清', str(error), parent=self.parent)
+            return
+        dialog = ttk.Toplevel(self.parent)
+        dialog.title('收款完毕 · 确认最终结算')
+        body, footer = build_form_dialog(dialog, self.parent, 650, 500, min_width=550, min_height=400)
+        text = (f"项目：{data['project_name']}\n\n"
+                f"原确认收入：{self.money(data['original_income_minor'])}\n"
+                f"累计实际收到：{self.money(data['received_minor'])}\n"
+                f"不再收取的差额：{self.money(data['reduction_minor'])}\n\n"
+                '确认后按实收金额调减收入，应收归零；实际回款及施工状态不变。')
+        ttk.Label(body, text=text, wraplength=500, justify=LEFT).pack(fill=X, pady=10)
+        ttk.Label(body, text='结清原因 *').pack(anchor=W)
+        reason = ttk.StringVar(value='抹零')
+        ttk.Combobox(body, textvariable=reason, values=cash_closure_service.REASONS,
+                     state='readonly').pack(fill=X, pady=6)
+        ttk.Label(body, text='备注').pack(anchor=W)
+        notes = ttk.Entry(body)
+        notes.pack(fill=X, pady=6)
+        confirmed = ttk.BooleanVar(value=False)
+        ttk.Checkbutton(body, text='我确认剩余差额不再收取，按上述实收金额结清',
+                        variable=confirmed).pack(anchor=W, pady=12)
+
+        def save():
+            if not confirmed.get():
+                messagebox.showwarning('请确认', '请先核对差额并勾选确认', parent=dialog)
+                return
+            try:
+                cash_closure_service.close_collection(project_id, reason.get(), data, notes.get())
+            except Exception as error:
+                messagebox.showwarning('无法结清', str(error), parent=dialog)
+                return
+            dialog.destroy()
+            self.refresh()
+            self.collection_notebook.select(1)
+
+        add_form_actions(footer, cancel_command=dialog.destroy,
+                         primary_text='确认结清', primary_command=save)
 
     def _current_collection_queue(self):
         index = self.collection_notebook.index(
@@ -352,6 +857,8 @@ class ReceivablePage:
                 row for row in displayed_invoices
                 if row["status"] == "active" and row["unreceived_minor"] == 0
             ]
+        if self.missing_attachments_var.get():
+            displayed_invoices = [row for row in displayed_invoices if row["attachment_needs_attention"]]
         receipts = finance_service.list_receipts(project_id)
         finance_projects = [
             row
@@ -424,7 +931,8 @@ class ReceivablePage:
             f"待开 {self.money(summary['uninvoiced_minor'])}"
         )
         pending_hint = (
-            f" · 待分配 {self.money(summary['pending_receipt_minor'])}"
+            f" · 预收 {self.money(summary['advance_minor'])}"
+            f" · 历史待分配 {self.money(summary['pending_receipt_minor'] - summary['advance_minor'])}"
             if summary["pending_receipt_minor"] else ""
         )
         self.kpi_hint_vars["receipt"].set(
@@ -432,19 +940,29 @@ class ReceivablePage:
             f"未回 {self.money(summary['receivable_minor'])}{pending_hint}"
         )
 
-        self.notebook.tab(1, text=f"销项发票 · {len(invoices)}")
+        missing_attachment_count = sum(
+            row["attachment_needs_attention"] for row in invoices
+        )
+        self.notebook.tab(
+            1,
+            text=(
+                f"销项发票 · {len(invoices)}"
+                f" · 附件待补 {missing_attachment_count}"
+            ),
+        )
         self.invoice_tree.refresh(
             displayed_invoices,
             lambda row: (str(row["id"]), (
                 row["invoice_no"],
                 row["invoice_date"],
+                row["attachment_status"],
                 row["project_name"],
                 self.money(row["amount_minor"]),
                 self.money(row["received_minor"]),
                 self.money(row["unreceived_minor"]),
                 row["collection_status"],
                 row["buyer_name_snapshot"],
-                f"{row['tax_rate_bps'] / 100:g}%",
+                row['tax_rate_label'] or f"{row['tax_rate_bps'] / 100:g}%",
                 row["contract_no"],
                 row["settlement_no"] or "未关联",
             )),
@@ -461,14 +979,23 @@ class ReceivablePage:
                 (
                     row["invoice_no"] or "无需发票"
                     if row["business_mode"] == "cash"
-                    else row["invoice_no"] or "未关联发票"
+                    else row["invoice_no"] or "等待后续开票"
                 ),
-                row["settlement_no"] or "待分配",
+                (
+                    "—" if row["business_mode"] == "cash"
+                    else self.money(row["invoice_matched_minor"])
+                ),
+                (
+                    "—" if row["business_mode"] == "cash"
+                    else self.money(row["invoice_unmatched_minor"])
+                ),
+                row["settlement_no"] or ('预收款' if row.get('automatic_income_allocation') else '待分配'),
                 row["payer_name_snapshot"],
                 row["contract_no"] or "零星现金工程",
                 row["receipt_no"],
             )),
         )
+        self._refresh_collection_workbench(project_id)
 
     def _allocation_map(self):
         return {
@@ -489,9 +1016,61 @@ class ReceivablePage:
             )
         }
 
+    def _invoice_target_map(self):
+        targets = {}
+        for settlement in contract_service.list_settlements(
+            project_id=self.selected_project_id()
+        ):
+            if settlement["invoice_policy"] == "not_required":
+                continue
+            key = (settlement["project_id"], settlement["contract_id"])
+            target = targets.setdefault(
+                key,
+                {
+                    "project_id": settlement["project_id"],
+                    "contract_id": settlement["contract_id"],
+                    "project_name": settlement["project_name"],
+                    "contract_no": settlement["contract_no"],
+                    "settlement_count": 0,
+                    "amount_minor": 0,
+                    "invoiced_minor": 0,
+                },
+            )
+            target["settlement_count"] += 1
+            target["amount_minor"] += int(settlement["amount_minor"] or 0)
+            target["invoiced_minor"] += int(
+                settlement["invoiced_minor"] or 0
+            )
+        for allocation in contract_service.list_allocations(
+            project_id=self.selected_project_id()
+        ):
+            if (allocation['income_mode'] != 'invoice'
+                    or allocation['contract_status'] == 'void'
+                    or allocation['invoice_policy'] == 'not_required'):
+                continue
+            key = (allocation['project_id'], allocation['contract_id'])
+            target = targets.setdefault(key, {
+                'project_id': allocation['project_id'],
+                'contract_id': allocation['contract_id'],
+                'project_name': allocation['project_name'],
+                'contract_no': allocation['contract_no'],
+                'settlement_count': 0, 'amount_minor': 0, 'invoiced_minor': 0,
+            })
+            target['income_mode'] = 'invoice'
+        result = {}
+        for target in targets.values():
+            target["uninvoiced_minor"] = max(
+                target["amount_minor"] - target["invoiced_minor"], 0
+            )
+            contract_label = target["contract_no"] or "未关联合同"
+            result[
+                f"{target['project_name']} · {contract_label}"
+            ] = target
+        return result
+
     def open_invoice_dialog(self, invoice_id=None):
-        settlement_map = self._settlement_map()
-        if not settlement_map:
+        target_map = self._invoice_target_map()
+        if not target_map:
             messagebox.showwarning("提示", "请先登记有效的收入确认")
             return
         invoice = finance_service.get_invoice(invoice_id) if invoice_id else None
@@ -499,19 +1078,20 @@ class ReceivablePage:
             messagebox.showwarning("提示", "发票记录不存在")
             return
         restoring = bool(invoice and invoice["status"] == "void")
-        prompt = "请选择收入确认"
+        prompt = "请选择开票项目 / 合同"
         if invoice:
-            settlement_label = next(
+            target_label = next(
                 (
                     label
-                    for label, settlement in settlement_map.items()
-                    if settlement["id"] == invoice.get("settlement_id")
+                    for label, target in target_map.items()
+                    if target["project_id"] == invoice["project_id"]
+                    and target["contract_id"] == invoice["contract_id"]
                 ),
                 None,
             )
         else:
-            settlement_label = (
-                next(iter(settlement_map)) if len(settlement_map) == 1 else None
+            target_label = (
+                next(iter(target_map)) if len(target_map) == 1 else None
             )
         if restoring:
             dialog_title = "恢复并修改销项发票"
@@ -530,8 +1110,16 @@ class ReceivablePage:
         body, footer = build_form_dialog(
             dialog, self.parent, 700, 590, min_width=590, min_height=450
         )
+        initial_tax_rate = '0'
+        if invoice:
+            initial_tax_rate = f"{invoice['tax_rate_bps'] / 100:g}"
+            label = invoice['tax_rate_label']
+            if ' / ' in label or label == '多税率':
+                initial_tax_rate = '多税率'
+            elif label in ('免税', '不征税'):
+                initial_tax_rate = label
         variables = {
-            "settlement": ttk.StringVar(value=settlement_label or prompt),
+            "target": ttk.StringVar(value=target_label or prompt),
             "no": ttk.StringVar(value=invoice["invoice_no"] if invoice else ""),
             "date": ttk.StringVar(
                 value=invoice["invoice_date"]
@@ -540,39 +1128,50 @@ class ReceivablePage:
             "amount": ttk.StringVar(
                 value=f"{invoice['amount_minor'] / 100:.2f}" if invoice else ""
             ),
-            "tax": ttk.StringVar(
-                value=f"{invoice['tax_rate_bps'] / 100:g}" if invoice else "0"
-            ),
+            "tax": ttk.StringVar(value=initial_tax_rate),
+            'net': ttk.StringVar(value=f"{invoice['net_amount_minor']/100:.2f}" if invoice and invoice['net_amount_minor'] is not None else ''),
+            'tax_amount': ttk.StringVar(value=f"{invoice['tax_amount_minor']/100:.2f}" if invoice and invoice['tax_amount_minor'] is not None else ''),
             "buyer": ttk.StringVar(
                 value=invoice["buyer_name_snapshot"] if invoice else ""
             ),
         }
         specs = (
-            ("收入确认 *", "settlement"),
+            ("开票项目 / 合同 *", "target"),
             ("发票号码（不可重复）", "no"),
             ("开票日期 *", "date"),
             ("价税合计（元）*", "amount"),
-            ("税率（%）", "tax"),
+            ("未税金额（元）", "net"),
+            ("票面税额（元）", "tax_amount"),
+            ("税率（% / 多税率 / 免税）", "tax"),
             ("购买方", "buyer"),
         )
-        settlement_hint_var = ttk.StringVar()
-        settlement_combo = None
-        for row, (label, key) in enumerate(specs):
+        target_hint_var = ttk.StringVar()
+        target_combo = None
+        pdf_state = {'recognition': None, 'busy': False}
+        pdf_confirmed = ttk.BooleanVar(value=False)
+        pdf_hint = ttk.StringVar(value='本地识别，不上传；支持有文字的电子发票PDF。旧票税额未知可留空。')
+        import_box = ttk.Frame(body)
+        import_box.grid(row=0, column=0, columnspan=2, sticky=EW, pady=(0, 12))
+        import_button = ttk.Button(import_box, text='选择 PDF 自动识别', bootstyle='primary-outline')
+        import_button.pack(anchor=W)
+        ttk.Label(import_box, textvariable=pdf_hint, wraplength=520, justify=LEFT).pack(fill=X, pady=6)
+        confirm_widget = ttk.Checkbutton(import_box, text='已核对票号、日期、金额、税额及项目，随保存留存PDF附件', variable=pdf_confirmed)
+        for row, (label, key) in enumerate(specs, 1):
             ttk.Label(body, text=label).grid(
                 row=row, column=0, sticky=E, padx=(0, 12), pady=7
             )
-            if key == "settlement":
+            if key == "target":
                 field = ttk.Frame(body)
-                settlement_combo = ttk.Combobox(
+                target_combo = ttk.Combobox(
                     field,
                     textvariable=variables[key],
-                    values=[prompt, *settlement_map],
+                    values=[prompt, *target_map],
                     state="readonly",
                 )
-                settlement_combo.pack(fill=X, ipady=4)
+                target_combo.pack(fill=X, ipady=4)
                 ttk.Label(
                     field,
-                    textvariable=settlement_hint_var,
+                    textvariable=target_hint_var,
                     style="CardText.TLabel",
                 ).pack(anchor=W, pady=(5, 0))
                 field.grid(row=row, column=1, sticky=EW, pady=7)
@@ -587,25 +1186,94 @@ class ReceivablePage:
                     body, textvariable=variables[key]
                 ).grid(row=row, column=1, sticky=EW, pady=7, ipady=4)
 
-        def refresh_settlement_hint(_event=None):
-            settlement = settlement_map.get(variables["settlement"].get())
-            if not settlement:
-                settlement_hint_var.set("选择后显示本笔结算的开票进度")
+        def refresh_target_hint(_event=None):
+            target = target_map.get(variables["target"].get())
+            if not target:
+                target_hint_var.set("选择后显示项目合同的总开票进度")
                 return
-            settlement_hint_var.set(
-                f"结算 {self.money(settlement['amount_minor'])} · "
-                f"已开 {self.money(settlement['invoiced_minor'])} "
-                f"({self._percent(settlement['invoice_rate_percent'])}) · "
-                f"待开 {self.money(settlement['uninvoiced_minor'])}"
+            if target.get('income_mode') == 'invoice':
+                target_hint_var.set(
+                    '随开票自动确认收入，无需另填收入确认。\n'
+                    f"累计已开 {self.money(target['invoiced_minor'])}；本次金额保存后自动计入收入。"
+                )
+                return
+            target_hint_var.set(
+                f"确认收入 {self.money(target['amount_minor'])} · "
+                f"已开 {self.money(target['invoiced_minor'])} · "
+                f"待开 {self.money(target['uninvoiced_minor'])} · "
+                f"{target['settlement_count']} 笔收入确认按日期自动分配"
             )
 
-        settlement_combo.bind("<<ComboboxSelected>>", refresh_settlement_hint)
-        refresh_settlement_hint()
+        target_combo.bind("<<ComboboxSelected>>", refresh_target_hint)
+        refresh_target_hint()
+
+        def choose_pdf():
+            from queue import Queue, Empty
+            from threading import Thread
+            from services import invoice_pdf_service
+            path = filedialog.askopenfilename(parent=dialog, title='选择销项发票PDF', filetypes=[('PDF发票', '*.pdf')])
+            if not path:
+                return
+            if not messagebox.askyesno('识别并填表', '识别成功后将替换本窗口的票号、日期、金额、税额及购买方。\n项目仍需核对，是否继续？', parent=dialog):
+                return
+            pdf_state['busy'] = True
+            import_button.configure(state='disabled')
+            pdf_hint.set('正在本地识别PDF，请稍候……')
+            results = Queue()
+
+            def work():
+                try:
+                    results.put((invoice_pdf_service.recognize(path), None))
+                except Exception as error:
+                    results.put((None, str(error)))
+
+            def finish():
+                if not dialog.winfo_exists():
+                    return
+                try:
+                    result, error = results.get_nowait()
+                except Empty:
+                    dialog.after(100, finish)
+                    return
+                pdf_state['busy'] = False
+                import_button.configure(state='normal')
+                if error:
+                    pdf_hint.set('本次识别失败，原表单及已选附件未改变。')
+                    messagebox.showwarning('无法识别', error, parent=dialog)
+                    return
+                pdf_state['recognition'] = result
+                pdf_confirmed.set(False)
+                for key, field in [('no', 'invoice_no'), ('date', 'invoice_date'), ('amount', 'amount'),
+                                   ('net', 'net_amount'), ('tax_amount', 'tax_amount'), ('tax', 'tax_rate'), ('buyer', 'buyer_name')]:
+                    variables[key].set(result[field])
+                contracts = {c['id']: c for c in contract_service.list_contracts()}
+                matches = [label for label, target in target_map.items()
+                           if result['buyer_name'] and contracts.get(target['contract_id'], {}).get('customer_name_snapshot') == result['buyer_name']]
+                if not invoice:
+                    variables['target'].set(matches[0] if len(matches) == 1 else prompt)
+                refresh_target_hint()
+                warnings = list(result['warnings'])
+                if len(matches) > 1:
+                    warnings.append('该客户对应多个项目/合同，请手动选择，不能仅按客户归集')
+                elif not matches:
+                    warnings.append('未找到唯一匹配项目，请手动选择')
+                duplicates = [r for r in finance_service.list_invoices(include_void=True)
+                              if r['invoice_no'] == result['invoice_no'] and (not invoice or r['id'] != invoice['id'])]
+                if duplicates:
+                    warnings.append('此票号已存在，请勿重复登记；可到原记录修改并添加附件')
+                from pathlib import Path
+                pdf_hint.set('已识别：' + Path(path).name + '\n' + ('；'.join(warnings) if warnings else '金额勾稽一致，请核对后保存。'))
+                confirm_widget.pack(anchor=W, pady=5)
+
+            Thread(target=work, daemon=True).start()
+            dialog.after(100, finish)
+
+        import_button.configure(command=choose_pdf)
         ttk.Label(body, text="备注").grid(
-            row=6, column=0, sticky=NE, padx=(0, 12), pady=7
+            row=len(specs)+1, column=0, sticky=NE, padx=(0, 12), pady=7
         )
         notes = ttk.Text(body, height=5, wrap="word")
-        notes.grid(row=6, column=1, sticky=EW, pady=7)
+        notes.grid(row=len(specs)+1, column=1, sticky=EW, pady=7)
         if invoice and invoice["notes"]:
             notes.insert("1.0", invoice["notes"])
         if restoring:
@@ -613,14 +1281,23 @@ class ReceivablePage:
                 body,
                 text="该发票已作废；保存后将恢复为有效并重新计入开票金额。",
                 style="CardText.TLabel",
-            ).grid(row=7, column=1, sticky=W, pady=(2, 7))
+            ).grid(row=len(specs)+2, column=1, sticky=W, pady=(2, 7))
         body.columnconfigure(1, weight=1)
 
         def save():
-            settlement = settlement_map.get(variables["settlement"].get())
-            if not settlement:
+            if pdf_state['busy']:
+                messagebox.showwarning('请稍候', 'PDF仍在识别，请等待完成再保存', parent=dialog)
+                return
+            if pdf_state['recognition'] and not pdf_confirmed.get():
+                messagebox.showwarning('请先核对', '请核对票面信息和项目归属，并勾选确认', parent=dialog)
+                return
+            if pdf_state['recognition'] and any(not variables[k].get().strip() for k in ('no','date','amount','net','tax_amount','tax','buyer')):
+                messagebox.showwarning('请补充信息', '识别未确认的字段请核对原票后补全', parent=dialog)
+                return
+            target = target_map.get(variables["target"].get())
+            if not target:
                 messagebox.showwarning(
-                    "无法保存", "请选择本次发票对应的收入确认", parent=dialog
+                    "无法保存", "请选择本次发票对应的项目和合同", parent=dialog
                 )
                 return
             if restoring and not messagebox.askyesno(
@@ -632,16 +1309,22 @@ class ReceivablePage:
             try:
                 data = {
                     "invoice_no": variables["no"].get(),
-                    "project_id": settlement["project_id"],
-                    "contract_id": settlement["contract_id"],
-                    "settlement_id": settlement["id"],
+                    "project_id": target["project_id"],
+                    "contract_id": target["contract_id"],
                     "invoice_date": variables["date"].get(),
                     "amount": variables["amount"].get(),
                     "tax_rate": variables["tax"].get(),
+                    'net_amount': variables['net'].get(),
+                    'tax_amount': variables['tax_amount'].get(),
+                    'tax_rate_label': ((pdf_state['recognition'] or invoice or {}).get('tax_rate_label', '')
+                                       if variables['tax'].get() == '多税率' else ''),
                     "buyer_name": variables["buyer"].get(),
                     "notes": notes.get("1.0", END).strip(),
                 }
-                if invoice:
+                if pdf_state['recognition']:
+                    from services.invoice_pdf_service import save_with_pdf
+                    save_with_pdf(data, pdf_state['recognition'], invoice['id'] if invoice else None)
+                elif invoice:
                     finance_service.update_invoice(invoice["id"], data)
                 else:
                     finance_service.create_invoice(data)
@@ -681,12 +1364,33 @@ class ReceivablePage:
         selected_project_id = (
             receipt["project_id"] if editing else self.selected_project_id()
         )
-        allocation_map = {
-            f"{row['contract_no']} → {row['project_name']}": row
-            for row in contract_service.list_allocations(
-                project_id=selected_project_id
+        allocation_map = {}
+        for settlement in contract_service.list_settlements(
+            project_id=selected_project_id
+        ):
+            is_current_pair = (
+                editing
+                and settlement["project_id"] == receipt["project_id"]
+                and settlement["contract_id"] == receipt["contract_id"]
             )
-        }
+            if (
+                settlement["source_type"] != "contract"
+                or not (settlement["unreceived_minor"] > 0 or is_current_pair)
+            ):
+                continue
+            pricing = contract_service.PRICING_MODES[settlement["pricing_mode"]]
+            label = (
+                f"{settlement['contract_no']} · {pricing} → "
+                f"{settlement['project_code']} · {settlement['project_name']}"
+            )
+            allocation_map[label] = settlement
+        for row in contract_service.list_allocations(project_id=selected_project_id):
+            if row['contract_status'] == 'void':
+                continue
+            pricing = contract_service.PRICING_MODES[row['pricing_mode']]
+            label = (f"{row['contract_no']} · {pricing} → "
+                     f"{row['project_code']} · {row['project_name']}")
+            allocation_map.setdefault(label, row)
         cash_projects = [
             row for row in project_service.list_projects(active_only=False)
             if row["business_mode"] == "cash"
@@ -717,7 +1421,7 @@ class ReceivablePage:
                 ).append(settlement)
         if not allocation_map and not cash_project_map:
             messagebox.showwarning(
-                "提示", "请先建立合同项目分配，或建立零星现金工程项目"
+                "提示", "请先登记可回款的收入确认，或建立零星现金工程项目"
             )
             return
 
@@ -760,7 +1464,7 @@ class ReceivablePage:
                 value=current_cash_project or next(iter(cash_project_map), "")
             ),
             "cash_settlement": ttk.StringVar(),
-            "invoice": ttk.StringVar(value="不关联具体发票"),
+            "invoice": ttk.StringVar(value="按客户时间顺序自动核销"),
             "no": ttk.StringVar(value=receipt["receipt_no"] if editing else ""),
             "date": ttk.StringVar(
                 value=receipt["receipt_date"] if editing else today
@@ -778,8 +1482,9 @@ class ReceivablePage:
                 value=receipt["payment_method"] if editing else "银行转账"
             ),
         }
-        invoice_map = {"不关联具体发票": None}
-        invoice_available_map = {"不关联具体发票": None}
+        automatic_invoice_label = "按客户时间顺序自动核销"
+        invoice_map = {automatic_invoice_label: None}
+        invoice_available_map = {automatic_invoice_label: None}
         cash_settlement_map = {}
         invoice_help_var = ttk.StringVar()
         allocation_summary_var = ttk.StringVar(
@@ -792,7 +1497,7 @@ class ReceivablePage:
             ("合同与项目 *", "allocation"),
             ("零星工程项目 *", "cash_project"),
             ("完工金额确认 *", "cash_settlement"),
-            ("关联发票", "invoice"),
+            ("指定发票（可选）", "invoice"),
             ("收入确认分配", "settlement_distribution"),
             ("回款单号", "no"),
             ("回款日期 *", "date"),
@@ -854,9 +1559,10 @@ class ReceivablePage:
             widgets[key] = widget
             field_labels[key] = label_widget
 
+        settlement_help_var = ttk.StringVar()
         settlement_help = ttk.Label(
             body,
-            text="填写工程总完工金额；保存后系统会同时建立完工确认并关联本次回款。",
+            textvariable=settlement_help_var,
             style="Muted.TLabel",
             wraplength=480,
             justify=LEFT,
@@ -889,7 +1595,7 @@ class ReceivablePage:
                 )
                 distribution_button.configure(state="normal")
             else:
-                allocation_summary_var.set("系统按确认日期自动分配")
+                allocation_summary_var.set("自动抵扣收入，超出部分记为预收款")
                 distribution_button.configure(state="normal")
 
         def open_distribution_dialog():
@@ -1071,9 +1777,10 @@ class ReceivablePage:
         def sync_invoice_help(_event=None):
             available = invoice_available_map.get(variables["invoice"].get())
             invoice_help_var.set(
-                "可不关联发票；如选择发票，回款金额不能超过所示余额。"
+                "留空时按同一客户的发票日期自动核销；"
+                "尚未开票的金额会保留为待匹配。"
                 if available is None
-                else f"该发票本次最多可关联 {self.money(available)}。"
+                else f"手动指定后，本次最多可核销 {self.money(available)}。"
             )
             if available is not None:
                 manual_allocation_state["items"] = None
@@ -1084,16 +1791,20 @@ class ReceivablePage:
                 manual_allocation_state["items"] = None
             invoice_map.clear()
             invoice_available_map.clear()
-            invoice_map["不关联具体发票"] = None
-            invoice_available_map["不关联具体发票"] = None
-            selected_label = "不关联具体发票"
+            invoice_map[automatic_invoice_label] = None
+            invoice_available_map[automatic_invoice_label] = None
+            selected_label = automatic_invoice_label
             allocation = allocation_map.get(variables["allocation"].get())
+            current_by_invoice = {
+                match["invoice_id"]: match["allocated_amount_minor"]
+                for match in (
+                    receipt.get("invoice_matches", []) if editing else []
+                )
+            }
             if allocation:
                 for row in invoices:
-                    current_receipt_amount = (
-                        receipt["allocated_amount_minor"]
-                        if editing and row["id"] == receipt["invoice_id"]
-                        else 0
+                    current_receipt_amount = current_by_invoice.get(
+                        row["id"], 0
                     )
                     available_minor = (
                         row["unreceived_minor"] + current_receipt_amount
@@ -1115,21 +1826,26 @@ class ReceivablePage:
             variables["invoice"].set(selected_label)
             sync_invoice_help()
 
-        def sync_settlement_fields(_event=None):
-            is_new = (
-                not editing
-                and variables["cash_settlement"].get() == new_settlement_label
+        def sync_cash_help():
+            project = cash_project_map.get(variables["cash_project"].get())
+            if not project:
+                settlement_help_var.set("请选择零星工程项目。")
+                return
+            settlement_help_var.set(
+                '只登记实际收款，无需填写完工金额。\n'
+                '已有收入自动抵扣，剩余记为预收款；以后确认收入时自动抵扣。'
             )
-            for key in ("settlement_date", "settlement_amount"):
+            return
+
+        def sync_settlement_fields(_event=None):
+            for key in ("cash_settlement", "settlement_date", "settlement_amount"):
                 for widget in (field_labels[key], widgets[key]):
-                    if is_new:
-                        widget.grid()
-                    else:
-                        widget.grid_remove()
-            if is_new:
+                    widget.grid_remove()
+            if variables["source"].get() == "零星现金工程":
                 settlement_help.grid()
             else:
                 settlement_help.grid_remove()
+            sync_cash_help()
 
         def refresh_cash_settlements(_event=None, selected_settlement_id=None):
             project = cash_project_map.get(variables["cash_project"].get())
@@ -1150,7 +1866,15 @@ class ReceivablePage:
                     cash_settlement_map[label] = settlement
                     if settlement["id"] == selected_settlement_id:
                         selected_label = label
-            if not editing:
+            can_create = False
+            if project and not editing:
+                agreed_minor = project.get("cash_agreed_amount_minor")
+                can_create = (
+                    agreed_minor is None
+                    or int(project.get("cash_confirmed_minor") or 0)
+                    < int(agreed_minor)
+                )
+            if can_create:
                 cash_settlement_map[new_settlement_label] = None
             widgets["cash_settlement"].configure(
                 values=list(cash_settlement_map)
@@ -1185,6 +1909,7 @@ class ReceivablePage:
                 widgets[key].grid_remove()
             if is_cash:
                 invoice_help.grid_remove()
+                settlement_help.grid()
                 sync_settlement_fields()
             else:
                 settlement_help.grid_remove()
@@ -1209,6 +1934,25 @@ class ReceivablePage:
             selected_settlement_id=current_settlement_id
         )
         sync_source()
+        last_suggested_payer = ['']
+
+        def sync_payer(*_args):
+            if editing:
+                return
+            if variables['source'].get() == '零星现金工程':
+                selected = cash_project_map.get(variables['cash_project'].get()) or {}
+                suggestion = finance_service.default_receipt_payer(selected.get('id'))
+            else:
+                selected = allocation_map.get(variables['allocation'].get()) or {}
+                suggestion = finance_service.default_receipt_payer(selected.get('project_id'), selected.get('contract_id'))
+            current = variables['payer'].get().strip()
+            if not current or current == last_suggested_payer[0]:
+                variables['payer'].set(suggestion)
+            last_suggested_payer[0] = suggestion
+
+        for key in ('source', 'allocation', 'cash_project'):
+            variables[key].trace_add('write', sync_payer)
+        sync_payer()
         if editing:
             for key in ("source", "allocation", "cash_project", "cash_settlement"):
                 widgets[key].configure(state="disabled")
@@ -1243,12 +1987,8 @@ class ReceivablePage:
                 "invoice_id": (
                     None if is_cash else invoice_map.get(variables["invoice"].get())
                 ),
-                "settlement_id": (
-                    settlement["id"] if is_cash and settlement else None
-                ),
-                "settlement_date": variables["settlement_date"].get(),
-                "settlement_amount": variables["settlement_amount"].get(),
-                "settlement_basis": "回款补录时同步建立完工金额确认",
+                "settlement_id": None,
+                "allow_advance": is_cash,
                 "receipt_date": variables["date"].get(),
                 "amount": variables["amount"].get(),
                 "payer_name": variables["payer"].get(),
@@ -1310,6 +2050,14 @@ class ReceivablePage:
             return
         self.refresh()
 
+    def record_fund_receipt(self):
+        from pages.funds_page import open_source_payment
+        receipt_id = self.selected_id(self.receipt_tree)
+        if not receipt_id:
+            messagebox.showwarning("提示", "请先选择回款")
+            return
+        open_source_payment(self.parent, "receipt", receipt_id, on_saved=self.refresh)
+
     def void_receipt(self):
         receipt_id = self.selected_id(self.receipt_tree)
         if not receipt_id:
@@ -1317,7 +2065,11 @@ class ReceivablePage:
             return
         if not messagebox.askyesno("确认作废", "确定作废该回款吗？"):
             return
-        finance_service.void_receipts([receipt_id])
+        try:
+            finance_service.void_receipts([receipt_id])
+        except Exception as error:
+            messagebox.showwarning("无法作废", str(error))
+            return
         self.refresh()
 
     def open_invoice_attachments(self):
@@ -1326,7 +2078,11 @@ class ReceivablePage:
             messagebox.showwarning("提示", "请先选择发票")
             return
         open_attachment_manager(
-            self.parent, "invoice", invoice_id, "销项发票"
+            self.parent,
+            "invoice",
+            invoice_id,
+            "销项发票",
+            on_change=self.refresh,
         )
 
     def open_receipt_attachments(self):

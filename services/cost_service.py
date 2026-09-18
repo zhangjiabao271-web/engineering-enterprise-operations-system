@@ -2,8 +2,10 @@ from services._common import now as _now, organization_id as _organization_id, m
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import uuid4
+import json
 
-from db.connection import get_connection
+from db.connection import db_read, db_transaction
+from services.expense_categories import CATEGORIES, NON_COST
 
 
 COST_CATEGORIES = [
@@ -12,6 +14,8 @@ COST_CATEGORIES = [
     "房租",
     "水电煤",
     "机械费",
+    "外包施工费",
+    "管理费",
 ]
 
 # 历史记录和旧导入仍可识别；新界面只提供上面的日常经营费用大类。
@@ -24,7 +28,8 @@ LEGACY_COST_CATEGORIES = {
     "管理分摊",
     "其他成本",
 }
-SUPPORTED_COST_CATEGORIES = set(COST_CATEGORIES) | LEGACY_COST_CATEGORIES
+SUPPORTED_COST_CATEGORIES = set(COST_CATEGORIES) | LEGACY_COST_CATEGORIES | set(CATEGORIES)
+COST_CATEGORIES = CATEGORIES
 
 
 def _date(value):
@@ -103,11 +108,13 @@ def build_allocation_plan(total_amount, method, project_ids=None, allocations=No
 
 def _replace_allocations(conn, cost_entry_id, method, plan, now):
     cost = conn.execute(
-        "SELECT amount_minor, status FROM cost_entries WHERE id=?",
+        "SELECT amount_minor, status, category FROM cost_entries WHERE id=?",
         (cost_entry_id,),
     ).fetchone()
     if not cost or cost["status"] != "active":
         raise ValueError("成本记录不存在或已作废")
+    if plan and cost['category'] in NON_COST:
+        raise ValueError('家庭支出、还款本金和资产购置不能直接归集为项目成本')
     if not plan:
         conn.execute(
             """UPDATE cost_allocation_lines
@@ -174,8 +181,7 @@ def _replace_allocations(conn, cost_entry_id, method, plan, now):
 
 
 def list_cost_entries(project_id=None, include_unassigned=True):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """
             SELECT ce.*,
                    CASE
@@ -209,13 +215,10 @@ def list_cost_entries(project_id=None, include_unassigned=True):
             sql += " AND (ce.project_id IS NOT NULL OR ce.allocation_status='assigned')"
         sql += " GROUP BY ce.id ORDER BY ce.cost_date DESC, ce.id DESC"
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
-    finally:
-        conn.close()
 
 
 def list_cost_ledger(project_id=None):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         if project_id:
             purchase_sql = """SELECT po.id, ppc.project_id,
                        po.purchase_date AS business_date,
@@ -227,7 +230,7 @@ def list_cost_ledger(project_id=None):
                 FROM purchase_project_costs ppc
                 JOIN purchase_orders po ON po.id=ppc.purchase_order_id
                 JOIN projects p ON p.id=ppc.project_id
-                WHERE po.status='有效' AND ppc.project_id=?"""
+                WHERE po.status='active' AND ppc.project_id=?"""
             purchase_params = (project_id,)
         else:
             purchase_sql = """SELECT po.id, po.project_id,
@@ -247,7 +250,7 @@ def list_cost_ledger(project_id=None):
                 LEFT JOIN purchase_cost_allocation_lines pal
                   ON pal.purchase_order_id=po.id AND pal.status='active'
                 LEFT JOIN projects ap ON ap.id=pal.project_id
-                WHERE po.status='有效'
+                WHERE po.status='active'
                 GROUP BY po.id"""
             purchase_params = ()
         rows = []
@@ -327,8 +330,6 @@ def list_cost_ledger(project_id=None):
             reverse=True,
         )
         return rows
-    finally:
-        conn.close()
 
 
 def create_cost(data):
@@ -336,8 +337,7 @@ def create_cost(data):
     category = (data.get("category") or "").strip()
     if category not in SUPPORTED_COST_CATEGORIES:
         raise ValueError("成本分类无效")
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         now = _now()
         amount_minor = _minor(data.get("amount"))
         method = data.get("allocation_method")
@@ -378,13 +378,101 @@ def create_cost(data):
             ),
         )
         _replace_allocations(conn, cursor.lastrowid, method, plan, now)
-        conn.commit()
         return cursor.lastrowid
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+
+
+def update_cost_details(cost_id, data):
+    cost_id = int(cost_id)
+    category = (data.get("category") or "").strip()
+    if category not in SUPPORTED_COST_CATEGORIES:
+        raise ValueError("成本分类无效")
+    cost_date = _date(data.get("cost_date"))
+    with db_transaction(immediate=True) as conn:
+        cost = conn.execute(
+            "SELECT * FROM cost_entries WHERE id=?",
+            (cost_id,),
+        ).fetchone()
+        if not cost or cost["status"] != "active":
+            raise ValueError("成本记录不存在或已作废")
+        if category in NON_COST and (cost['project_id'] or conn.execute(
+                "SELECT 1 FROM cost_allocation_lines WHERE cost_entry_id=? AND status='active'", (cost_id,)).fetchone()):
+            raise ValueError('该支出仍归集在项目中，请先在成本归集里选择暂不归集，再确认非经营用途；原成本未改动')
+        if cost["source_type"] not in ("manual", "legacy_manual"):
+            raise ValueError("只有手工成本可以修改")
+        cost_no = (data.get("cost_no") or "").strip() or cost["cost_no"]
+        duplicate = conn.execute(
+            """SELECT 1 FROM cost_entries
+               WHERE organization_id=? AND cost_no=? AND id<>?""",
+            (cost["organization_id"], cost_no, cost_id),
+        ).fetchone()
+        if duplicate:
+            raise ValueError("成本单号已存在")
+        amount_minor = _minor(data["amount"]) if "amount" in data else cost["amount_minor"]
+        now = _now()
+        lines = [dict(row) for row in conn.execute(
+            "SELECT * FROM cost_allocation_lines WHERE cost_entry_id=? AND status='active' ORDER BY id",
+            (cost_id,),
+        )]
+        plan = None
+        if lines:
+            method = lines[0]["allocation_method"]
+        elif cost["project_id"]:
+            method = "direct"
+        else:
+            method = "unassigned"
+        if amount_minor != cost["amount_minor"]:
+            if method == "manual":
+                # Preserve explicitly assigned proportions, distributing residual cents stably.
+                total = sum(line["amount_minor"] for line in lines)
+                if total != cost["amount_minor"]:
+                    raise ValueError("历史分摊合计不一致，请先修正分摊")
+                pieces = [divmod(amount_minor * line["amount_minor"], total) for line in lines]
+                amounts = [part[0] for part in pieces]
+                for index in sorted(range(len(lines)), key=lambda i: (-pieces[i][1], i))[:amount_minor-sum(amounts)]:
+                    amounts[index] += 1
+                if any(value <= 0 for value in amounts):
+                    raise ValueError("修改后金额不足以保留现有分摊，请先调整项目分摊")
+                plan = [{"project_id": line["project_id"], "amount_minor": value} for line, value in zip(lines, amounts)]
+            else:
+                project_ids = [line["project_id"] for line in lines] or ([cost["project_id"]] if cost["project_id"] else [])
+                plan = build_allocation_plan(Decimal(amount_minor) / 100, method, project_ids=project_ids)
+        conn.execute(
+            """UPDATE cost_entries
+               SET cost_no=?, cost_date=?, category=?,
+                   counterparty_name_snapshot=?, vehicle_no=?, notes=?,
+                   amount_minor=?, updated_at=?
+               WHERE id=?""",
+            (
+                cost_no,
+                cost_date,
+                category,
+                (data.get("counterparty_name") or "").strip(),
+                (data.get("vehicle_no") or "").strip(),
+                (data.get("notes") or "").strip(),
+                amount_minor,
+                now,
+                cost_id,
+            ),
+        )
+        if plan is not None:
+            _replace_allocations(conn, cost_id, method, plan, now)
+        updated = dict(conn.execute("SELECT * FROM cost_entries WHERE id=?", (cost_id,)).fetchone())
+        conn.execute(
+            "INSERT INTO cost_entry_revisions(cost_entry_id, previous_values_json, updated_values_json, changed_at) VALUES (?, ?, ?, ?)",
+            (cost_id, json.dumps(dict(cost), ensure_ascii=False), json.dumps(updated, ensure_ascii=False), now),
+        )
+        return cost_id
+
+
+def list_cost_revisions(cost_id):
+    with db_read() as conn:
+        rows = [dict(row) for row in conn.execute(
+            "SELECT * FROM cost_entry_revisions WHERE cost_entry_id=? ORDER BY id DESC", (cost_id,)
+        )]
+        for row in rows:
+            row["before"] = json.loads(row.pop("previous_values_json"))
+            row["after"] = json.loads(row.pop("updated_values_json"))
+        return rows
 
 
 def assign_costs(cost_ids, project_id):
@@ -400,8 +488,7 @@ def get_cost_entry(cost_id):
 
 
 def get_cost_allocations(cost_id):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         cost = conn.execute(
             """SELECT id, project_id, allocation_status
                FROM cost_entries WHERE id=? AND status='active'""",
@@ -438,13 +525,10 @@ def get_cost_allocations(cost_id):
                 ],
             }
         return {"method": "unassigned", "lines": []}
-    finally:
-        conn.close()
 
 
 def allocate_cost(cost_id, method, project_ids=None, allocations=None):
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         cost = conn.execute(
             "SELECT amount_minor FROM cost_entries WHERE id=? AND status='active'",
             (cost_id,),
@@ -459,13 +543,7 @@ def allocate_cost(cost_id, method, project_ids=None, allocations=None):
             allocations=allocations,
         )
         _replace_allocations(conn, int(cost_id), method, plan, _now())
-        conn.commit()
         return plan
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def void_costs(cost_ids):
@@ -477,8 +555,7 @@ def _void(table, ids):
         return
     if table != "cost_entries":
         raise ValueError("台账类型无效")
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         placeholders = ",".join("?" * len(ids))
         now = _now()
         if table == "cost_entries":
@@ -494,12 +571,6 @@ def _void(table, ids):
                 WHERE id IN ({placeholders}) AND status='active'""",
             (now, *ids),
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def _month_bounds(month):
@@ -519,8 +590,7 @@ def get_cost_dashboard(month=None, project_id=None):
     """
     month = month or datetime.now().strftime("%Y-%m")
     month_start, next_month = _month_bounds(month)
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         project_filter = " AND project_id=?" if project_id else ""
         params = [month_start, next_month] + ([project_id] if project_id else [])
 
@@ -530,7 +600,7 @@ def get_cost_dashboard(month=None, project_id=None):
                           COALESCE(SUM(ppc.cost_minor), 0) AS amount_minor
                    FROM purchase_project_costs ppc
                    JOIN purchase_orders po ON po.id=ppc.purchase_order_id
-                   WHERE po.status='有效'
+                   WHERE po.status='active'
                      AND po.purchase_date >= ? AND po.purchase_date < ?
                      AND ppc.project_id=?""",
                 params,
@@ -540,7 +610,7 @@ def get_cost_dashboard(month=None, project_id=None):
                 """SELECT COUNT(*) AS count,
                           COALESCE(SUM(total_amount_cents), 0) AS amount_minor
                    FROM purchase_orders
-                   WHERE status='有效'
+                   WHERE status='active'
                      AND purchase_date >= ? AND purchase_date < ?""",
                 params,
             ).fetchone()
@@ -618,7 +688,7 @@ def get_cost_dashboard(month=None, project_id=None):
                 FROM purchase_order_items poi
                 JOIN purchase_orders po ON po.id=poi.purchase_order_id
                 {purchase_allocation_join}
-                WHERE po.status='有效'
+                WHERE po.status='active'
                   AND po.purchase_date >= ? AND po.purchase_date < ?
                   {purchase_project_filter}
                 UNION ALL
@@ -661,7 +731,7 @@ def get_cost_dashboard(month=None, project_id=None):
                     SELECT ppc.project_id, ppc.cost_minor AS amount_minor
                     FROM purchase_project_costs ppc
                     JOIN purchase_orders po ON po.id=ppc.purchase_order_id
-                    WHERE po.status='有效'
+                    WHERE po.status='active'
                       AND po.purchase_date >= ? AND po.purchase_date < ?
                     UNION ALL
                     SELECT project_id, COALESCE(
@@ -705,13 +775,13 @@ def get_cost_dashboard(month=None, project_id=None):
             """SELECT COALESCE(SUM(ppc.cost_minor), 0)
                FROM purchase_project_costs ppc
                JOIN purchase_orders po ON po.id=ppc.purchase_order_id
-               WHERE po.status='有效'
+               WHERE po.status='active'
                  AND po.purchase_date >= ? AND po.purchase_date < ?
                  AND ppc.project_id=?"""
             if project_id
             else """SELECT COALESCE(SUM(total_amount_cents), 0)
                     FROM purchase_orders
-                    WHERE status='有效'
+                    WHERE status='active'
                       AND purchase_date >= ? AND purchase_date < ?"""
         )
         prev_total = conn.execute(
@@ -751,17 +821,14 @@ def get_cost_dashboard(month=None, project_id=None):
             "by_category": by_category,
             "by_project": by_project,
         }
-    finally:
-        conn.close()
 
 
 def list_cost_months():
     """Available months across cost sources, newest first."""
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         months = set()
         for row in conn.execute(
-            "SELECT DISTINCT substr(purchase_date, 1, 7) AS m FROM purchase_orders WHERE status='有效'"
+            "SELECT DISTINCT substr(purchase_date, 1, 7) AS m FROM purchase_orders WHERE status='active'"
         ).fetchall():
             if row["m"]:
                 months.add(row["m"])
@@ -776,5 +843,3 @@ def list_cost_months():
             if row["m"]:
                 months.add(row["m"])
         return sorted(months, reverse=True)
-    finally:
-        conn.close()

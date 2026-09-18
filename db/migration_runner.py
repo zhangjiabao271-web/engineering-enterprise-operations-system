@@ -1,9 +1,9 @@
 import logging
-import shutil
 from datetime import datetime
 from pathlib import Path
 
 from .connection import DB_PATH, get_connection
+from .backup import backup_database
 from .migrations import MIGRATIONS
 
 
@@ -33,9 +33,9 @@ def _backup_database(db_path, keep=BACKUP_KEEP):
     path = Path(db_path)
     if not path.exists():
         return None
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     backup = path.with_name(f"{path.stem}.backup_v3_{stamp}{path.suffix}")
-    shutil.copy2(path, backup)
+    backup_database(path, backup)
 
     pattern = f"{path.stem}.backup_v3_*{path.suffix}"
     backups = sorted(

@@ -5,12 +5,26 @@ same heading style, row height, column scaling and empty message.
 """
 
 import tkinter as tk
+import re
+from decimal import Decimal
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import BOTH, CENTER, E, END, LEFT, RIGHT, VERTICAL, W, X, Y
 
 from ui.scaling import scale_treeview_columns
 from ui.theme import SPACING
+
+
+def display_sort_key(value):
+    """Sort numeric displays without treating dates or document numbers as money."""
+    text = str(value).strip()
+    if text in ("", "—", "未填写"):
+        return (2, "")
+    numeric = text.replace(",", "").replace("¥", "").replace("￥", "")
+    numeric = numeric.removesuffix("%").strip()
+    if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", numeric):
+        return (0, Decimal(numeric))
+    return (1, text.casefold())
 
 
 class DataTable(ttk.Frame):
@@ -45,6 +59,7 @@ class DataTable(ttk.Frame):
             self.tree.column(
                 key,
                 width=width,
+                minwidth=width,
                 anchor=anchor,
                 stretch=key in stretch_keys,
             )
@@ -60,6 +75,7 @@ class DataTable(ttk.Frame):
         )
         self.tree.bind("<Configure>", lambda _e: self._place_empty())
         self.tree.bind("<Button-1>", lambda _e: self._place_empty(), add="+")
+        self.tree.after_idle(lambda: scale_treeview_columns(self))
 
     # ---- population helpers ----
     def clear(self):
@@ -101,12 +117,9 @@ class DataTable(ttk.Frame):
         if not children:
             return
         rows = [(self.tree.set(child, key), child) for child in children]
-        rows.sort(key=lambda pair: pair[0])
-        if self._sort_state.get(key, True):
-            rows.reverse()
-            self._sort_state[key] = False
-        else:
-            self._sort_state[key] = True
+        ascending = self._sort_state.get(key, True)
+        rows.sort(key=lambda pair: display_sort_key(pair[0]), reverse=not ascending)
+        self._sort_state[key] = not ascending
         for index, (_value, child) in enumerate(rows):
             self.tree.move(child, "", index)
 

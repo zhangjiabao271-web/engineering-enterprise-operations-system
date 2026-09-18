@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -17,9 +16,10 @@ def main():
         temp_path = Path(temp_dir)
         test_database = temp_path / "supplier_data.db"
         export_path = temp_path / "operating.xlsx"
-        shutil.copy2(args.database, test_database)
-        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        from db.backup import backup_database
+        backup_database(args.database, test_database)
 
         import ttkbootstrap as ttk
         from openpyxl import load_workbook

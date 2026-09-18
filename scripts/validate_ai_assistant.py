@@ -1,4 +1,3 @@
-import shutil
 import sqlite3
 import sys
 import tempfile
@@ -11,7 +10,8 @@ def main():
     source_db = project_root / "supplier_data.db"
     with tempfile.TemporaryDirectory(prefix="supply-chain-ai-") as temp_dir:
         test_db = Path(temp_dir) / "migration-rehearsal.db"
-        shutil.copy2(source_db, test_db)
+        from db.backup import backup_database
+        backup_database(source_db, test_db)
 
         from db.migration_runner import run_migrations
         from services import ai_conversation_service

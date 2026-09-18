@@ -10,7 +10,42 @@ from services import (
     procurement_service,
 )
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from openpyxl import Workbook, load_workbook
+
+
+def import_decimal(value, label, default=None):
+    if value is None or value == "":
+        if default is None:
+            raise ValueError(f"{label}不能为空（公式需先在 Excel 中计算并保存）")
+        value = default
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        raise ValueError(f"{label}必须为数字") from None
+    if not number.is_finite() or number < 0:
+        raise ValueError(f"{label}必须为非负有效数字")
+    return number
+
+
+def import_minor(value):
+    return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def import_settlement_fields(row, columns):
+    if "计价方式" not in columns:
+        return {}
+    mode = row[columns["计价方式"]] or "quantity"
+    mode = {label: key for key, label in procurement_service.SETTLEMENT_MODES.items()}.get(mode, mode)
+    result = {"settlement_mode": mode}
+    for label, key in (("实际净重", "net_weight"), ("过磅单位", "weight_unit"), ("重量单价", "weight_unit_price"), ("磅单号", "weigh_ticket_no")):
+        if label in columns:
+            result[key] = row[columns[label]]
+    if mode == "total":
+        if "整批结算金额" not in columns:
+            raise ValueError("按结算总额需要整批结算金额列")
+        result["settlement_total_cents"] = import_minor(import_decimal(row[columns["整批结算金额"]], "整批结算金额"))
+    return result
 
 
 class ImportExportPage:
@@ -60,11 +95,32 @@ class ImportExportPage:
             text="项目、合同分配、结算、开票、回款和成本",
             style="PageSub.TLabel",
         ).pack(side=LEFT, padx=8)
+        ttk.Button(frame4, text="备份数据库与附件", bootstyle=INFO,
+                   command=self.backup_business_data).pack(side=LEFT, padx=8)
 
         # 说明
         info = ttk.Label(self.parent, text="说明：采购数据已使用新版统一格式，正式采购需有供应商和产品，零星采购可只填商户与材料。项目名称不存在时，导入会自动建立项目。", wraplength=800, justify=LEFT)
         info.configure(style="PageSub.TLabel")
         info.pack(anchor=W, pady=(8, 0))
+
+    def backup_business_data(self):
+        from services.backup_service import create_backup_archive
+        path = filedialog.asksaveasfilename(
+            defaultextension=".zip", filetypes=[("业务备份", "*.zip")],
+            initialfile=f"经营系统备份_{datetime.now():%Y%m%d_%H%M%S}.zip",
+        )
+        if not path:
+            return
+        try:
+            result = create_backup_archive(path)
+        except Exception as error:
+            messagebox.showwarning("备份未完成", str(error))
+            return
+        message = f"已备份数据库及 {len(result['files'])} 个附件。\n{path}"
+        if result["missing_files"]:
+            messagebox.showwarning("备份完成，部分原文件缺失", message + "\n缺失清单已写入备份包。")
+        else:
+            messagebox.showinfo("备份完成", message)
 
     def export_operating_workbook(self):
         path = filedialog.asksaveasfilename(
@@ -99,13 +155,27 @@ class ImportExportPage:
         )
         add_sheet(
             "合同",
-            ["合同编号", "合同名称", "客户", "类型", "签订日期", "合同金额", "已分配", "状态"],
+            [
+                "合同编号", "合同名称", "客户", "类型", "签订日期",
+                "计价方式", "约定金额", "控制上限", "累计确认",
+                "涉及项目数", "状态",
+            ],
             [
                 [
                     row["contract_no"], row["name"], row["customer_name"],
                     contract_service.CONTRACT_TYPES[row["contract_type"]],
-                    row["sign_date"], row["tax_inclusive_amount_minor"] / 100,
-                    row["allocated_minor"] / 100,
+                    row["sign_date"],
+                    contract_service.PRICING_MODES[row["pricing_mode"]],
+                    (
+                        None if row["pricing_mode"] == "actual"
+                        else row["tax_inclusive_amount_minor"] / 100
+                    ),
+                    (
+                        row["control_limit_minor"] / 100
+                        if row["control_limit_minor"] is not None else None
+                    ),
+                    row["settled_minor"] / 100,
+                    row["project_count"],
                     contract_service.CONTRACT_STATUSES[row["status"]],
                 ]
                 for row in contract_service.list_contracts(include_void=True)
@@ -243,13 +313,13 @@ class ImportExportPage:
         ws.title = "产品"
         headers = [
             "ID", "供应商ID", "供应商名称", "产品名称", "规格", "单位",
-            "材料单价（未税）", "税率（%）", "含税单价", "备注"
+            "材料单价（未税）", "税率（%）", "含税单价", "备注", "报价口径"
         ]
         ws.append(headers)
         for row in master_data_service.list_supplier_offers(active_only=False):
             ws.append([row["id"], row["supplier_id"], row["supplier_name"], row["name"],
                        row["specification"], row["unit"], row["price"],
-                       row["tax_rate_percent"], row["tax_inclusive_price"], row["notes"]])
+                       row["tax_rate_percent"], row["tax_inclusive_price"], row["notes"], row["price_basis"]])
         wb.save(path)
         messagebox.showinfo("成功", f"产品数据已导出到：\n{path}")
 
@@ -289,6 +359,10 @@ class ImportExportPage:
             }
             if tax_rate is not None:
                 data["tax_rate_percent"] = tax_rate
+            if "报价口径" in headers:
+                data["price_basis"] = row[headers.index("报价口径")] or "exclusive"
+                if data["price_basis"] == "inclusive":
+                    data["price"] = row[headers.index("含税单价")]
             master_data_service.create_supplier_offer(data)
             count += 1
         messagebox.showinfo("成功", f"成功导入 {count} 条产品数据")
@@ -305,10 +379,14 @@ class ImportExportPage:
             "供应商/商户", "材料名称", "规格", "单位", "数量",
             "材料单价（未税）", "税率（%）", "含税单价", "未税材料额",
             "税额", "含税材料额", "运费", "计入项目成本",
-            "成本类别", "支付方式", "支付状态", "票据状态", "经办人", "用途", "备注"
+            "成本类别", "支付方式", "支付状态", "票据状态", "经办人", "用途", "备注", "报价口径",
+            "计价方式", "实际净重", "过磅单位", "重量单价", "整批结算金额", "磅单号"
         ]
         ws.append(headers)
-        for row in procurement_service.list_purchase_orders():
+        exported_orders = set()
+        for row in procurement_service.list_purchase_orders(detail_rows=True):
+            freight = row["freight_amount_cents"] if row["id"] not in exported_orders else 0
+            exported_orders.add(row["id"])
             ws.append([
                 row["id"], row["order_no"], row["purchase_type"], row["purchase_date"],
                 row["project_name"] or "", row["supplier_id"], row["product_id"],
@@ -317,11 +395,13 @@ class ImportExportPage:
                 row["material_unit_price_cents"] / 100, row["tax_rate_bps"] / 100,
                 row["tax_inclusive_unit_price_cents"] / 100,
                 row["material_amount_cents"] / 100, row["tax_amount_cents"] / 100,
-                row["line_amount_cents"] / 100, row["freight_amount_cents"] / 100,
-                row["project_cost_cents"] / 100, row["cost_category"],
+                row["line_amount_cents"] / 100, freight / 100,
+                (row["line_amount_cents"] + freight) / 100, row["cost_category"],
                 row["payment_method"], row["payment_status"],
                 row["invoice_status"], row["purchaser"], row["purpose"],
-                row["notes"] or row["item_notes"]
+                row["notes"] or row["item_notes"], row["price_basis"],
+                procurement_service.SETTLEMENT_MODES[row["settlement_mode"]], row["net_weight"], row["weight_unit"], row["weight_unit_price"],
+                row["settlement_total_cents"] / 100 if row["settlement_total_cents"] is not None else None, row["weigh_ticket_no"]
             ])
         wb.save(path)
         messagebox.showinfo("成功", f"采购记录已导出到：\n{path}")
@@ -330,7 +410,11 @@ class ImportExportPage:
         path = filedialog.askopenfilename(filetypes=[("Excel 文件", "*.xlsx")])
         if not path:
             return
-        wb = load_workbook(path)
+        try:
+            wb = load_workbook(path, data_only=True)
+        except Exception as error:
+            messagebox.showwarning("无法读取采购文件", str(error))
+            return
         ws = wb.active
         headers = [cell.value for cell in ws[1]]
         is_v2 = "采购类型" in headers and "供应商/商户" in headers
@@ -339,24 +423,40 @@ class ImportExportPage:
         projects = {p["name"]: p["id"] for p in project_service.list_projects()}
         count = 0
         skipped = 0
-        for row in ws.iter_rows(min_row=2, values_only=True):
+        errors = []
+        pending_orders = {}
+        invalid_orders = set()
+
+        def queue_purchase(header, item):
+            key = header.get("order_no") or f"row:{row_number}"
+            if key not in pending_orders:
+                pending_orders[key] = (dict(header), [], row_number)
+            saved_header, items, _ = pending_orders[key]
+            for field in ("purchase_type", "project_id", "project_name", "supplier_id", "merchant_name_snapshot", "purchase_date", "payment_method", "payment_status", "invoice_status", "purchaser"):
+                if saved_header.get(field) != header.get(field):
+                    raise ValueError("同一采购单的供应商、项目、日期和付款信息必须一致")
+            if items:
+                saved_header["freight_amount_cents"] = saved_header.get("freight_amount_cents", 0) + header.get("freight_amount_cents", 0)
+            items.append(item)
+        for row_number, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if not any(value is not None and str(value).strip() for value in row):
+                continue
             try:
                 if is_v2:
                     if not row or not row[2] or not row[7] or not row[8]:
-                        skipped += 1
-                        continue
+                        raise ValueError("采购类型、供应商/商户、材料名称不能为空")
                     project_name = str(row[4]).strip() if row[4] else ""
-                    if project_name and project_name not in projects:
-                        projects[project_name] = project_service.create_project({"name": project_name, "notes": "由采购 Excel 导入创建"})
-                    purchase_type = row[2] if row[2] in ("正式采购", "零星采购") else "零星采购"
+                    if row[2] not in ("正式采购", "零星采购"):
+                        raise ValueError("采购类型只能为正式采购或零星采购")
+                    purchase_type = row[2]
                     supplier_id = int(row[5]) if row[5] else None
                     product_id = int(row[6]) if row[6] else None
-                    quantity = float(row[11] or 1)
-                    unit_price = float(row[12] or 0)
-                    amount = float(row[13] or quantity * unit_price)
+                    quantity = import_decimal(row[11], "数量")
+                    unit_price = import_decimal(row[12], "单价")
+                    amount = quantity * unit_price if has_tax_freight else import_decimal(row[13], "金额", quantity * unit_price)
                     if has_tax_freight:
-                        tax_rate = float(row[column["税率（%）"]] or 0)
-                        freight = float(row[column["运费"]] or 0)
+                        tax_rate = import_decimal(row[column["税率（%）"]], "税率", 0)
+                        freight = import_decimal(row[column["运费"]], "运费", 0)
                         cost_category = row[column["成本类别"]] or "材料费"
                         payment_method = row[column["支付方式"]] or "未记录"
                         payment_status = row[column["支付状态"]] or "未确认"
@@ -366,7 +466,7 @@ class ImportExportPage:
                         notes = row[column["备注"]] or ""
                     else:
                         tax_rate = None
-                        freight = 0
+                        freight = Decimal(0)
                         cost_category = row[14] or "材料费"
                         payment_method = row[15] or "未记录"
                         payment_status = row[16] or "未确认"
@@ -374,10 +474,11 @@ class ImportExportPage:
                         purchaser = row[18] or ""
                         purpose = row[19] or ""
                         notes = row[20] or ""
-                    procurement_service.add_purchase_order({
+                    queue_purchase({
                         "order_no": str(row[1]).strip() if row[1] else None,
                         "purchase_type": purchase_type,
                         "project_id": projects.get(project_name),
+                        "project_name": project_name,
                         "supplier_id": supplier_id,
                         "merchant_name_snapshot": str(row[7]).strip(),
                         "purchase_date": str(row[3])[:10],
@@ -385,55 +486,81 @@ class ImportExportPage:
                         "payment_status": payment_status,
                         "invoice_status": invoice_status,
                         "purchaser": purchaser,
-                        "freight_amount_cents": round(freight * 100),
+                        "freight_amount_cents": import_minor(freight),
                         "notes": notes,
                     }, {
                         "product_id": product_id, "material_name_snapshot": str(row[8]).strip(),
                         "specification_snapshot": row[9] or "", "unit_snapshot": row[10] or "",
-                        "quantity": quantity,
+                        "quantity": str(quantity),
                         "cost_category": cost_category,
+                        **import_settlement_fields(row, column),
                         "purpose": purpose, "notes": notes,
                         **(
                             {
-                                "material_unit_price_cents": round(unit_price * 100),
-                                "tax_rate_bps": round(tax_rate * 100),
+                                "material_unit_price_cents": import_minor(unit_price),
+                                "tax_rate_bps": import_minor(tax_rate),
+                                "price_basis": (row[column["报价口径"]] or "exclusive") if "报价口径" in column else "exclusive",
+                                "tax_inclusive_unit_price_cents": import_minor(import_decimal(row[column["含税单价"]], "含税单价")) if "报价口径" in column and row[column["报价口径"]] == "inclusive" else None,
                             }
                             if tax_rate is not None
                             else {
-                                "unit_price_cents": round(unit_price * 100),
-                                "line_amount_cents": round(amount * 100),
+                                "unit_price_cents": import_minor(unit_price),
+                                "line_amount_cents": import_minor(amount),
                             }
                         ),
                     })
                 else:
                     # 兼容旧版 12 列模板，导入后直接进入新版正式采购。
                     if not row or not row[2] or not row[3]:
-                        skipped += 1
-                        continue
+                        raise ValueError("旧模板的供应商和产品编号不能为空")
                     supplier_id, product_id = int(row[2]), int(row[3])
                     supplier = master_data_service.get_supplier_by_legacy_id(supplier_id)
                     product = master_data_service.get_supplier_offer_by_legacy_id(product_id)
                     if not supplier or not product:
-                        skipped += 1
-                        continue
+                        raise ValueError("找不到旧模板对应的供应商或产品")
                     project_name = str(row[10]).strip() if len(row) > 10 and row[10] else ""
-                    if project_name and project_name not in projects:
-                        projects[project_name] = project_service.create_project({"name": project_name, "notes": "由旧版采购 Excel 导入创建"})
-                    quantity, unit_price = float(row[7] or 1), float(row[8] or 0)
-                    amount = float(row[9] or quantity * unit_price)
-                    procurement_service.add_purchase_order({
+                    quantity = import_decimal(row[7], "数量")
+                    unit_price = import_decimal(row[8], "单价")
+                    amount = import_decimal(row[9], "金额", quantity * unit_price)
+                    queue_purchase({
                         "purchase_type": "正式采购", "project_id": projects.get(project_name),
+                        "project_name": project_name,
                         "supplier_id": supplier["id"], "merchant_name_snapshot": supplier["name"],
                         "purchase_date": str(row[1])[:10], "notes": row[11] if len(row) > 11 and row[11] else "",
                     }, {
                         "product_id": product["id"], "material_name_snapshot": product["name"],
                         "specification_snapshot": product["specification"], "unit_snapshot": product["unit"],
-                        "quantity": quantity, "unit_price_cents": round(unit_price * 100),
-                        "line_amount_cents": round(amount * 100), "cost_category": "材料费",
+                        "quantity": str(quantity), "unit_price_cents": import_minor(unit_price),
+                        "line_amount_cents": import_minor(amount), "cost_category": "材料费",
                     })
-                count += 1
-            except Exception:
+            except Exception as error:
                 skipped += 1
-        messagebox.showinfo("导入完成", f"成功导入 {count} 条，跳过 {skipped} 条。")
+                errors.append((row_number, str(error)))
+                if is_v2 and len(row) > 1 and row[1]:
+                    invalid_orders.add(str(row[1]).strip())
+        for key, (header, items, first_row) in pending_orders.items():
+            if key in invalid_orders:
+                errors.append((first_row, "同单存在错误，本单全部未保存"))
+                continue
+            try:
+                procurement_service.add_purchase_order(header, items)
+                count += 1
+            except Exception as error:
+                skipped += 1
+                errors.append((first_row, str(error)))
+        wb.close()
+        if errors:
+            dialog = ttk.Toplevel(self.parent)
+            dialog.title("采购导入结果")
+            from ui.dialogs import build_form_dialog, add_form_actions
+            body, footer = build_form_dialog(dialog, self.parent, 760, 500, min_width=600, min_height=400)
+            ttk.Label(body, text=f"成功 {count} 条，失败 {skipped} 条。已成功行不要重复导入。失败行未保存。", wraplength=660).pack(anchor=W)
+            details = ttk.Text(body, wrap="word", height=16)
+            details.pack(fill=BOTH, expand=True, pady=8)
+            details.insert("1.0", "\n".join(f"第 {number} 行：{reason}" for number, reason in errors))
+            details.configure(state="disabled")
+            add_form_actions(footer, cancel_command=dialog.destroy, primary_text="关闭", primary_command=dialog.destroy)
+        else:
+            messagebox.showinfo("导入完成", f"成功导入 {count} 条。")
 
 

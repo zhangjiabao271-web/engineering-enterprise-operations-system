@@ -30,7 +30,9 @@ def main():
         row[0]
         for row in conn.execute(
             """SELECT name FROM sqlite_master
-               WHERE name IN ('ai_conversations', 'ai_messages')"""
+               WHERE name IN (
+                   'ai_conversations', 'ai_messages', 'ai_message_feedback'
+               )"""
         )
     }
     conn.close()
@@ -46,7 +48,9 @@ def main():
     )
     if integrity != "ok" or foreign_keys:
         raise SystemExit(1)
-    if version < 330 or tables != {"ai_conversations", "ai_messages"}:
+    if version < 450 or tables != {
+        "ai_conversations", "ai_messages", "ai_message_feedback"
+    }:
         raise SystemExit(2)
     if any(value for value in partner_gaps.values() if value is not None):
         raise SystemExit(3)

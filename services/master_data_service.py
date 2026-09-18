@@ -3,7 +3,28 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
 
-from db.connection import get_connection
+from db.connection import db_read, db_transaction
+from services.procurement_service import calculate_purchase_amounts, record_price_revision
+
+
+def _offer_price(data, tax_rate_bps):
+    basis = data.get("price_basis", "exclusive")
+    quoted = _price_minor(data.get("price"))
+    amounts = calculate_purchase_amounts(1, quoted, tax_rate_bps,
+        price_basis=basis, tax_inclusive_unit_price_cents=quoted)
+    return basis, quoted, amounts["material_unit_price_cents"]
+
+
+def _enrich_offer_price(row):
+    if row["price_basis"] == "inclusive":
+        row["tax_inclusive_price_minor"] = row["quoted_price_minor"]
+    else:
+        row["tax_inclusive_price_minor"] = _tax_inclusive_minor(row["price_minor"], row["tax_rate_bps"])
+    row["tax_inclusive_price"] = row["tax_inclusive_price_minor"] / 100
+    row["quoted_price"] = (row["quoted_price_minor"] if row["quoted_price_minor"] is not None else row["price_minor"]) / 100
+
+
+SUPPLIER_KIND_LABELS = {"unclassified": "未分类", "manufacturer": "生产厂家", "distributor": "经销门店"}
 
 
 def _public_id():
@@ -50,8 +71,7 @@ def _tax_inclusive_minor(price_minor, tax_rate_bps):
 
 
 def list_business_partners(keyword="", role="", status=""):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """
             SELECT bp.id, bp.partner_code, bp.legal_name,
                    COALESCE(bp.short_name, '') AS short_name,
@@ -98,16 +118,14 @@ def list_business_partners(keyword="", role="", status=""):
             row["name"] = row["legal_name"]
             row["roles"] = set((row.pop("role_codes") or "").split(",")) - {""}
         return rows
-    finally:
-        conn.close()
 
 
 def list_suppliers(keyword="", category="", active_only=True, status=""):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """
             SELECT bp.id, bp.partner_code, bp.legal_name AS name,
                    bp.entity_type,
+                   COALESCE(sp.supplier_kind, 'unclassified') AS supplier_kind,
                    COALESCE(sp.supplier_category, '') AS category,
                    COALESCE((SELECT pc.name FROM partner_contacts pc
                              WHERE pc.partner_id=bp.id AND pc.is_active=1
@@ -143,14 +161,162 @@ def list_suppliers(keyword="", category="", active_only=True, status=""):
         for row in result:
             row["default_tax_rate_percent"] = row["default_tax_rate_bps"] / 100
         return result
-    finally:
-        conn.close()
 
 
-def list_customers(keyword="", active_only=False, status=""):
-    conn = get_connection()
+def _business_year(value=None):
     try:
+        year = int(value or datetime.now().year)
+    except (TypeError, ValueError) as error:
+        raise ValueError("经营年度必须是有效年份") from error
+    if year < 1900 or year > 9998:
+        raise ValueError("经营年度必须在 1900 到 9998 之间")
+    return year
+
+
+def _business_period(value=None):
+    year = _business_year(value)
+    return year, f"{year:04d}-01-01", f"{year + 1:04d}-01-01"
+
+
+def list_customer_business_years():
+    """Return available operating years and always include the current year."""
+    with db_read() as conn:
+        years = {datetime.now().year}
+        rows = conn.execute(
+            """SELECT business_year FROM (
+                   SELECT substr(settlement_date, 1, 4) AS business_year
+                   FROM settlements WHERE status='active'
+                   UNION
+                   SELECT substr(invoice_date, 1, 4)
+                   FROM sales_invoices WHERE status='active'
+                   UNION
+                   SELECT substr(receipt_date, 1, 4)
+                   FROM receipts WHERE status='active'
+               )
+               WHERE length(business_year)=4
+                 AND business_year GLOB '[0-9][0-9][0-9][0-9]'"""
+        ).fetchall()
+        years.update(int(row["business_year"]) for row in rows)
+        return sorted(years, reverse=True)
+
+
+def summarize_customer_business(rows):
+    """Summarize customer rows for the archive dashboard."""
+    customers = list(rows or [])
+    total_income_minor = sum(
+        int(row.get("yearly_business_minor") or 0) for row in customers
+    )
+    total_receivable_minor = sum(
+        int(row.get("current_receivable_minor") or 0) for row in customers
+    )
+
+    def ranked_rows(amount_key, total_minor):
+        result = []
+        for row in customers:
+            amount_minor = int(row.get(amount_key) or 0)
+            if amount_minor <= 0:
+                continue
+            result.append(
+                {
+                    "customer_id": row.get("id"),
+                    "label": (
+                        row.get("short_name") or row.get("name") or "未命名客户"
+                    ).strip(),
+                    "amount_minor": amount_minor,
+                    "share_percent": (
+                        amount_minor / total_minor * 100 if total_minor else 0.0
+                    ),
+                }
+            )
+        return sorted(
+            result,
+            key=lambda item: (-item["amount_minor"], item["label"]),
+        )
+
+    return {
+        "total_income_minor": total_income_minor,
+        "income_customer_count": sum(
+            1 for row in customers
+            if int(row.get("yearly_business_minor") or 0) > 0
+        ),
+        "total_receivable_minor": total_receivable_minor,
+        "receivable_customer_count": sum(
+            1 for row in customers
+            if int(row.get("current_receivable_minor") or 0) > 0
+        ),
+        "income_rows": ranked_rows("yearly_business_minor", total_income_minor),
+        "receivable_rows": ranked_rows(
+            "current_receivable_minor", total_receivable_minor
+        ),
+    }
+
+
+def list_customers(keyword="", active_only=False, status="", year=None):
+    _, period_start, period_end = _business_period(year)
+    with db_read() as conn:
         sql = """
+            WITH yearly_income AS (
+                SELECT COALESCE(p.customer_partner_id, c.customer_partner_id)
+                           AS customer_id,
+                       SUM(s.amount_minor) AS amount_minor,
+                       MAX(s.settlement_date) AS last_date
+                FROM settlements s
+                JOIN projects p ON p.id=s.project_id
+                LEFT JOIN contracts c ON c.id=s.contract_id
+                WHERE s.status='active'
+                  AND s.settlement_date>=? AND s.settlement_date<?
+                GROUP BY COALESCE(p.customer_partner_id, c.customer_partner_id)
+            ),
+            yearly_receipts AS (
+                SELECT COALESCE(p.customer_partner_id, c.customer_partner_id)
+                           AS customer_id,
+                       SUM(ra.allocated_amount_minor) AS amount_minor,
+                       MAX(r.receipt_date) AS last_date
+                FROM receipt_allocations ra
+                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active'
+                JOIN projects p ON p.id=ra.project_id
+                LEFT JOIN contracts c ON c.id=ra.contract_id
+                WHERE r.receipt_date>=? AND r.receipt_date<?
+                GROUP BY COALESCE(p.customer_partner_id, c.customer_partner_id)
+            ),
+            yearly_invoices AS (
+                SELECT COALESCE(p.customer_partner_id, c.customer_partner_id)
+                           AS customer_id,
+                       MAX(i.invoice_date) AS last_date
+                FROM sales_invoices i
+                JOIN projects p ON p.id=i.project_id
+                LEFT JOIN contracts c ON c.id=i.contract_id
+                WHERE i.status='active'
+                  AND i.invoice_date>=? AND i.invoice_date<?
+                GROUP BY COALESCE(p.customer_partner_id, c.customer_partner_id)
+            ),
+            all_income AS (
+                SELECT COALESCE(p.customer_partner_id, c.customer_partner_id)
+                           AS customer_id,
+                       SUM(s.amount_minor) AS amount_minor
+                FROM settlements s
+                JOIN projects p ON p.id=s.project_id
+                LEFT JOIN contracts c ON c.id=s.contract_id
+                WHERE s.status='active'
+                GROUP BY COALESCE(p.customer_partner_id, c.customer_partner_id)
+            ),
+            all_receipts AS (
+                SELECT COALESCE(p.customer_partner_id, c.customer_partner_id)
+                           AS customer_id,
+                       SUM(ra.allocated_amount_minor) AS amount_minor
+                FROM receipt_allocations ra
+                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active'
+                JOIN projects p ON p.id=ra.project_id
+                LEFT JOIN contracts c ON c.id=ra.contract_id
+                GROUP BY COALESCE(p.customer_partner_id, c.customer_partner_id)
+            ),
+            active_projects AS (
+                SELECT customer_partner_id AS customer_id, COUNT(*) AS project_count
+                FROM projects
+                WHERE customer_partner_id IS NOT NULL
+                  AND status IN ('筹备中', '进行中')
+                GROUP BY customer_partner_id
+            )
             SELECT bp.id, bp.partner_code, bp.legal_name AS name,
                    bp.legal_name, COALESCE(bp.short_name, '') AS short_name,
                    bp.entity_type,
@@ -164,39 +330,202 @@ def list_customers(keyword="", active_only=False, status=""):
                              ORDER BY pc.is_primary DESC, pc.id LIMIT 1), '') AS contact,
                    COALESCE((SELECT pc.phone FROM partner_contacts pc
                              WHERE pc.partner_id=bp.id AND pc.is_active=1
-                             ORDER BY pc.is_primary DESC, pc.id LIMIT 1), '') AS contact_phone
+                             ORDER BY pc.is_primary DESC, pc.id LIMIT 1), '') AS contact_phone,
+                   COALESCE(yi.amount_minor, 0) AS yearly_business_minor,
+                   COALESCE(yr.amount_minor, 0) AS yearly_receipt_minor,
+                   COALESCE(ai.amount_minor, 0) AS total_business_minor,
+                   COALESCE(ar.amount_minor, 0) AS total_receipt_minor,
+                   COALESCE(ap.project_count, 0) AS active_project_count,
+                   MAX(
+                       COALESCE(yi.last_date, ''),
+                       COALESCE(yr.last_date, ''),
+                       COALESCE(yiv.last_date, '')
+                   ) AS latest_business_date
             FROM business_partners bp
             JOIN partner_roles pr
               ON pr.partner_id=bp.id AND pr.role_code='customer'
             LEFT JOIN customer_profiles cp ON cp.partner_id=bp.id
+            LEFT JOIN yearly_income yi ON yi.customer_id=bp.id
+            LEFT JOIN yearly_receipts yr ON yr.customer_id=bp.id
+            LEFT JOIN yearly_invoices yiv ON yiv.customer_id=bp.id
+            LEFT JOIN all_income ai ON ai.customer_id=bp.id
+            LEFT JOIN all_receipts ar ON ar.customer_id=bp.id
+            LEFT JOIN active_projects ap ON ap.customer_id=bp.id
             WHERE 1=1
         """
-        params = []
+        params = [
+            period_start, period_end,
+            period_start, period_end,
+            period_start, period_end,
+        ]
         if active_only:
             sql += " AND bp.status='active'"
         if status:
             sql += " AND bp.status=?"
             params.append(status)
         if keyword:
-            sql += " AND (bp.legal_name LIKE ? OR bp.partner_code LIKE ?)"
-            params.extend([f"%{keyword}%"] * 2)
-        sql += " ORDER BY bp.legal_name, bp.id"
+            sql += """ AND (
+                bp.legal_name LIKE ? OR bp.short_name LIKE ?
+                OR bp.partner_code LIKE ? OR bp.unified_credit_code LIKE ?
+            )"""
+            params.extend([f"%{keyword}%"] * 4)
+        sql += " ORDER BY yearly_business_minor DESC, bp.legal_name, bp.id"
         result = [dict(row) for row in conn.execute(sql, params).fetchall()]
         for row in result:
             row["credit_limit"] = row["credit_limit_minor"] / 100
+            row["current_receivable_minor"] = max(
+                row["total_business_minor"] - row["total_receipt_minor"], 0
+            )
         return result
-    finally:
-        conn.close()
+
+
+def get_customer_business_detail(partner_id, year=None):
+    """Return one customer's selected-year project activity and current balance."""
+    partner_id = int(partner_id)
+    year, period_start, period_end = _business_period(year)
+    with db_read() as conn:
+        customer = conn.execute(
+            """SELECT bp.id, bp.legal_name AS name, bp.status,
+                      COALESCE((SELECT pc.name FROM partner_contacts pc
+                                WHERE pc.partner_id=bp.id AND pc.is_active=1
+                                ORDER BY pc.is_primary DESC, pc.id LIMIT 1), '') AS contact,
+                      COALESCE((SELECT pc.phone FROM partner_contacts pc
+                                WHERE pc.partner_id=bp.id AND pc.is_active=1
+                                ORDER BY pc.is_primary DESC, pc.id LIMIT 1), '') AS contact_phone
+               FROM business_partners bp
+               JOIN partner_roles pr
+                 ON pr.partner_id=bp.id AND pr.role_code='customer'
+               WHERE bp.id=?""",
+            (partner_id,),
+        ).fetchone()
+        if not customer:
+            raise ValueError("客户档案不存在")
+
+        sql = """
+            WITH yearly_income AS (
+                SELECT s.project_id, SUM(s.amount_minor) AS amount_minor,
+                       MAX(s.settlement_date) AS last_date
+                FROM settlements s
+                JOIN projects p ON p.id=s.project_id
+                LEFT JOIN contracts c ON c.id=s.contract_id
+                WHERE s.status='active'
+                  AND COALESCE(p.customer_partner_id, c.customer_partner_id)=?
+                  AND s.settlement_date>=? AND s.settlement_date<?
+                GROUP BY s.project_id
+            ),
+            yearly_invoices AS (
+                SELECT i.project_id, SUM(i.amount_minor) AS amount_minor,
+                       MAX(i.invoice_date) AS last_date
+                FROM sales_invoices i
+                JOIN projects p ON p.id=i.project_id
+                LEFT JOIN contracts c ON c.id=i.contract_id
+                WHERE i.status='active'
+                  AND COALESCE(p.customer_partner_id, c.customer_partner_id)=?
+                  AND i.invoice_date>=? AND i.invoice_date<?
+                GROUP BY i.project_id
+            ),
+            yearly_receipts AS (
+                SELECT ra.project_id, SUM(ra.allocated_amount_minor) AS amount_minor,
+                       MAX(r.receipt_date) AS last_date
+                FROM receipt_allocations ra
+                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active'
+                JOIN projects p ON p.id=ra.project_id
+                LEFT JOIN contracts c ON c.id=ra.contract_id
+                WHERE COALESCE(p.customer_partner_id, c.customer_partner_id)=?
+                  AND r.receipt_date>=? AND r.receipt_date<?
+                GROUP BY ra.project_id
+            ),
+            all_income AS (
+                SELECT s.project_id, SUM(s.amount_minor) AS amount_minor
+                FROM settlements s
+                JOIN projects p ON p.id=s.project_id
+                LEFT JOIN contracts c ON c.id=s.contract_id
+                WHERE s.status='active'
+                  AND COALESCE(p.customer_partner_id, c.customer_partner_id)=?
+                GROUP BY s.project_id
+            ),
+            all_receipts AS (
+                SELECT ra.project_id, SUM(ra.allocated_amount_minor) AS amount_minor
+                FROM receipt_allocations ra
+                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active'
+                JOIN projects p ON p.id=ra.project_id
+                LEFT JOIN contracts c ON c.id=ra.contract_id
+                WHERE COALESCE(p.customer_partner_id, c.customer_partner_id)=?
+                GROUP BY ra.project_id
+            ),
+            customer_projects AS (
+                SELECT id AS project_id FROM projects WHERE customer_partner_id=?
+                UNION SELECT project_id FROM yearly_income
+                UNION SELECT project_id FROM yearly_invoices
+                UNION SELECT project_id FROM yearly_receipts
+                UNION SELECT project_id FROM all_income
+                UNION SELECT project_id FROM all_receipts
+            )
+            SELECT p.id AS project_id, p.project_code, p.name AS project_name,
+                   p.status AS project_status, p.business_mode,
+                   COALESCE(yi.amount_minor, 0) AS yearly_business_minor,
+                   COALESCE(yiv.amount_minor, 0) AS yearly_invoice_minor,
+                   COALESCE(yr.amount_minor, 0) AS yearly_receipt_minor,
+                   COALESCE(ai.amount_minor, 0) AS total_business_minor,
+                   COALESCE(ar.amount_minor, 0) AS total_receipt_minor,
+                   MAX(
+                       COALESCE(yi.last_date, ''),
+                       COALESCE(yiv.last_date, ''),
+                       COALESCE(yr.last_date, '')
+                   ) AS latest_business_date
+            FROM customer_projects cp
+            JOIN projects p ON p.id=cp.project_id
+            LEFT JOIN yearly_income yi ON yi.project_id=p.id
+            LEFT JOIN yearly_invoices yiv ON yiv.project_id=p.id
+            LEFT JOIN yearly_receipts yr ON yr.project_id=p.id
+            LEFT JOIN all_income ai ON ai.project_id=p.id
+            LEFT JOIN all_receipts ar ON ar.project_id=p.id
+            ORDER BY yearly_business_minor DESC,
+                     CASE p.status WHEN '进行中' THEN 1 WHEN '筹备中' THEN 2 ELSE 3 END,
+                     p.id DESC
+        """
+        params = (
+            partner_id, period_start, period_end,
+            partner_id, period_start, period_end,
+            partner_id, period_start, period_end,
+            partner_id, partner_id, partner_id,
+        )
+        projects = [dict(row) for row in conn.execute(sql, params).fetchall()]
+        for project in projects:
+            project["current_receivable_minor"] = max(
+                project["total_business_minor"] - project["total_receipt_minor"],
+                0,
+            )
+        summary = {
+            "yearly_business_minor": sum(
+                row["yearly_business_minor"] for row in projects
+            ),
+            "yearly_invoice_minor": sum(
+                row["yearly_invoice_minor"] for row in projects
+            ),
+            "yearly_receipt_minor": sum(
+                row["yearly_receipt_minor"] for row in projects
+            ),
+            "current_receivable_minor": sum(
+                row["current_receivable_minor"] for row in projects
+            ),
+        }
+        return {
+            "customer": dict(customer),
+            "year": year,
+            "summary": summary,
+            "projects": projects,
+        }
 
 
 def get_business_partner(partner_id):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         row = conn.execute(
             """SELECT bp.*,
                       COALESCE(cp.customer_category, '') AS customer_category,
                       COALESCE(cp.settlement_terms, '') AS settlement_terms,
                       COALESCE(cp.credit_limit_minor, 0) AS credit_limit_minor,
+                      COALESCE(sp.supplier_kind, 'unclassified') AS supplier_kind,
                       COALESCE(sp.supplier_category, '') AS supplier_category,
                       COALESCE(sp.price_level, '') AS price_level,
                       COALESCE(sp.delivery_rating, '') AS delivery_rating,
@@ -238,8 +567,6 @@ def get_business_partner(partner_id):
             }
         )
         return result
-    finally:
-        conn.close()
 
 
 def _validate_partner_data(data):
@@ -310,7 +637,10 @@ def _assert_role_removable(conn, partner_id, role):
             raise ValueError(f"该客商已有{label}历史，不能移除对应角色；可以停用客商")
 
 
-def _save_partner_profiles(conn, partner_id, roles, data, now):
+def _save_partner_profiles(
+    conn, partner_id, roles, data, now, *, profile_roles=None
+):
+    profile_roles = roles if profile_roles is None else set(profile_roles)
     existing_roles = {
         row["role_code"] for row in conn.execute(
             "SELECT role_code FROM partner_roles WHERE partner_id=?", (partner_id,)
@@ -327,7 +657,7 @@ def _save_partner_profiles(conn, partner_id, roles, data, now):
             "INSERT INTO partner_roles(partner_id, role_code, created_at) VALUES (?, ?, ?)",
             (partner_id, role, now),
         )
-    if "customer" in roles:
+    if "customer" in profile_roles:
         conn.execute(
             """INSERT INTO customer_profiles
                (partner_id, customer_category, settlement_terms,
@@ -345,7 +675,9 @@ def _save_partner_profiles(conn, partner_id, roles, data, now):
                 now,
             ),
         )
-    if "supplier" in roles:
+    if "supplier" in profile_roles:
+        if "supplier_kind" in data and data["supplier_kind"] not in SUPPLIER_KIND_LABELS:
+            raise ValueError("供应商类型只能为生产厂家、经销门店或未分类")
         conn.execute(
             """INSERT INTO supplier_profiles
                (partner_id, supplier_category, price_level, delivery_rating,
@@ -372,18 +704,81 @@ def _save_partner_profiles(conn, partner_id, roles, data, now):
         )
 
 
+        if "supplier_kind" in data:
+            conn.execute("UPDATE supplier_profiles SET supplier_kind=? WHERE partner_id=?", (data["supplier_kind"], partner_id))
+
+
+def _same_role_message(roles):
+    if roles == {"customer"}:
+        return "同名客户档案已存在"
+    if roles == {"supplier"}:
+        return "同名供应商档案已存在"
+    return "同名客商已包含所选角色"
+
+
+def _extend_partner_roles(conn, partner_id, roles, data, now):
+    existing_roles = {
+        row["role_code"]
+        for row in conn.execute(
+            "SELECT role_code FROM partner_roles WHERE partner_id=?",
+            (partner_id,),
+        ).fetchall()
+    }
+    missing_roles = roles - existing_roles
+    if not missing_roles:
+        raise ValueError(_same_role_message(roles))
+
+    updates = {}
+    for field in (
+        "short_name",
+        "unified_credit_code",
+        "registered_address",
+        "business_address",
+        "invoice_phone",
+        "bank_name",
+        "bank_account",
+        "notes",
+    ):
+        value = (data.get(field) or "").strip()
+        if value:
+            updates[field] = value
+    if data.get("entity_type"):
+        updates["entity_type"] = data["entity_type"]
+    if data.get("status"):
+        updates["status"] = data["status"]
+    assignments = [f"{field}=?" for field in updates]
+    assignments.append("updated_at=?")
+    conn.execute(
+        f"UPDATE business_partners SET {', '.join(assignments)} WHERE id=?",
+        (*updates.values(), now, partner_id),
+    )
+
+    merged_roles = existing_roles | roles
+    _save_partner_profiles(
+        conn,
+        partner_id,
+        merged_roles,
+        data,
+        now,
+        profile_roles=missing_roles,
+    )
+    if (data.get("contact_name") or data.get("contact") or "").strip():
+        _replace_primary_contact_detail(conn, partner_id, data, now)
+
+
 def create_business_partner(data):
     legal_name, roles = _validate_partner_data(data)
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         organization_id = _organization_id(conn)
-        if conn.execute(
-            """SELECT 1 FROM business_partners
+        existing = conn.execute(
+            """SELECT id FROM business_partners
                WHERE organization_id=? AND lower(trim(legal_name))=lower(?)""",
             (organization_id, legal_name),
-        ).fetchone():
-            raise ValueError("同名客商已存在，请直接修改原档案并增加角色")
+        ).fetchone()
+        if existing:
+            now = _now()
+            _extend_partner_roles(conn, existing["id"], roles, data, now)
+            return existing["id"]
         prefix = "CUS" if roles == {"customer"} else "SUP" if roles == {"supplier"} else "BP"
         _, code = _partner_code(conn, prefix)
         now = _now()
@@ -410,20 +805,12 @@ def create_business_partner(data):
         ).lastrowid
         _save_partner_profiles(conn, partner_id, roles, data, now)
         _replace_primary_contact_detail(conn, partner_id, data, now)
-        conn.commit()
         return partner_id
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def update_business_partner(partner_id, data):
     legal_name, roles = _validate_partner_data(data)
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         organization_id = _organization_id(conn)
         duplicate = conn.execute(
             """SELECT 1 FROM business_partners
@@ -455,19 +842,12 @@ def update_business_partner(partner_id, data):
             raise ValueError("客商不存在")
         _save_partner_profiles(conn, int(partner_id), roles, data, now)
         _replace_primary_contact_detail(conn, int(partner_id), data, now)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def deactivate_business_partners(partner_ids):
     if not partner_ids:
         return
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         placeholders = ",".join("?" * len(partner_ids))
         now = _now()
         conn.execute(
@@ -478,12 +858,6 @@ def deactivate_business_partners(partner_ids):
             f"UPDATE supplier_offers SET status='inactive', updated_at=? WHERE supplier_partner_id IN ({placeholders})",
             (now, *partner_ids),
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def get_supplier(partner_id):
@@ -492,14 +866,11 @@ def get_supplier(partner_id):
 
 
 def get_supplier_by_legacy_id(legacy_supplier_id):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         row = conn.execute(
             "SELECT id FROM business_partners WHERE legacy_supplier_id=?",
             (legacy_supplier_id,),
         ).fetchone()
-    finally:
-        conn.close()
     return get_supplier(row["id"]) if row else None
 
 
@@ -590,8 +961,7 @@ def _price_minor(value):
 
 
 def create_supplier_offer(data):
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         now = _now()
         organization_id = _organization_id(conn)
         supplier = conn.execute(
@@ -610,54 +980,45 @@ def create_supplier_offer(data):
             if "tax_rate_percent" in data
             else supplier["default_tax_rate_bps"]
         )
+        basis, quoted, net = _offer_price(data, tax_rate_bps)
         cursor = conn.execute(
             """INSERT INTO supplier_offers
                (public_id, organization_id, supplier_partner_id, material_id,
-                price_minor, tax_rate_bps, notes, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                price_minor, tax_rate_bps, notes, status, created_at, updated_at, price_basis, quoted_price_minor)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
             (_public_id(), organization_id, data["supplier_id"], material_id,
-             _price_minor(data.get("price")), tax_rate_bps,
-             data.get("notes", ""), now, now),
+             net, tax_rate_bps,
+             data.get("notes", ""), now, now, basis, quoted),
         )
-        conn.commit()
         return cursor.lastrowid
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def update_supplier_offer(offer_id, data):
-    conn = get_connection()
-    try:
+    with db_transaction(immediate=True) as conn:
+        before = dict(conn.execute("SELECT * FROM supplier_offers WHERE id=?", (offer_id,)).fetchone() or {})
         organization_id = _organization_id(conn)
         material_id = _material_id(conn, organization_id, data)
         tax_rate_bps = _percent_to_bps(data.get("tax_rate_percent", 0))
+        basis, quoted, net = _offer_price(data, tax_rate_bps)
         result = conn.execute(
             """UPDATE supplier_offers SET supplier_partner_id=?, material_id=?,
-               price_minor=?, tax_rate_bps=?, notes=?, status='active', updated_at=?
+               price_minor=?, tax_rate_bps=?, notes=?, status='active', updated_at=?, price_basis=?, quoted_price_minor=?
                WHERE id=?""",
-            (data["supplier_id"], material_id, _price_minor(data.get("price")),
-             tax_rate_bps, data.get("notes", ""), _now(), offer_id),
+            (data["supplier_id"], material_id, net,
+             tax_rate_bps, data.get("notes", ""), _now(), basis, quoted, offer_id),
         )
         if not result.rowcount:
             raise ValueError("供应商报价不存在")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+        after = dict(conn.execute("SELECT * FROM supplier_offers WHERE id=?", (offer_id,)).fetchone())
+        record_price_revision(conn, "offer", offer_id, before, after, "供应商报价修改", _now())
 
 
 def list_supplier_offers(supplier_id=None, keyword="", active_only=True):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """
             SELECT so.id, so.supplier_partner_id AS supplier_id,
                    bp.legal_name AS supplier_name, m.name, m.specification,
-                   COALESCE(u.name, '') AS unit, so.price_minor,
+                   COALESCE(u.name, '') AS unit, so.price_minor, so.price_basis, so.quoted_price_minor,
                    so.tax_rate_bps AS offer_tax_rate_bps,
                    COALESCE(sp.default_tax_rate_bps, 0) AS default_tax_rate_bps,
                    COALESCE(so.notes, '') AS notes, so.material_id, so.public_id,
@@ -692,22 +1053,16 @@ def list_supplier_offers(supplier_id=None, keyword="", active_only=True):
             row["tax_rate_bps"] = effective_bps
             row["tax_rate_percent"] = effective_bps / 100
             row["price"] = row["price_minor"] / 100
-            row["tax_inclusive_price_minor"] = _tax_inclusive_minor(
-                row["price_minor"], effective_bps
-            )
-            row["tax_inclusive_price"] = row["tax_inclusive_price_minor"] / 100
+            _enrich_offer_price(row)
         return result
-    finally:
-        conn.close()
 
 
 def get_supplier_offer(offer_id):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         row = conn.execute(
             """SELECT so.id, so.supplier_partner_id AS supplier_id,
                       m.name, m.specification, COALESCE(u.name, '') AS unit,
-                      so.price_minor, so.tax_rate_bps AS offer_tax_rate_bps,
+                      so.price_minor, so.price_basis, so.quoted_price_minor, so.tax_rate_bps AS offer_tax_rate_bps,
                       COALESCE(sp.default_tax_rate_bps, 0) AS default_tax_rate_bps,
                       COALESCE(so.notes, '') AS notes, so.material_id
                FROM supplier_offers so JOIN materials m ON m.id=so.material_id
@@ -723,40 +1078,25 @@ def get_supplier_offer(offer_id):
         result["tax_rate_bps"] = effective_bps
         result["tax_rate_percent"] = effective_bps / 100
         result["price"] = result["price_minor"] / 100
-        result["tax_inclusive_price_minor"] = _tax_inclusive_minor(
-            result["price_minor"], effective_bps
-        )
-        result["tax_inclusive_price"] = result["tax_inclusive_price_minor"] / 100
+        _enrich_offer_price(result)
         return result
-    finally:
-        conn.close()
 
 
 def get_supplier_offer_by_legacy_id(legacy_product_id):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         row = conn.execute(
             "SELECT id FROM supplier_offers WHERE legacy_product_id=?",
             (legacy_product_id,),
         ).fetchone()
-    finally:
-        conn.close()
     return get_supplier_offer(row["id"]) if row else None
 
 
 def deactivate_supplier_offers(offer_ids):
     if not offer_ids:
         return
-    conn = get_connection()
-    try:
+    with db_transaction() as conn:
         placeholders = ",".join("?" * len(offer_ids))
         conn.execute(
             f"UPDATE supplier_offers SET status='inactive', updated_at=? WHERE id IN ({placeholders})",
             (_now(), *offer_ids),
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()

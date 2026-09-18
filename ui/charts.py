@@ -124,9 +124,20 @@ class MonthlyBarChart(ttk.Frame):
 
 
 class DonutBreakdown(ttk.Frame):
-    """Cost composition donut with a text legend that does not rely on color."""
+    """Part-to-whole donut with a text legend that does not rely on color."""
 
-    def __init__(self, parent, colors=None, **kwargs):
+    def __init__(
+        self,
+        parent,
+        colors=None,
+        *,
+        center_label="项目总成本",
+        empty_text="暂无成本",
+        limit=None,
+        other_label="其他",
+        compact_total=False,
+        **kwargs,
+    ):
         super().__init__(parent, style="Card.TFrame", **kwargs)
         self.colors = colors or (
             COLORS["primary"],
@@ -134,6 +145,11 @@ class DonutBreakdown(ttk.Frame):
             COLORS["cost_freight"],
             COLORS["cost_other"],
         )
+        self.center_label = center_label
+        self.empty_text = empty_text
+        self.limit = limit
+        self.other_label = other_label
+        self.compact_total = compact_total
         self.items = []
         self.canvas = tk.Canvas(
             self,
@@ -148,13 +164,27 @@ class DonutBreakdown(ttk.Frame):
         self.canvas.bind("<Configure>", lambda _event: self._draw())
 
     def set_data(self, items):
-        self.items = [
+        positive_items = [
             (label, int(amount or 0))
             for label, amount in items
             if int(amount or 0) > 0
         ]
+        self.items = self._condense_items(
+            positive_items, self.limit, self.other_label
+        )
         self._build_legend()
         self._draw()
+
+    @staticmethod
+    def _condense_items(items, limit, other_label):
+        if not limit or len(items) <= limit:
+            return items
+        ranked = sorted(items, key=lambda item: (-item[1], item[0]))
+        visible = ranked[:limit]
+        visible.append(
+            (other_label, sum(amount for _label, amount in ranked[limit:]))
+        )
+        return visible
 
     def _build_legend(self):
         for child in self.legend.winfo_children():
@@ -163,13 +193,13 @@ class DonutBreakdown(ttk.Frame):
         if not total:
             ttk.Label(
                 self.legend,
-                text="当前项目暂无成本",
+                text=self.empty_text,
                 style="CardText.TLabel",
             ).pack(anchor=W, pady=(72, 0))
             return
         for index, (label, amount) in enumerate(self.items):
             row = ttk.Frame(self.legend)
-            row.pack(fill=X, pady=(0, 2))
+            row.pack(fill=X, pady=(0, 4))
             swatch = tk.Canvas(
                 row,
                 width=10,
@@ -182,16 +212,16 @@ class DonutBreakdown(ttk.Frame):
                 fill=self.colors[index % len(self.colors)],
                 outline="",
             )
-            swatch.pack(side=LEFT, padx=(0, 8))
+            swatch.grid(row=0, column=0, rowspan=2, padx=(0, 8))
             ttk.Label(
                 row, text=label, style="CardText.TLabel"
-            ).pack(side=LEFT)
+            ).grid(row=0, column=1, sticky=W)
             percent = amount / total * 100
             ttk.Label(
                 row,
                 text=f"{_money(amount)}  ·  {percent:.1f}%",
                 style="SummaryValue.TLabel",
-            ).pack(side=LEFT, padx=(8, 0))
+            ).grid(row=1, column=1, sticky=W, pady=(1, 0))
 
     def _draw(self):
         self.canvas.delete("all")
@@ -227,14 +257,14 @@ class DonutBreakdown(ttk.Frame):
             self.canvas.create_text(
                 width / 2,
                 height / 2 - 10,
-                text="项目总成本",
+                text=self.center_label,
                 fill=COLORS["text_muted"],
                 font=FONT_BODY,
             )
             self.canvas.create_text(
                 width / 2,
                 height / 2 + 14,
-                text=_money(total),
+                text=_axis_money(total) if self.compact_total else _money(total),
                 fill=COLORS["text"],
                 font=("Bahnschrift SemiCondensed", 11, "bold"),
             )
@@ -247,14 +277,14 @@ class DonutBreakdown(ttk.Frame):
             self.canvas.create_text(
                 width / 2,
                 height / 2,
-                text="暂无成本",
+                text=self.empty_text,
                 fill=COLORS["text_muted"],
                 font=FONT_BODY_MEDIUM,
             )
 
 
 class HorizontalBreakdown(ScrolledFrame):
-    """Ranked material spend using readable labels, amounts and proportions."""
+    """Ranked amounts using readable labels, direct values and proportions."""
 
     def __init__(
         self,
@@ -262,6 +292,7 @@ class HorizontalBreakdown(ScrolledFrame):
         limit=7,
         empty_text="当前项目暂无材料采购",
         other_label="其他材料",
+        bar_color=None,
         **kwargs,
     ):
         super().__init__(
@@ -274,6 +305,7 @@ class HorizontalBreakdown(ScrolledFrame):
         self.limit = limit
         self.empty_text = empty_text
         self.other_label = other_label
+        self.bar_color = bar_color or COLORS["primary"]
 
     def set_data(self, items):
         for child in self.winfo_children():
@@ -291,19 +323,17 @@ class HorizontalBreakdown(ScrolledFrame):
         for index, row in enumerate(rows, 1):
             item = ttk.Frame(self)
             item.pack(fill=X, pady=(0, 11))
-            head = ttk.Frame(item)
-            head.pack(fill=X)
             ttk.Label(
-                head,
+                item,
                 text=f"{index:02d}  {row['label']}",
                 style="RankName.TLabel",
-            ).pack(side=LEFT)
+            ).pack(anchor=W)
             percent = row["amount_minor"] / total * 100
             ttk.Label(
-                head,
-                text=f"{_money(row['amount_minor'])}  ·  {percent:.1f}%",
+                item,
+                text=f"{_money(row['amount_minor'])}\n{percent:.1f}%",
                 style="SummaryValue.TLabel",
-            ).pack(side=LEFT, padx=(12, 0))
+            ).pack(anchor=W, pady=(2, 0))
             if row.get("detail"):
                 ttk.Label(
                     item,
@@ -321,7 +351,7 @@ class HorizontalBreakdown(ScrolledFrame):
             bar.bind(
                 "<Configure>",
                 lambda event, canvas=bar, value=ratio: self._draw_bar(
-                    canvas, event.width, value
+                    canvas, event.width, value, self.bar_color
                 ),
             )
         self.after_idle(self.enable_scrolling)
@@ -353,13 +383,13 @@ class HorizontalBreakdown(ScrolledFrame):
         return visible
 
     @staticmethod
-    def _draw_bar(canvas, width, ratio):
+    def _draw_bar(canvas, width, ratio, color):
         canvas.delete("all")
         canvas.create_rectangle(
             0,
             0,
             max(2, width * ratio),
             6,
-            fill=COLORS["primary"],
+            fill=color,
             outline="",
         )

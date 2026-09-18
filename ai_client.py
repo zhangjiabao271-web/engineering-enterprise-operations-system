@@ -204,3 +204,128 @@ class AIClient:
                 retryable=True,
             )
         return content
+
+    def chat_completion_stream(
+        self,
+        messages,
+        temperature=None,
+        max_completion_tokens=3072,
+        cancel_event=None,
+    ):
+        """Yield OpenAI-compatible SSE text deltas."""
+        if not self.api_key:
+            raise AIError(
+                "API Key 未配置，请打开“AI 设置”填写 DeepSeek API Key。",
+                code="missing_key",
+            )
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": int(max_completion_tokens),
+            "stream": True,
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        url = f"{self.api_base}/chat/completions"
+        try:
+            response = self._session().post(
+                url,
+                headers=self._headers(),
+                json=payload,
+                timeout=(10, self.timeout),
+                stream=True,
+            )
+        except requests.exceptions.Timeout as error:
+            raise AIError(
+                "连接 DeepSeek 超时。请稍后重试，并检查网络或系统代理设置。",
+                code="timeout",
+                retryable=True,
+            ) from error
+        except requests.exceptions.ConnectionError as error:
+            raise AIError(
+                "无法连接 DeepSeek。请检查网络、API Base 或系统代理设置。",
+                code="connection",
+                retryable=True,
+            ) from error
+        except requests.exceptions.RequestException as error:
+            raise AIError(
+                "DeepSeek 网络请求失败。请稍后重试。",
+                code="network",
+                retryable=True,
+            ) from error
+
+        if not 200 <= response.status_code < 300:
+            try:
+                data = response.json()
+            except ValueError:
+                data = {}
+            message = _api_error_text(data, response.status_code)
+            response.close()
+            if response.status_code in (401, 403):
+                raise AIError(
+                    "DeepSeek API Key 无效、已失效或没有模型权限。请在“AI 设置”中重新检查。",
+                    code="authentication",
+                )
+            if response.status_code == 402:
+                raise AIError("DeepSeek 账户余额不足，请充值后重试。", code="insufficient_balance")
+            if response.status_code == 429:
+                raise AIError(
+                    "DeepSeek 请求过于频繁，或账户并发额度已用完。请稍后重试。",
+                    code="rate_limit",
+                    retryable=True,
+                )
+            raise AIError(
+                f"DeepSeek 服务错误（HTTP {response.status_code}）：{message}",
+                code="service_error",
+                retryable=response.status_code >= 500,
+            )
+
+        emitted = False
+        try:
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                line = str(raw_line or "").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data_text = line[5:].strip()
+                if data_text == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data_text)
+                except (ValueError, json.JSONDecodeError):
+                    continue
+                choices = event.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                raw_content = delta.get("content")
+                text = (
+                    raw_content
+                    if isinstance(raw_content, str)
+                    else _content_text(raw_content)
+                )
+                if not text:
+                    continue
+                emitted = True
+                yield text
+        except requests.exceptions.Timeout as error:
+            raise AIError(
+                "DeepSeek 生成回答超时，请稍后重试。",
+                code="timeout",
+                retryable=True,
+            ) from error
+        except requests.exceptions.RequestException as error:
+            raise AIError(
+                "DeepSeek 流式回答中断，请稍后重试。",
+                code="network",
+                retryable=True,
+            ) from error
+        finally:
+            response.close()
+        if not emitted and not (cancel_event is not None and cancel_event.is_set()):
+            raise AIError(
+                "DeepSeek 没有生成可显示的回答，请重试。",
+                code="empty_content",
+                retryable=True,
+            )

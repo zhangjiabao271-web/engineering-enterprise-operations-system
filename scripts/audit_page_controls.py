@@ -17,9 +17,10 @@ args = parser.parse_args()
 
 temp_dir = Path(tempfile.mkdtemp(prefix="audit_"))
 db_copy = temp_dir / "supplier_data.db"
-shutil.copy2(args.database.resolve(), db_copy)
-os.environ["SUPPLY_CHAIN_DB_PATH"] = str(db_copy)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+os.environ["SUPPLY_CHAIN_DB_PATH"] = str(db_copy)
+from db.backup import backup_database
+backup_database(args.database.resolve(), db_copy)
 
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)

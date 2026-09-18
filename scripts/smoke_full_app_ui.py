@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -15,9 +14,10 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="full_app_ui_") as temp_dir:
         test_database = Path(temp_dir) / "supplier_data.db"
-        shutil.copy2(args.database, test_database)
-        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        from db.backup import backup_database
+        backup_database(args.database, test_database)
 
         import ttkbootstrap as ttk
         from tkinter import messagebox

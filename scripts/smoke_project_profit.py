@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -15,9 +14,10 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="project_profit_v4_") as temp_dir:
         test_database = Path(temp_dir) / "supplier_data.db"
-        shutil.copy2(args.database, test_database)
-        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        from db.backup import backup_database
+        backup_database(args.database, test_database)
 
         import database
         from services import (
@@ -29,7 +29,16 @@ def main():
         )
 
         database.init_db()
-        project = project_service.list_projects(active_only=True)[0]
+        # 使用专用测试项目：真实在营项目可能已有零星收入确认或回款，
+        # 按迁移 550 后的规则会阻止新增合同分配。
+        project_id = project_service.create_project(
+            {
+                "name": "利润公式测试项目",
+                "customer_name": "利润公式测试客户",
+                "status": "active",
+            }
+        )
+        project = {"id": project_id}
         baseline = project_profit_service.get_project_summary(project["id"])
 
         contract_id = contract_service.create_contract(

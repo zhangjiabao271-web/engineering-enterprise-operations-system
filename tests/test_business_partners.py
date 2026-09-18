@@ -10,23 +10,22 @@ class BusinessPartnerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="business_partners_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
-        source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
-        if source_db.exists():
-            shutil.copy2(source_db, cls.test_db)
+        from db.backup import backup_database
+        _oss_source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
+        if _oss_source_db.exists():
+            backup_database(_oss_source_db, cls.test_db)
         else:
-            # 开源环境无生产库时，从空库初始化基础表并跑全量迁移构建测试库
+            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
             import db.connection as _conn_module
             import db.migration_runner as _runner_module
-            _saved_conn_path = _conn_module.DB_PATH
-            _saved_runner_path = _runner_module.DB_PATH
+            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
             _conn_module.DB_PATH = cls.test_db
             _runner_module.DB_PATH = cls.test_db
             try:
                 import database as _database
-                _database.init_db()  # 建基础表 + run_migrations()
+                _database.init_db()
             finally:
-                _conn_module.DB_PATH = _saved_conn_path
-                _runner_module.DB_PATH = _saved_runner_path
+                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
 
         import db.connection as connection
         from db.migration_runner import run_migrations
@@ -101,7 +100,7 @@ class BusinessPartnerTests(unittest.TestCase):
         suffix = uuid4().hex[:8]
         payload = self._payload(suffix, {"customer"})
         partner_id = self.partners.create_business_partner(payload)
-        with self.assertRaisesRegex(ValueError, "同名客商"):
+        with self.assertRaisesRegex(ValueError, "同名客户"):
             self.partners.create_business_partner(payload)
 
         project_id = self.projects.create_project(
@@ -117,6 +116,61 @@ class BusinessPartnerTests(unittest.TestCase):
         changed["roles"] = {"other"}
         with self.assertRaisesRegex(ValueError, "已有项目历史"):
             self.partners.update_business_partner(partner_id, changed)
+
+    def test_same_name_customer_and_supplier_share_one_partner(self):
+        supplier_suffix = uuid4().hex[:8]
+        supplier_payload = self._payload(supplier_suffix, {"supplier"})
+        supplier_id = self.partners.create_business_partner(supplier_payload)
+        customer_id = self.partners.create_business_partner(
+            {
+                "legal_name": supplier_payload["legal_name"],
+                "roles": {"customer"},
+                "status": "active",
+                "entity_type": "enterprise",
+                "customer_category": "废旧物资客户",
+                "settlement_terms": "现款",
+                "credit_limit": "30000.00",
+            }
+        )
+        self.assertEqual(customer_id, supplier_id)
+        merged_supplier = self.partners.get_business_partner(supplier_id)
+        self.assertEqual(
+            merged_supplier["roles"], {"customer", "supplier"}
+        )
+        self.assertEqual(merged_supplier["supplier_category"], "钢材、瓦料")
+        self.assertEqual(merged_supplier["default_tax_rate_bps"], 1300)
+        self.assertEqual(merged_supplier["contact_phone"], "13800000000")
+        self.assertEqual(
+            merged_supplier["customer_category"], "废旧物资客户"
+        )
+        self.assertEqual(merged_supplier["credit_limit_minor"], 3_000_000)
+
+        customer_suffix = uuid4().hex[:8]
+        customer_payload = self._payload(customer_suffix, {"customer"})
+        customer_id = self.partners.create_business_partner(customer_payload)
+        supplier_id = self.partners.create_business_partner(
+            {
+                "legal_name": customer_payload["legal_name"],
+                "roles": {"supplier"},
+                "status": "active",
+                "entity_type": "enterprise",
+                "supplier_category": "废铁回收",
+                "default_tax_rate_percent": "3",
+                "price_level": "中",
+                "delivery_rating": "一般",
+                "quality_rating": "良",
+                "export_capability": "否",
+            }
+        )
+        self.assertEqual(supplier_id, customer_id)
+        merged_customer = self.partners.get_business_partner(customer_id)
+        self.assertEqual(
+            merged_customer["roles"], {"customer", "supplier"}
+        )
+        self.assertEqual(merged_customer["customer_category"], "重点客户")
+        self.assertEqual(merged_customer["credit_limit_minor"], 50_000_025)
+        self.assertEqual(merged_customer["supplier_category"], "废铁回收")
+        self.assertEqual(merged_customer["default_tax_rate_bps"], 300)
 
     def test_deactivation_preserves_historical_role(self):
         suffix = uuid4().hex[:8]

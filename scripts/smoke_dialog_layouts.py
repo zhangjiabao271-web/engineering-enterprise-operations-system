@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -117,9 +116,10 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="dialog_layouts_") as temp_dir:
         test_database = Path(temp_dir) / "supplier_data.db"
-        shutil.copy2(args.database, test_database)
-        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        from db.backup import backup_database
+        backup_database(args.database, test_database)
 
         import database as db
         from pages import (
@@ -169,6 +169,7 @@ def main():
             "保存供应商档案",
             required_labels=(
                 "供应商名称 *", "主要联系人", "供应商资料",
+                "同名客户将自动合并为同一主体并增加供应商角色",
             ),
         )
         checked.append("新增供应商档案")
@@ -182,13 +183,32 @@ def main():
             "保存客户档案",
             required_labels=(
                 "客户名称 *", "主体类型", "主要联系人", "客户资料",
+                "同名供应商将自动合并为同一主体并增加客户角色",
             ),
         )
         checked.append("新增客户档案")
+        customer_rows = page.table.tree.get_children()
+        assert customer_rows, "客户档案经营列表没有加载客户"
+        page.table.tree.selection_set(customer_rows[0])
+        page.open_business_detail()
+        verify_dialog(
+            root,
+            root.winfo_children()[-1],
+            scrollable=False,
+            required_labels=(
+                "本年业务额", "本年已开票", "本年实际回款",
+                "当前未回款", "项目业务明细",
+            ),
+            required_buttons=("关闭",),
+        )
+        checked.append("客户年度业务明细")
         host.destroy()
 
         host, page = page_host(root, ProjectManagementPage)
-        project = project_service.list_projects()[0]
+        project = next(
+            row for row in project_service.list_projects()
+            if row["business_mode"] == "contract"
+        )
         page.open_project_dialog(project["id"])
         verify_dialog(
             root, root.winfo_children()[-1], "保存项目",
@@ -239,20 +259,107 @@ def main():
                 "amount": "8000.00",
             }
         )
+        actual_contract_id = contract_service.create_contract(
+            {
+                "contract_no": "TEST-DIALOG-ACTUAL",
+                "name": "据实结算弹窗测试合同",
+                "contract_type": "annual",
+                "pricing_mode": "actual",
+                "control_limit": "50000.00",
+                "sign_date": "2026-07-30",
+                "status": "active",
+            }
+        )
+        contract_service.create_allocation(
+            {
+                "contract_id": actual_contract_id,
+                "project_id": project["id"],
+            }
+        )
+        contract_service.create_settlement(
+            {
+                "settlement_no": "TEST-DIALOG-ACTUAL-SETTLEMENT",
+                "contract_id": actual_contract_id,
+                "project_id": project["id"],
+                "settlement_date": "2026-07-30",
+                "amount": "1000.00",
+            }
+        )
 
         host, page = page_host(root, ContractManagementPage)
         page.open_contract_dialog()
+        contract_dialog = root.winfo_children()[-1]
+        pricing_combo = next(
+            widget for widget in descendants(contract_dialog)
+            if isinstance(widget, ttk.Combobox)
+            and tuple(widget.cget("values"))
+            == ("固定总价", "暂定总价", "单价据实结算")
+        )
+        amount_label = next(
+            widget for widget in descendants(contract_dialog)
+            if isinstance(widget, ttk.Label)
+            and widget.cget("text") == "含税合同金额（元）*"
+        )
+        control_label = next(
+            widget for widget in descendants(contract_dialog)
+            if isinstance(widget, ttk.Label)
+            and widget.cget("text") == "控制上限（元，可选）"
+        )
+        assert pricing_combo.get() == "单价据实结算"
+        assert not amount_label.grid_info()
+        assert control_label.grid_info()
+        pricing_combo.set("固定总价")
+        pricing_combo.event_generate("<<ComboboxSelected>>")
+        root.update_idletasks()
+        assert amount_label.grid_info()
+        assert not control_label.grid_info()
         verify_dialog(
-            root, root.winfo_children()[-1], "保存合同",
+            root, contract_dialog, "保存合同",
+            required_labels=("计价方式 *", "控制上限（元，可选）"),
             required_date_pickers=3,
         )
         checked.append("新增合同")
         page.open_allocation_dialog()
-        verify_dialog(root, root.winfo_children()[-1], "确认分配")
+        allocation_dialog = root.winfo_children()[-1]
+        allocation_contract_combo = next(
+            widget for widget in descendants(allocation_dialog)
+            if isinstance(widget, ttk.Combobox)
+            and any(
+                "TEST-DIALOG-ACTUAL" in value
+                for value in tuple(widget.cget("values"))
+            )
+        )
+        actual_contract_label = next(
+            value for value in tuple(allocation_contract_combo.cget("values"))
+            if "TEST-DIALOG-ACTUAL" in value
+        )
+        allocation_contract_combo.set(actual_contract_label)
+        allocation_contract_combo.event_generate("<<ComboboxSelected>>")
+        root.update_idletasks()
+        amount_label = next(
+            widget for widget in descendants(allocation_dialog)
+            if isinstance(widget, ttk.Label)
+            and widget.cget("text") == "分配金额（元）*"
+        )
+        assert not amount_label.grid_info()
+        verify_dialog(root, allocation_dialog, "确认关联/分配")
         checked.append("合同分配")
         page.open_settlement_dialog()
+        settlement_dialog = root.winfo_children()[-1]
+        contract_project_combo = next(
+            widget for widget in descendants(settlement_dialog)
+            if isinstance(widget, ttk.Combobox)
+            and any(
+                "TEST-DIALOG-ACTUAL" in value
+                for value in tuple(widget.cget("values"))
+            )
+        )
+        assert any(
+            "单价据实结算" in value
+            for value in tuple(contract_project_combo.cget("values"))
+        )
         verify_dialog(
-            root, root.winfo_children()[-1], "确认收入",
+            root, settlement_dialog, "确认收入",
             required_labels=("业务来源 *", "零星工程项目 *", "确认依据"),
             required_date_pickers=3,
         )
@@ -276,7 +383,7 @@ def main():
             root,
             root.winfo_children()[-1],
             "保存发票",
-            required_labels=("收入确认 *",),
+            required_labels=("开票项目 / 合同 *",),
             required_date_pickers=1,
         )
         checked.append("登记销项发票")
@@ -286,17 +393,69 @@ def main():
             root,
             root.winfo_children()[-1],
             "保存修改",
-            required_labels=("收入确认 *",),
+            required_labels=("开票项目 / 合同 *",),
             required_date_pickers=1,
         )
         checked.append("修改销项发票")
         page.open_receipt_dialog()
+        receipt_dialog = root.winfo_children()[-1]
+        assert any(
+            "TEST-DIALOG-ACTUAL" in value
+            for widget in descendants(receipt_dialog)
+            if isinstance(widget, ttk.Combobox)
+            for value in tuple(widget.cget("values"))
+        )
         verify_dialog(
-            root, root.winfo_children()[-1], "保存回款",
-            required_labels=("回款来源 *", "完工金额确认 *"),
+            root, receipt_dialog, "保存回款",
+            required_labels=(
+                "回款来源 *",
+                "完工金额确认 *",
+                "指定发票（可选）",
+            ),
             required_date_pickers=1,
         )
         checked.append("登记回款")
+
+        assert len(page.notebook.tabs()) == 4
+        assert "回款跟进" in page.notebook.tab(3, "text")
+        page.notebook.select(3)
+        root.update_idletasks()
+        project_rows = page.collection_project_tree.tree.get_children()
+        assert project_rows, "回款跟进项目视图没有加载待回款项目"
+        page.collection_project_tree.tree.selection_set(project_rows[0])
+        page.open_collection_case_dialog()
+        verify_dialog(
+            root,
+            root.winfo_children()[-1],
+            "保存跟进",
+            required_labels=(
+                "跟进计划", "应收到期日", "客户承诺付款日",
+                "下次跟进日", "责任人", "跟进状态", "本次跟进日期",
+                "本次跟进记录（未联系可留空）", "下一步动作",
+                "逾期原因", "补充说明",
+            ),
+            required_date_pickers=4,
+        )
+        checked.append("更新回款跟进")
+
+        page.collection_project_tree.tree.selection_set(project_rows[0])
+        page.open_collection_history()
+        verify_dialog(
+            root,
+            root.winfo_children()[-1],
+            "关闭",
+            scrollable=False,
+        )
+        checked.append("查看回款跟进历史")
+
+        page.collection_view_var.set("客户视图")
+        page._refresh_collection_workbench()
+        assert page.collection_customer_tree.tree.get_children(), (
+            "回款跟进客户视图没有加载客户"
+        )
+        page.collection_view_var.set("项目视图")
+        page._refresh_collection_workbench()
+        checked.append("回款跟进项目客户视图切换")
         host.destroy()
 
         host, page = page_host(root, CostLedgerPage)
@@ -306,10 +465,43 @@ def main():
             widget for widget in descendants(cost_dialog)
             if isinstance(widget, ttk.Combobox)
             and tuple(widget.cget("values"))
-            == ("用车", "饮食", "房租", "水电煤", "机械费")
+            == (
+                "用车", "饮食", "房租", "水电煤", "机械费",
+                "外包施工费", "管理费",
+            )
         )
         assert category_combo.get() == "用车"
         assert cost_dialog.title() == "登记成本"
+        allocation_method_combo = next(
+            widget for widget in descendants(cost_dialog)
+            if isinstance(widget, ttk.Combobox)
+            and "多项目均摊" in tuple(widget.cget("values"))
+            and "手工金额分摊" in tuple(widget.cget("values"))
+        )
+        allocation_method_combo.set("多项目均摊")
+        allocation_method_combo.event_generate("<<ComboboxSelected>>")
+        root.update_idletasks()
+        root.update()
+        cost_project_choices = [
+            widget for widget in descendants(cost_dialog)
+            if isinstance(widget, ttk.Checkbutton)
+        ]
+        cost_select_all = next(
+            widget for widget in descendants(cost_dialog)
+            if isinstance(widget, ttk.Button)
+            and widget.cget("text") == "全选项目"
+        )
+        assert len(cost_project_choices) >= 2
+        cost_select_all.invoke()
+        assert all(
+            choice.instate(["selected"]) for choice in cost_project_choices
+        )
+        assert cost_select_all.cget("text") == "取消全选"
+        cost_project_choices[0].invoke()
+        assert cost_select_all.cget("text") == "全选项目"
+        cost_project_choices[0].invoke()
+        assert cost_select_all.cget("text") == "取消全选"
+        checked.append("成本多项目均摊全选")
         verify_dialog(
             root,
             cost_dialog,
@@ -326,6 +518,40 @@ def main():
             required_date_pickers=1,
         )
         checked.append("登记其他成本")
+
+        from services import cost_service
+
+        editable_cost_id = cost_service.create_cost(
+            {
+                "cost_date": "2026-08-25",
+                "category": "管理费",
+                "amount": "100.00",
+                "counterparty_name": "待补充单位",
+                "allocation_method": "unassigned",
+            }
+        )
+        page.refresh()
+        page.detail_notebook.select(2)
+        page.other_tree.tree.selection_set(f"manual:{editable_cost_id}")
+        page.edit_selected_cost()
+        edit_cost_dialog = root.winfo_children()[-1]
+        assert edit_cost_dialog.title() == "修改成本信息"
+        verify_dialog(
+            root,
+            edit_cost_dialog,
+            "保存修改",
+            required_labels=(
+                "成本信息",
+                "成本日期 *",
+                "成本分类 *",
+                "往来单位 / 人员",
+                "车辆 / 车牌",
+                "成本单号",
+                "补充说明",
+            ),
+            required_date_pickers=1,
+        )
+        checked.append("修改其他成本信息")
         host.destroy()
 
         host, page = page_host(root, WorkdayDashboardPage)
@@ -403,7 +629,7 @@ def main():
             if isinstance(child, ttk.Combobox)
             and "待归集（稍后分配）" in tuple(child.cget("values"))
         )
-        assert any("桦岭拆盖旧工厂" in value for value in project_values)
+        assert any("山峪拆盖旧工厂" in value for value in project_values)
         assert not any("澄湖环保站" in value for value in project_values)
         purchase_combos = [
             child
@@ -436,17 +662,18 @@ def main():
         select_all_projects = next(
             child
             for child in descendants(purchase_dialog)
-            if isinstance(child, ttk.Checkbutton)
+            if isinstance(child, ttk.Button)
             and child.cget("text") == "全选项目"
         )
         assert len(project_choices) >= 2
         assert project_choices[0].master.winfo_manager() == "grid"
         select_all_projects.invoke()
         assert all(choice.instate(["selected"]) for choice in project_choices)
+        assert select_all_projects.cget("text") == "取消全选"
         project_choices[0].invoke()
-        assert select_all_projects.instate(["!selected"])
+        assert select_all_projects.cget("text") == "全选项目"
         project_choices[0].invoke()
-        assert select_all_projects.instate(["selected"])
+        assert select_all_projects.cget("text") == "取消全选"
         checked.append("工具设备多项目平均分摊选择")
         verify_dialog(
             root,

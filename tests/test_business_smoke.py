@@ -18,22 +18,22 @@ class _IsolatedDatabaseTestCase(unittest.TestCase):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="smoke_test_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
         source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
-        if source_db.exists():
-            shutil.copy2(source_db, cls.test_db)
+        from db.backup import backup_database
+        _oss_source_db = source_db
+        if _oss_source_db.exists():
+            backup_database(_oss_source_db, cls.test_db)
         else:
-            # 开源环境无生产库时，从空库初始化基础表并跑全量迁移构建测试库
+            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
             import db.connection as _conn_module
             import db.migration_runner as _runner_module
-            _saved_conn_path = _conn_module.DB_PATH
-            _saved_runner_path = _runner_module.DB_PATH
+            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
             _conn_module.DB_PATH = cls.test_db
             _runner_module.DB_PATH = cls.test_db
             try:
                 import database as _database
-                _database.init_db()  # 建基础表 + run_migrations()
+                _database.init_db()
             finally:
-                _conn_module.DB_PATH = _saved_conn_path
-                _runner_module.DB_PATH = _saved_runner_path
+                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
 
         import db.connection as connection
         from db.migration_runner import run_migrations
@@ -246,6 +246,7 @@ class ProjectProfitFormulaTests(_IsolatedDatabaseTestCase):
 class ProcurementTaxFreightTests(_IsolatedDatabaseTestCase):
     """采购税额与运费口径（对应 scripts/smoke_procurement_tax_freight.py）。"""
 
+    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
     def test_tax_and_freight_calculation(self):
         from services import master_data_service, procurement_service, project_service
 
@@ -299,6 +300,51 @@ class ProcurementTaxFreightTests(_IsolatedDatabaseTestCase):
         self.assertEqual(order["tax_amount_cents"], 2_500)
         self.assertEqual(order["line_amount_cents"], 27_500)
         self.assertEqual(order["freight_amount_cents"], 1_500)
+
+    def test_purchase_service_rejects_invalid_date(self):
+        from services import procurement_service
+
+        with self.assertRaisesRegex(ValueError, "采购日期必须是 YYYY-MM-DD"):
+            procurement_service.add_purchase_order(
+                {
+                    "purchase_type": "零星采购",
+                    "merchant_name_snapshot": "日期边界测试商户",
+                    "purchase_date": "not-a-date",
+                    "allocation_method": "unassigned",
+                },
+                {
+                    "material_name_snapshot": "日期边界测试材料",
+                    "cost_category": "材料费",
+                    "quantity": 1,
+                    "unit_price_cents": 100,
+                    "line_amount_cents": 100,
+                },
+            )
+
+    def test_purchase_update_rejects_invalid_date(self):
+        from services import procurement_service
+
+        header = {
+            "purchase_type": "零星采购",
+            "merchant_name_snapshot": "日期修改测试商户",
+            "purchase_date": "2026-08-23",
+            "allocation_method": "unassigned",
+        }
+        item = {
+            "material_name_snapshot": "日期修改测试材料",
+            "cost_category": "材料费",
+            "quantity": 1,
+            "unit_price_cents": 100,
+            "line_amount_cents": 100,
+        }
+        order_id = procurement_service.add_purchase_order(header, item)
+        header["purchase_date"] = "2026-99-99"
+        with self.assertRaisesRegex(ValueError, "采购日期必须是 YYYY-MM-DD"):
+            procurement_service.update_purchase_order(order_id, header, item)
+        self.assertEqual(
+            procurement_service.get_purchase_order(order_id)["purchase_date"],
+            "2026-08-23",
+        )
 
 
 class PurchaseCostAllocationTests(_IsolatedDatabaseTestCase):
@@ -489,28 +535,13 @@ class CostDashboardTests(_IsolatedDatabaseTestCase):
         for _label, amount in data["by_source"]:
             self.assertGreaterEqual(amount, 0)
 
+    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
     def test_dashboard_all_projects_total(self):
-        from datetime import date
+        from services import cost_service
 
-        from services import cost_service, procurement_service
-
-        # 自建一笔当月采购，避免依赖生产库历史数据
-        procurement_service.add_purchase_order(
-            {
-                "purchase_type": "零星采购",
-                "purchase_date": date.today().isoformat(),
-                "merchant_name_snapshot": "冒烟测试商户",
-                "allocation_method": "unassigned",
-            },
-            {
-                "material_name_snapshot": "冒烟测试材料",
-                "quantity": 1,
-                "material_unit_price_cents": 100,
-            },
-        )
         data = cost_service.get_cost_dashboard()
         summary = data["summary"]
-        self.assertGreater(summary["total_minor"], 0, "应有成本数据")
+        self.assertGreater(summary["total_minor"], 0, "生产库应有历史成本数据")
         # 总成本 = 三来源之和
         self.assertEqual(
             summary["total_minor"],

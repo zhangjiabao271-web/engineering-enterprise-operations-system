@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -19,10 +18,11 @@ def main():
         attachment_path = temp_path / "attachments"
         source = temp_path / "test-contract.txt"
         source.write_text("contract attachment test", encoding="utf-8")
-        shutil.copy2(args.database, test_database)
-        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
-        os.environ["SUPPLY_CHAIN_ATTACHMENTS_PATH"] = str(attachment_path)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        from db.backup import backup_database
+        backup_database(args.database, test_database)
+        os.environ["SUPPLY_CHAIN_ATTACHMENTS_PATH"] = str(attachment_path)
 
         import database
         from db.connection import get_connection

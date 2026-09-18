@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from db.connection import get_connection
+from db.connection import db_read
 from services import project_profit_service
 
 
@@ -55,12 +55,14 @@ def _entry_facts(conn):
     return facts
 
 
-def _project_stage(summary, facts):
+def _project_stage(summary, facts, project):
     if facts["receipt_count"] and facts["settlement_count"]:
         return "receipt", "回款跟踪"
     if facts["invoice_count"] and facts["settlement_count"]:
         return "invoice", "开票跟踪"
-    if facts["contract_count"] and facts["settlement_count"]:
+    if facts["settlement_count"] and (
+        project["business_mode"] == "cash" or facts["contract_count"]
+    ):
         return "accountable", "已可核算"
     if facts["settlement_count"]:
         return "contract_missing", "待补合同"
@@ -77,13 +79,15 @@ def _project_stage(summary, facts):
     return "setup", "待补资料"
 
 
-def _project_gaps(summary, facts):
+def _project_gaps(summary, facts, project):
     gaps = []
-    if not facts["contract_count"]:
+    is_cash = project["business_mode"] == "cash"
+    invoice_required = project["invoice_policy"] != "not_required"
+    if not is_cash and not facts["contract_count"]:
         gaps.append("缺合同分配")
     if not facts["settlement_count"]:
         gaps.append("缺结算确认")
-    elif not facts["invoice_count"]:
+    elif invoice_required and not facts["invoice_count"]:
         gaps.append("缺开票记录")
     if facts["settlement_count"] and not facts["receipt_count"]:
         gaps.append("缺回款记录")
@@ -113,15 +117,18 @@ def get_executive_overview(month=None):
     """
     month = month or datetime.now().strftime("%Y-%m")
     portfolio = project_profit_service.get_portfolio_summary()
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         facts_by_project = _entry_facts(conn)
         unassigned_purchase = dict(
             conn.execute(
                 """SELECT COUNT(*) AS order_count,
                           COALESCE(SUM(total_amount_cents), 0) AS amount_minor
-                   FROM purchase_orders
-                   WHERE project_id IS NULL AND status='有效'"""
+                   FROM purchase_orders po
+                   WHERE po.project_id IS NULL AND po.status='active'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM purchase_cost_allocation_lines pal
+                       WHERE pal.purchase_order_id=po.id AND pal.status='active'
+                     )"""
             ).fetchone()
         )
         pending_inspection_count = conn.execute(
@@ -133,11 +140,9 @@ def get_executive_overview(month=None):
         current_month_purchase_minor = conn.execute(
             """SELECT COALESCE(SUM(total_amount_cents), 0)
                FROM purchase_orders
-               WHERE status='有效' AND substr(purchase_date, 1, 7)=?""",
+               WHERE status='active' AND substr(purchase_date, 1, 7)=?""",
             (month,),
         ).fetchone()[0]
-    finally:
-        conn.close()
 
     projects = []
     for summary in portfolio["projects"]:
@@ -151,9 +156,16 @@ def get_executive_overview(month=None):
                 "receipt_count": 0,
             },
         )
-        stage_code, stage_label = _project_stage(summary, facts)
-        gaps = _project_gaps(summary, facts)
+        stage_code, stage_label = _project_stage(summary, facts, project)
+        gaps = _project_gaps(summary, facts, project)
         is_active = project["status"] in ACTIVE_PROJECT_STATUSES
+        is_accountable = bool(
+            facts["settlement_count"]
+            and (
+                project["business_mode"] == "cash"
+                or facts["contract_count"]
+            )
+        )
         projects.append(
             {
                 "project_id": project["id"],
@@ -162,9 +174,7 @@ def get_executive_overview(month=None):
                 "customer_name": project["customer_name"],
                 "status": project["status"],
                 "is_active": is_active,
-                "is_accountable": bool(
-                    facts["contract_count"] and facts["settlement_count"]
-                ),
+                "is_accountable": is_accountable,
                 "stage_code": stage_code,
                 "stage_label": stage_label,
                 "gaps": gaps,
@@ -235,7 +245,10 @@ def get_executive_overview(month=None):
                 len(accountable_projects), len(active_projects)
             ),
             "is_proxy": False,
-            "definition": "已有合同项目分配且已有结算确认的在营项目 ÷ 全部在营项目",
+            "definition": (
+                "合同工程已有合同分配和结算确认，或零星现金工程已有完工金额确认"
+                "的在营项目 ÷ 全部在营项目"
+            ),
         },
         "summary": {
             "confirmed_gross_profit_minor": sum(

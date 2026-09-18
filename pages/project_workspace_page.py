@@ -25,6 +25,7 @@ class ProjectWorkspacePage:
         self.project_var = ttk.StringVar()
         self.stage_var = ttk.StringVar(value="--")
         self.gap_var = ttk.StringVar(value="")
+        self.cash_basis_var = ttk.StringVar(value="非账户余额；真实资金见资金管理")
         self.kpi_vars = {
             key: ttk.StringVar(value="--")
             for key in ("settlement", "cost", "profit", "cash")
@@ -90,10 +91,11 @@ class ProjectWorkspacePage:
             ("settlement", "结算确认"),
             ("cost", "项目总成本"),
             ("profit", "确认毛利"),
-            ("cash", "经营现金余额"),
+            ("cash", "回款−已付采购"),
         )
         for index, (key, label) in enumerate(specs):
-            KpiCard(kpis, label, self.kpi_vars[key]).grid(
+            KpiCard(kpis, label, self.kpi_vars[key],
+                    self.cash_basis_var if key == "cash" else None, hint_wraplength=190).grid(
                 row=0, column=index, sticky=EW,
                 padx=(0 if index == 0 else 6, 0 if index == 3 else 6),
             )

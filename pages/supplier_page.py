@@ -13,6 +13,7 @@ SUPPLIER_CATEGORY_SUGGESTIONS = (
     "防腐材料", "五金工具", "中性硅酮结构胶",
 )
 STATUS_LABELS = {"active": "启用", "pending": "待确认", "inactive": "已停用"}
+KIND_LABELS = master_data_service.SUPPLIER_KIND_LABELS
 
 
 class SupplierPage:
@@ -58,6 +59,16 @@ class SupplierPage:
             ],
         )
 
+        self.kind_tabs = ttk.Notebook(self.parent, height=1)
+        self.kind_tabs.pack(fill=X)
+        self.kind_frames = {}
+        self.filtered_rows = []
+        for kind, label in (("manufacturer", "生产厂家"), ("distributor", "经销门店"), ("unclassified", "待分类")):
+            frame = ttk.Frame(self.kind_tabs, height=1)
+            self.kind_frames[kind] = frame
+            self.kind_tabs.add(frame, text=f"{label}（0）")
+        self.kind_tabs.hide(self.kind_frames["unclassified"])
+        self.kind_tabs.bind("<<NotebookTabChanged>>", lambda _event: self.render_rows())
         self.table = DataTable(
             self.parent,
             specs=(
@@ -116,8 +127,25 @@ class SupplierPage:
             rows = [row for row in rows if row["status"] == status_code]
         elif self.status_var.get() == "启用与待确认":
             rows = [row for row in rows if row["status"] in ("active", "pending")]
+        self.filtered_rows = rows
+        for kind, frame in self.kind_frames.items():
+            count = sum(row["supplier_kind"] == kind for row in rows)
+            label = "待分类" if kind == "unclassified" else KIND_LABELS[kind]
+            self.kind_tabs.tab(frame, text=f"{label}（{count}）")
+            if kind == "unclassified":
+                self.kind_tabs.tab(frame, state="normal" if count else "hidden")
+        self.render_rows()
+
+    def current_kind(self):
+        selected = self.kind_tabs.select()
+        return next((kind for kind, frame in self.kind_frames.items() if str(frame) == selected), "manufacturer")
+
+    def render_rows(self):
+        if not hasattr(self, "table"):
+            return
+        kind = self.current_kind()
         self.table.refresh(
-            rows,
+            [row for row in self.filtered_rows if row["supplier_kind"] == kind],
             lambda row: (
                 str(row["id"]),
                 (
@@ -190,6 +218,7 @@ class SupplierPage:
             )
         }
         variables["short_name"].set(data.get("short_name") or "")
+        kind_var = ttk.StringVar(value=KIND_LABELS[data.get("supplier_kind", "unclassified")])
         variables["default_tax_rate_percent"].set(
             str(data.get("default_tax_rate_percent", 0) or 0)
         )
@@ -204,6 +233,12 @@ class SupplierPage:
         heading = ttk.Frame(body)
         heading.grid(row=0, column=0, sticky=EW, pady=(0, 12))
         ttk.Label(heading, text="主体与银行资料", style="CardTitle.TLabel").pack(side=LEFT)
+        if not partner_id:
+            ttk.Label(
+                heading,
+                text="同名客户将自动合并为同一主体并增加供应商角色",
+                style="CardText.TLabel",
+            ).pack(side=RIGHT)
 
         common = ttk.Frame(body, style="Card.TFrame", padding=(16, 10))
         common.grid(row=1, column=0, sticky=EW, pady=(0, 12))
@@ -230,6 +265,9 @@ class SupplierPage:
             row=0, column=0, columnspan=2, sticky=W, pady=(0, 5)
         )
         supplier.columnconfigure(1, weight=1)
+        ttk.Label(supplier, text="供应商类型").grid(row=7, column=0, sticky=E, padx=(0, 10), pady=6)
+        ttk.Combobox(supplier, textvariable=kind_var, values=tuple(KIND_LABELS.values()),
+                     state="readonly", width=24).grid(row=7, column=1, sticky=EW, pady=6)
         ttk.Label(supplier, text="产品范围").grid(row=1, column=0, sticky=E, padx=(0, 10), pady=6)
         ttk.Combobox(
             supplier, textvariable=variables["supplier_category"],
@@ -269,6 +307,7 @@ class SupplierPage:
 
         def save():
             payload = {key: variable.get().strip() for key, variable in variables.items()}
+            payload["supplier_kind"] = next(code for code, label in KIND_LABELS.items() if label == kind_var.get())
             payload["roles"] = data.get("roles") or {"supplier"}
             payload["status"] = next(
                 (code for code, label in STATUS_LABELS.items() if label == status_var.get()),
@@ -284,6 +323,9 @@ class SupplierPage:
                 return
             dialog.destroy()
             self.load_data()
+            target = self.kind_frames[payload["supplier_kind"]]
+            if str(self.kind_tabs.tab(target, "state")) != "hidden":
+                self.kind_tabs.select(target)
 
         add_form_actions(
             footer, cancel_command=dialog.destroy,

@@ -11,22 +11,22 @@ class CostAllocationTests(unittest.TestCase):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="cost_allocations_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
         source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
-        if source_db.exists():
-            shutil.copy2(source_db, cls.test_db)
+        from db.backup import backup_database
+        _oss_source_db = source_db
+        if _oss_source_db.exists():
+            backup_database(_oss_source_db, cls.test_db)
         else:
-            # 开源环境无生产库时，从空库初始化基础表并跑全量迁移构建测试库
+            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
             import db.connection as _conn_module
             import db.migration_runner as _runner_module
-            _saved_conn_path = _conn_module.DB_PATH
-            _saved_runner_path = _runner_module.DB_PATH
+            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
             _conn_module.DB_PATH = cls.test_db
             _runner_module.DB_PATH = cls.test_db
             try:
                 import database as _database
-                _database.init_db()  # 建基础表 + run_migrations()
+                _database.init_db()
             finally:
-                _conn_module.DB_PATH = _saved_conn_path
-                _runner_module.DB_PATH = _saved_runner_path
+                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
 
         import db.connection as connection
         from db.migration_runner import run_migrations
@@ -154,8 +154,14 @@ class CostAllocationTests(unittest.TestCase):
         self.assertEqual(self._active_amounts(cost_id), [])
 
     def test_daily_operating_cost_categories(self):
-        expected = ["用车", "饮食", "房租", "水电煤", "机械费"]
-        self.assertEqual(self.cost_service.COST_CATEGORIES, expected)
+        expected = [
+            "用车", "饮食", "房租", "水电煤", "机械费", "外包施工费",
+            "管理费",
+        ]
+        from services.expense_categories import CATEGORIES, GROUPS
+        self.assertEqual(self.cost_service.COST_CATEGORIES, CATEGORIES)
+        self.assertEqual(len(GROUPS), 6)
+        self.assertTrue(set(expected).issubset(self.cost_service.SUPPORTED_COST_CATEGORIES))
         for category in expected:
             cost_id = self.cost_service.create_cost(
                 {
@@ -169,6 +175,58 @@ class CostAllocationTests(unittest.TestCase):
                 self.cost_service.get_cost_entry(cost_id)["category"],
                 category,
             )
+
+    def test_update_cost_details_preserves_amount_and_allocations(self):
+        cost_id = self.cost_service.create_cost(
+            {
+                "cost_no": f"EDIT-{uuid4().hex[:8]}",
+                "cost_date": "2026-08-20",
+                "category": "管理费",
+                "amount": "900.00",
+                "counterparty_name": "",
+                "allocation_method": "equal",
+                "project_ids": self.projects,
+            }
+        )
+        original_amounts = self._active_amounts(cost_id)
+        original_cost = self.cost_service.get_cost_entry(cost_id)
+
+        self.cost_service.update_cost_details(
+            cost_id,
+            {
+                "cost_no": original_cost["cost_no"],
+                "cost_date": "2026-08-21",
+                "category": "水电煤",
+                "counterparty_name": "补录往来单位",
+                "vehicle_no": "浙JTEST2",
+                "notes": "补充后的成本说明",
+            },
+        )
+        updated = self.cost_service.get_cost_entry(cost_id)
+        self.assertEqual(updated["cost_date"], "2026-08-21")
+        self.assertEqual(updated["category"], "水电煤")
+        self.assertEqual(
+            updated["counterparty_name_snapshot"], "补录往来单位"
+        )
+        self.assertEqual(updated["vehicle_no"], "浙JTEST2")
+        self.assertEqual(updated["notes"], "补充后的成本说明")
+        self.assertEqual(updated["amount_minor"], 90_000)
+        self.assertEqual(self._active_amounts(cost_id), original_amounts)
+        self.assertEqual(self._void_line_count(cost_id), 0)
+
+        with self.assertRaisesRegex(ValueError, "日期必须使用"):
+            self.cost_service.update_cost_details(
+                cost_id,
+                {
+                    "cost_no": original_cost["cost_no"],
+                    "cost_date": "2026-99-99",
+                    "category": "管理费",
+                },
+            )
+        self.assertEqual(
+            self.cost_service.get_cost_entry(cost_id)["cost_date"],
+            "2026-08-21",
+        )
 
     def _active_amounts(self, cost_id):
         from db.connection import get_connection

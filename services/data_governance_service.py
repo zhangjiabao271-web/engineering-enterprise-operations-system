@@ -4,7 +4,7 @@
 用于帮助用户判断，不作为自动匹配依据；所有归属变更都要求显式目标。
 """
 
-from db.connection import get_connection
+from db.connection import db_read, db_transaction
 from services._common import now as _now
 from services.project_service import _customer_id
 
@@ -14,8 +14,7 @@ def _rows(conn, sql, params=()):
 
 
 def get_governance_summary():
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         labor = conn.execute(
             """SELECT COUNT(*) AS record_count,
                       COALESCE(SUM(work_days), 0) AS work_days,
@@ -27,7 +26,7 @@ def get_governance_summary():
             """SELECT COUNT(*) AS record_count,
                       COALESCE(SUM(total_amount_cents), 0) AS amount_minor
                FROM purchase_orders
-               WHERE status='有效' AND project_id IS NULL"""
+               WHERE status='active' AND project_id IS NULL"""
         ).fetchone()
         projects = conn.execute(
             """SELECT
@@ -93,13 +92,10 @@ def get_governance_summary():
                 cash_receipts_without_voucher or 0
             ),
         }
-    finally:
-        conn.close()
 
 
 def list_unassigned_labor(keyword=""):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """SELECT wl.id, wl.work_date, w.name AS worker_name,
                         wl.construction_site, COALESCE(wl.work_type, '') AS work_type,
                         wl.work_days, COALESCE(wl.amount_minor, ROUND(wl.amount * 100), 0)
@@ -116,13 +112,10 @@ def list_unassigned_labor(keyword=""):
             params.extend([f"%{keyword}%"] * 4)
         sql += " ORDER BY wl.work_date DESC, wl.construction_site, wl.id DESC"
         return _rows(conn, sql, params)
-    finally:
-        conn.close()
 
 
 def list_unassigned_labor_groups():
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         return _rows(
             conn,
             """SELECT construction_site,
@@ -136,8 +129,6 @@ def list_unassigned_labor_groups():
                GROUP BY construction_site
                ORDER BY amount_minor DESC, record_count DESC""",
         )
-    finally:
-        conn.close()
 
 
 def assign_labor_records(work_log_ids, project_id, project_site_id=None):
@@ -147,9 +138,7 @@ def assign_labor_records(work_log_ids, project_id, project_site_id=None):
     project_id = int(project_id or 0)
     if not project_id:
         raise ValueError("请选择目标项目")
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         project = conn.execute(
             "SELECT id FROM projects WHERE id=? AND status<>'已关闭'", (project_id,)
         ).fetchone()
@@ -189,18 +178,11 @@ def assign_labor_records(work_log_ids, project_id, project_site_id=None):
                     WHERE id IN ({placeholders})""",
                 (project_id, _now(), *ids),
             )
-        conn.commit()
         return result.rowcount
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def list_unassigned_purchases(keyword=""):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         sql = """SELECT po.id, po.order_no, po.purchase_date,
                         po.merchant_name_snapshot AS supplier_name,
                         GROUP_CONCAT(poi.material_name_snapshot, '、') AS materials,
@@ -208,7 +190,7 @@ def list_unassigned_purchases(keyword=""):
                         COALESCE(po.notes, '') AS notes
                  FROM purchase_orders po
                  LEFT JOIN purchase_order_items poi ON poi.purchase_order_id=po.id
-                 WHERE po.status='有效' AND po.project_id IS NULL
+                 WHERE po.status='active' AND po.project_id IS NULL
                    AND NOT EXISTS (
                      SELECT 1 FROM purchase_cost_allocation_lines pal
                      WHERE pal.purchase_order_id=po.id AND pal.status='active'
@@ -220,8 +202,6 @@ def list_unassigned_purchases(keyword=""):
             params.extend([f"%{keyword}%"] * 4)
         sql += " GROUP BY po.id ORDER BY po.purchase_date DESC, po.id DESC"
         return _rows(conn, sql, params)
-    finally:
-        conn.close()
 
 
 def assign_purchase_orders(order_ids, project_id):
@@ -231,9 +211,7 @@ def assign_purchase_orders(order_ids, project_id):
     project_id = int(project_id or 0)
     if not project_id:
         raise ValueError("请选择目标项目")
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         project = conn.execute(
             "SELECT id FROM projects WHERE id=? AND status<>'已关闭'", (project_id,)
         ).fetchone()
@@ -242,7 +220,7 @@ def assign_purchase_orders(order_ids, project_id):
         placeholders = ",".join("?" * len(ids))
         found = conn.execute(
             f"""SELECT COUNT(*) FROM purchase_orders
-                WHERE id IN ({placeholders}) AND status='有效'
+                WHERE id IN ({placeholders}) AND status='active'
                   AND project_id IS NULL AND NOT EXISTS (
                     SELECT 1 FROM purchase_cost_allocation_lines pal
                     WHERE pal.purchase_order_id=purchase_orders.id
@@ -257,18 +235,11 @@ def assign_purchase_orders(order_ids, project_id):
                 WHERE id IN ({placeholders})""",
             (project_id, _now(), *ids),
         )
-        conn.commit()
         return result.rowcount
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def list_project_completeness(active_only=True):
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         where = "WHERE p.status='进行中'" if active_only else ""
         return _rows(
             conn,
@@ -287,8 +258,6 @@ def list_project_completeness(active_only=True):
                 {where}
                 ORDER BY CASE p.status WHEN '进行中' THEN 1 ELSE 2 END, p.id DESC""",
         )
-    finally:
-        conn.close()
 
 
 def confirm_project_customer(project_id, customer_name, *, update_contracts=False):
@@ -297,9 +266,7 @@ def confirm_project_customer(project_id, customer_name, *, update_contracts=Fals
     customer_name = (customer_name or "").strip()
     if not project_id or not customer_name:
         raise ValueError("请选择项目并填写客户名称")
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_transaction(immediate=True) as conn:
         project = conn.execute(
             "SELECT organization_id FROM projects WHERE id=?", (project_id,)
         ).fetchone()
@@ -327,18 +294,11 @@ def confirm_project_customer(project_id, customer_name, *, update_contracts=Fals
                 (partner_id, customer_name, now, project_id),
             )
             contract_count = result.rowcount
-        conn.commit()
         return {"partner_id": partner_id, "contract_count": contract_count}
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def list_fulfillment_gaps():
-    conn = get_connection()
-    try:
+    with db_read() as conn:
         rows = []
         pending_partners = _rows(
             conn,
@@ -429,5 +389,3 @@ def list_fulfillment_gaps():
         )
         rows.extend(cash_receipts_without_voucher)
         return rows
-    finally:
-        conn.close()

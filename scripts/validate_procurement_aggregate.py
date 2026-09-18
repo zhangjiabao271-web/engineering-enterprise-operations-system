@@ -25,18 +25,18 @@ def main():
         """SELECT COALESCE(SUM(poi.line_amount_cents), 0)
            FROM purchase_orders po
            JOIN purchase_order_items poi ON poi.purchase_order_id=po.id
-           WHERE po.status='有效' AND po.purchase_date BETWEEN ? AND ?""",
+           WHERE po.status='active' AND po.purchase_date BETWEEN ? AND ?""",
         (start_date, end_date),
     ).fetchone()[0]
     freight = conn.execute(
         """SELECT COALESCE(SUM(po.freight_amount_cents), 0)
            FROM purchase_orders po
-           WHERE po.status='有效' AND po.purchase_date BETWEEN ? AND ?""",
+           WHERE po.status='active' AND po.purchase_date BETWEEN ? AND ?""",
         (start_date, end_date),
     ).fetchone()[0]
     order_count = conn.execute(
         """SELECT COUNT(*) FROM purchase_orders po
-           WHERE po.status='有效' AND po.purchase_date BETWEEN ? AND ?""",
+           WHERE po.status='active' AND po.purchase_date BETWEEN ? AND ?""",
         (start_date, end_date),
     ).fetchone()[0]
     conn.close()

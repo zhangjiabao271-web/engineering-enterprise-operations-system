@@ -11,22 +11,22 @@ class LaborOvertimeTests(unittest.TestCase):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="labor_overtime_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
         source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
-        if source_db.exists():
-            shutil.copy2(source_db, cls.test_db)
+        from db.backup import backup_database
+        _oss_source_db = source_db
+        if _oss_source_db.exists():
+            backup_database(_oss_source_db, cls.test_db)
         else:
-            # 开源环境无生产库时，从空库初始化基础表并跑全量迁移构建测试库
+            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
             import db.connection as _conn_module
             import db.migration_runner as _runner_module
-            _saved_conn_path = _conn_module.DB_PATH
-            _saved_runner_path = _runner_module.DB_PATH
+            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
             _conn_module.DB_PATH = cls.test_db
             _runner_module.DB_PATH = cls.test_db
             try:
                 import database as _database
-                _database.init_db()  # 建基础表 + run_migrations()
+                _database.init_db()
             finally:
-                _conn_module.DB_PATH = _saved_conn_path
-                _runner_module.DB_PATH = _saved_runner_path
+                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
 
         import db.connection as connection
         from db.migration_runner import run_migrations

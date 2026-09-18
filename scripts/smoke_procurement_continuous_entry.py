@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -67,9 +66,10 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="procurement_continuous_") as temp_dir:
         test_database = Path(temp_dir) / "supplier_data.db"
-        shutil.copy2(args.database, test_database)
-        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        from db.backup import backup_database
+        backup_database(args.database, test_database)
 
         import database
         from db.connection import get_connection
@@ -137,7 +137,7 @@ def main():
             conn.close()
 
         preserved = {
-            "project": "CH-001 · 澄湖药业",
+            "project": "JS-001 · 澄湖药业",
             "date": "2026-08-01",
             "supplier": "连续采购录入测试供应商",
             "payment_method": "对公转账",

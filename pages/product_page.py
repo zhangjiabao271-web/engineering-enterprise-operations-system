@@ -4,7 +4,7 @@ from tkinter import messagebox, filedialog, scrolledtext
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 
-from services import master_data_service
+from services import master_data_service, procurement_service
 from ui.dialogs import safe_init_loaders
 
 
@@ -220,9 +220,9 @@ class ProductPage:
         self.unit_entry.grid(row=1, column=3, padx=5, pady=8, sticky=W)
 
         # row 2
-        ttk.Label(form_grid, text="材料单价（未税）：").grid(
-            row=2, column=0, padx=5, pady=8, sticky=E
-        )
+        self.price_basis_var = ttk.StringVar(value="含税价")
+        self.price_label = ttk.Label(form_grid, text="材料单价（含税）：")
+        self.price_label.grid(row=2, column=0, padx=5, pady=8, sticky=E)
         self.price_entry = ttk.Entry(form_grid, width=22)
         self.price_entry.grid(row=2, column=1, padx=5, pady=8, sticky=W)
         self.price_entry.bind("<KeyRelease>", self.calculate_tax_inclusive_price)
@@ -254,6 +254,10 @@ class ProductPage:
         )
         self.notes_entry = ttk.Entry(form_grid, width=22)
         self.notes_entry.grid(row=3, column=3, padx=5, pady=8, sticky=W)
+        ttk.Label(form_grid, text="报价口径：").grid(row=4, column=0, padx=5, pady=8, sticky=E)
+        ttk.Combobox(form_grid, textvariable=self.price_basis_var,
+                     values=("含税价", "未税价"), state="readonly", width=22).grid(row=4, column=1, padx=5, pady=8, sticky=W)
+        self.price_basis_var.trace_add("write", self.calculate_tax_inclusive_price)
 
         # 表单底部操作按钮
         form_btn_frame = ttk.Frame(form_card, style="Card.TFrame")
@@ -314,7 +318,8 @@ class ProductPage:
             "name": self.name_var.get().strip(),
             "specification": self.spec_entry.get().strip(),
             "unit": self.unit_entry.get().strip(),
-            "price": price,
+            "price": price_str or "0",
+            "price_basis": "inclusive" if self.price_basis_var.get() == "含税价" else "exclusive",
             "tax_rate_percent": tax_rate,
             "notes": self.notes_entry.get().strip(),
         }
@@ -328,7 +333,8 @@ class ProductPage:
         self.name_var.set(data.get("name", ""))
         self.spec_entry.delete(0, END) or self.spec_entry.insert(0, data.get("specification", ""))
         self.unit_entry.delete(0, END) or self.unit_entry.insert(0, data.get("unit", ""))
-        self.price_entry.delete(0, END) or self.price_entry.insert(0, str(data.get("price", "")))
+        self.price_basis_var.set("含税价" if data.get("price_basis") == "inclusive" else "未税价")
+        self.price_entry.delete(0, END) or self.price_entry.insert(0, str(data.get("quoted_price", data.get("price", ""))))
         self.tax_rate_var.set(str(data.get("tax_rate_percent", 0)))
         self.notes_entry.delete(0, END) or self.notes_entry.insert(0, data.get("notes", ""))
         self.calculate_tax_inclusive_price()
@@ -434,12 +440,14 @@ class ProductPage:
 
     def calculate_tax_inclusive_price(self, *_args):
         try:
-            price = float(self.price_entry.get().strip() or 0)
-            tax_rate = float(self.tax_rate_var.get().strip() or 0)
-            if price < 0 or tax_rate < 0:
-                raise ValueError
+            inclusive = self.price_basis_var.get() == "含税价"
+            self.price_label.configure(text="材料单价（含税）：" if inclusive else "材料单价（未税）：")
+            price = procurement_service.decimal_minor(self.price_entry.get().strip() or 0)
+            amounts = procurement_service.calculate_purchase_amounts(
+                1, price, procurement_service.decimal_minor(self.tax_rate_var.get().strip() or 0),
+                price_basis="inclusive" if inclusive else "exclusive", tax_inclusive_unit_price_cents=price)
             self.tax_inclusive_price_var.set(
-                f"{price * (1 + tax_rate / 100):.2f}"
+                f"{amounts['tax_inclusive_unit_price_cents'] / 100:.2f}"
             )
         except ValueError:
             self.tax_inclusive_price_var.set("--")
