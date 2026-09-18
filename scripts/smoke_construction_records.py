@@ -17,10 +17,10 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database as db
+        from db.schema import init_db
         from db.connection import get_connection
 
-        db.init_db()
+        init_db()
         projects = db.get_projects(active_only=True)
         project = next(
             (row for row in projects if row["name"] == "澄湖"),

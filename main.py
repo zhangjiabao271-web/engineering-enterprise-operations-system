@@ -1,7 +1,6 @@
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-import database as db
-
+from db.schema import init_db
 from pages import (
     AIAssistantPage,
     ComparePage,
@@ -31,7 +30,7 @@ class SupplierManagerApp:
         self.root.title("工程企业经营系统")
         configure_main_window(self.root, 1400, 900, 1200, 800)
 
-        db.init_db()
+        init_db()
         configure_design_system(self.root)
 
         # 左侧导航

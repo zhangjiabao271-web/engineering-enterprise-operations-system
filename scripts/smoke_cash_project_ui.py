@@ -60,7 +60,7 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database as db
+        from db.schema import init_db
         import ttkbootstrap as ttk
         from pages import (
             ContractManagementPage,
@@ -85,7 +85,7 @@ def main():
         messagebox.showinfo = capture("info")
         messagebox.askyesno = capture("question")
 
-        db.init_db()
+        init_db()
         project_id = project_service.create_project(
             {
                 "name": "零星现金界面验收项目",

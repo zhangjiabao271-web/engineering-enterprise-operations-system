@@ -20,13 +20,13 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         import ttkbootstrap as ttk
         from pages.finance_page import ReceivablePage
         from pages.project_page import ProjectManagementPage
         from services import contract_service, finance_service, project_service
 
-        database.init_db()
+        init_db()
         suffix = uuid4().hex[:8]
 
         completed_pending_id = project_service.create_project(

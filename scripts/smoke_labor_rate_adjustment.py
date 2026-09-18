@@ -33,11 +33,11 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         from db.connection import get_connection
         from services import labor_service, project_profit_service, project_service
 
-        database.init_db()
+        init_db()
         worker_id = labor_service.add_worker(
             {
                 "name": "调薪自动测试工人",

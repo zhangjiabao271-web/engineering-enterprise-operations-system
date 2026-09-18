@@ -19,7 +19,7 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         from services import (
             contract_service,
             cost_service,
@@ -28,7 +28,7 @@ def main():
             project_service,
         )
 
-        database.init_db()
+        init_db()
         # 使用专用测试项目：真实在营项目可能已有零星收入确认或回款，
         # 按迁移 550 后的规则会阻止新增合同分配。
         project_id = project_service.create_project(

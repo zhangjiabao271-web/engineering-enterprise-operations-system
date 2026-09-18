@@ -73,11 +73,11 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         import ai_engine
         from services import business_knowledge_service, procurement_service, project_service
 
-        database.init_db()
+        init_db()
         first_project = project_service.create_project(
             _project("知识检索甲项目", "AI-KNOWLEDGE-A")
         )

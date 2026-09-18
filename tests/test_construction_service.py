@@ -24,8 +24,8 @@ class ConstructionServiceTests(unittest.TestCase):
             _conn_module.DB_PATH = cls.test_db
             _runner_module.DB_PATH = cls.test_db
             try:
-                import database as _database
-                _database.init_db()
+                from db.schema import init_db as _init_db
+                _init_db()
             finally:
                 _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
         import db.connection as connection

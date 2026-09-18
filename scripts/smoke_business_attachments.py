@@ -24,11 +24,11 @@ def main():
         backup_database(args.database, test_database)
         os.environ["SUPPLY_CHAIN_ATTACHMENTS_PATH"] = str(attachment_path)
 
-        import database
+        from db.schema import init_db
         from db.connection import get_connection
         from services import attachment_service, contract_service
 
-        database.init_db()
+        init_db()
         parent_id = contract_service.create_contract(
             {
                 "contract_no": "TEST-ATTACH-PARENT",

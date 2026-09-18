@@ -166,11 +166,10 @@ class BackupServiceTests(unittest.TestCase):
             _conn_module.DB_PATH = cls.test_db
             _runner_module.DB_PATH = cls.test_db
             try:
-                import database as _database
-                _database.init_db()
+                from db.schema import init_db as _init_db
+                _init_db()
             finally:
                 _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
-
         import db.connection as connection
         from db.migration_runner import run_migrations
 
@@ -330,6 +329,149 @@ class BackupServiceTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 self.backup_service.create_backup_archive(destination)
         self.assertFalse(destination.exists())
+
+
+class RestoreBackupTests(unittest.TestCase):
+    """services.backup_service.restore_backup_archive：覆盖恢复、附件还原与坏包拒绝。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp_dir = tempfile.TemporaryDirectory(prefix="restore_service_")
+        cls.source_db = Path(cls.temp_dir.name) / "source.db"
+        cls.live_db = Path(cls.temp_dir.name) / "live.db"
+        production = Path(__file__).resolve().parent.parent / "supplier_data.db"
+        _oss_source_db = production
+        if _oss_source_db.exists():
+            backup_database(_oss_source_db, cls.source_db)
+        else:
+            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
+            import db.connection as _conn_module
+            import db.migration_runner as _runner_module
+            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
+            _conn_module.DB_PATH = cls.source_db
+            _runner_module.DB_PATH = cls.source_db
+            try:
+                from db.schema import init_db as _init_db
+                _init_db()
+            finally:
+                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
+        import db.connection as connection
+
+        cls.connection = connection
+        cls.original_db_path = connection.DB_PATH
+        connection.DB_PATH = cls.live_db
+
+        from services import backup_service
+
+        cls.backup_service = backup_service
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.connection.DB_PATH = cls.original_db_path
+        cls.temp_dir.cleanup()
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="restore_case_")
+        self.root = Path(self.temp.name)
+        # 每个用例从干净快照重建“当前库”
+        self.live_db.unlink(missing_ok=True)
+        backup_database(self.source_db, self.live_db)
+        # 清掉快照里的真实附件行，避免恢复用例写真实附件目录
+        with closing(sqlite3.connect(self.live_db)) as conn:
+            conn.execute("DELETE FROM business_attachments")
+            conn.execute("DELETE FROM construction_photos")
+            conn.commit()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_round_trip_reverts_changes_and_keeps_safety_copy(self):
+        archive = self.root / "backup.zip"
+        self.backup_service.create_backup_archive(archive)
+        with closing(sqlite3.connect(self.source_db)) as conn:
+            project_count = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+
+        # 模拟恢复前库已被改动
+        with closing(sqlite3.connect(self.live_db)) as conn:
+            conn.execute("CREATE TABLE marker_table (id INTEGER)")
+            conn.execute("DELETE FROM projects")
+            conn.commit()
+
+        result = self.backup_service.restore_backup_archive(
+            archive, safety_backup_dir=self.root / "safety"
+        )
+
+        with closing(sqlite3.connect(self.live_db)) as conn:
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            restored_count = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+        self.assertNotIn("marker_table", tables)
+        self.assertEqual(restored_count, project_count)
+        self.assertTrue(Path(result["safety_backup"]).is_file())
+
+    def test_restore_recovers_deleted_attachment(self):
+        # 恢复守卫只允许写项目目录内的路径，测试附件放在真实附件目录并自清理
+        attachment_file = (
+            self.backup_service.PROJECT_ROOT / "attachments" / "business" / "restore_test_回执单.pdf"
+        )
+        attachment_file.parent.mkdir(parents=True, exist_ok=True)
+        attachment_file.write_bytes(b"%PDF-fake")
+        self.addCleanup(attachment_file.unlink, missing_ok=True)
+        stored_path = str(attachment_file)
+        with closing(sqlite3.connect(self.live_db)) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO contracts (
+                    public_id, organization_id, contract_no, name,
+                    sign_date, tax_inclusive_amount_minor,
+                    created_at, updated_at
+                ) VALUES ('C-RESTORE-TEST', 1, 'C-RESTORE-TEST', '恢复测试合同',
+                          '2026-09-18', 0, '2026-09-18 10:00:00', '2026-09-18 10:00:00')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO business_attachments (
+                    public_id, organization_id, contract_id, file_path,
+                    original_name, description, status, created_at, updated_at
+                ) VALUES ('ATT-RESTORE-1', 1, ?, ?, '回执单.pdf', '', 'active',
+                          '2026-09-18 10:00:00', '2026-09-18 10:00:00')
+                """,
+                (cursor.lastrowid, stored_path),
+            )
+            conn.commit()
+        archive = self.root / "backup.zip"
+        self.backup_service.create_backup_archive(archive)
+
+        attachment_file.unlink()
+        result = self.backup_service.restore_backup_archive(
+            archive, safety_backup_dir=self.root / "safety"
+        )
+
+        self.assertEqual(attachment_file.read_bytes(), b"%PDF-fake")
+        self.assertIn(stored_path, result["restored_files"])
+        self.assertEqual(result["skipped_files"], [])
+
+    def test_rejects_archive_without_manifest(self):
+        archive = self.root / "broken.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.write(self.source_db, "supplier_data.db")
+
+        with self.assertRaisesRegex(ValueError, "缺少数据库或清单"):
+            self.backup_service.restore_backup_archive(
+                archive, safety_backup_dir=self.root / "safety"
+            )
+
+    def test_rejects_corrupt_database_member(self):
+        archive = self.root / "corrupt.zip"
+        manifest = {"database": "supplier_data.db", "files": [], "missing_files": []}
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("supplier_data.db", b"not a sqlite database")
+            zf.writestr("manifest.json", json.dumps(manifest))
+
+        with self.assertRaises((ValueError, sqlite3.DatabaseError)):
+            self.backup_service.restore_backup_archive(
+                archive, safety_backup_dir=self.root / "safety"
+            )
 
 
 if __name__ == "__main__":

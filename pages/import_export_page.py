@@ -97,6 +97,8 @@ class ImportExportPage:
         ).pack(side=LEFT, padx=8)
         ttk.Button(frame4, text="备份数据库与附件", bootstyle=INFO,
                    command=self.backup_business_data).pack(side=LEFT, padx=8)
+        ttk.Button(frame4, text="恢复备份...", bootstyle=SECONDARY,
+                   command=self.restore_business_data).pack(side=LEFT, padx=8)
 
         # 说明
         info = ttk.Label(self.parent, text="说明：采购数据已使用新版统一格式，正式采购需有供应商和产品，零星采购可只填商户与材料。项目名称不存在时，导入会自动建立项目。", wraplength=800, justify=LEFT)
@@ -121,6 +123,45 @@ class ImportExportPage:
             messagebox.showwarning("备份完成，部分原文件缺失", message + "\n缺失清单已写入备份包。")
         else:
             messagebox.showinfo("备份完成", message)
+
+    def restore_business_data(self):
+        from services.backup_service import inspect_backup_archive, restore_backup_archive
+        path = filedialog.askopenfilename(filetypes=[("业务备份", "*.zip")])
+        if not path:
+            return
+        try:
+            info = inspect_backup_archive(path)
+        except Exception as error:
+            messagebox.showwarning("备份包不可用", str(error))
+            return
+        confirm = (
+            "即将把备份包内容覆盖当前数据库与附件，此操作不可撤销。\n\n"
+            f"数据库结构版本：{info['schema_version']}\n"
+            f"业务表数量：{info['table_count']}\n"
+            f"附件：{info['file_count']} 个"
+            + (f"，备份时缺失 {info['missing_count']} 个" if info["missing_count"] else "")
+            + "\n\n恢复前会自动把当前数据库备份到 backups/ 目录。\n确认继续恢复吗？"
+        )
+        if not messagebox.askyesno("确认恢复备份", confirm, icon="warning"):
+            return
+        try:
+            result = restore_backup_archive(path)
+        except Exception as error:
+            messagebox.showerror("恢复失败", f"未修改正式数据或已保留安全副本。\n{error}")
+            return
+        message = (
+            f"恢复完成。已还原 {len(result['restored_files'])} 个附件。\n"
+            f"恢复前安全副本：{result['safety_backup']}\n\n"
+            "请退出并重新打开程序，使各页面加载恢复后的数据。"
+        )
+        if result["skipped_files"] or result["missing_files"]:
+            message += (
+                f"\n跳过附件 {len(result['skipped_files'])} 个，"
+                f"备份时缺失 {len(result['missing_files'])} 个。"
+            )
+            messagebox.showwarning("恢复完成（有附件未还原）", message)
+        else:
+            messagebox.showinfo("恢复完成", message)
 
     def export_operating_workbook(self):
         path = filedialog.asksaveasfilename(

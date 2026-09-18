@@ -71,12 +71,12 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         from db.connection import get_connection
         from services import master_data_service, procurement_service, project_service
         from ui.purchase_entry import reset_continuous_purchase_line
 
-        database.init_db()
+        init_db()
         project = project_service.list_projects(active_only=True)[0]
         supplier_id = master_data_service.create_supplier(supplier_data())
         first_offer_id = master_data_service.create_supplier_offer(

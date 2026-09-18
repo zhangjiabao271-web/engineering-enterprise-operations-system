@@ -19,11 +19,11 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         from db.connection import get_connection
         from services import labor_service, project_profit_service, project_service
 
-        database.init_db()
+        init_db()
         worker = labor_service.get_workers(active_only=True)[0]
         projects = project_service.list_projects(active_only=True)
         first, second = projects[:2]

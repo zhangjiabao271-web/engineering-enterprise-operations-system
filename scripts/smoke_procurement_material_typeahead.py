@@ -45,11 +45,11 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         from services import master_data_service
         from ui.typeahead import filter_supplier_offer_labels
 
-        database.init_db()
+        init_db()
         supplier_id = master_data_service.create_supplier(
             _supplier_data("联想测试钢材供应商甲")
         )

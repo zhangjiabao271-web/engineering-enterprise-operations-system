@@ -80,7 +80,7 @@ def main():
 
         import ttkbootstrap as ttk
 
-        import database
+        from db.schema import init_db
         from pages.ai_page import AIAssistantPage
         from services import ai_conversation_service
         from ui.theme import configure_design_system
@@ -90,7 +90,7 @@ def main():
         root.geometry("1200x800+0+0")
         root.minsize(1200, 800)
         root.attributes("-alpha", 1.0 if screenshot_dir else 0.0)
-        database.init_db()
+        init_db()
         configure_design_system(root)
         content = ttk.Frame(root, padding=24)
         content.pack(fill="both", expand=True)

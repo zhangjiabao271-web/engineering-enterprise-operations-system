@@ -121,7 +121,7 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database as db
+        from db.schema import init_db
         from pages import (
             AIAssistantPage,
             ContractManagementPage,
@@ -155,7 +155,7 @@ def main():
         messagebox.showinfo = capture_dialog("info")
         messagebox.askyesno = capture_dialog("question")
 
-        db.init_db()
+        init_db()
         checked = []
         root = ttk.Window(themename="flatly")
         root.withdraw()

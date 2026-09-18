@@ -40,7 +40,7 @@ def main():
 
         import ttkbootstrap as ttk
 
-        import database
+        from db.schema import init_db
         from pages.finance_page import ReceivablePage
         from ui.components import DatePicker
         from ui.theme import configure_design_system
@@ -49,7 +49,7 @@ def main():
         root.title("回款作战台界面验收")
         root.geometry("1200x800+0+0")
         root.minsize(1200, 800)
-        database.init_db()
+        init_db()
         configure_design_system(root)
         content = ttk.Frame(root, padding=24)
         content.pack(fill="both", expand=True)

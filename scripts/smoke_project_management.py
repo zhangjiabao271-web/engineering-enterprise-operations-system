@@ -17,11 +17,11 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         from db.connection import get_connection
         from services import project_service
 
-        database.init_db()
+        init_db()
         conn = get_connection()
         try:
             unmapped_sites = conn.execute(

@@ -21,7 +21,7 @@ def main():
 
         import ttkbootstrap as ttk
 
-        import database
+        from db.schema import init_db
         from pages import (
             ContractManagementPage,
             CostLedgerPage,
@@ -31,7 +31,7 @@ def main():
         )
         from ui.theme import configure_design_system
 
-        database.init_db()
+        init_db()
         root = ttk.Window(themename="flatly")
         root.geometry("1200x800")
         configure_design_system(root)

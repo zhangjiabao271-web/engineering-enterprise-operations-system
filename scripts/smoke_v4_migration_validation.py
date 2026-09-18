@@ -36,12 +36,12 @@ def main():
         finally:
             before_conn.close()
 
-        import database
+        from db.schema import init_db
         from db.connection import get_connection
         from db.migration_runner import run_migrations
         from scripts.validate_v3_database import validate
 
-        database.init_db()
+        init_db()
         checks, failed = validate(test_database)
         assert not failed, checks
         conn = get_connection()

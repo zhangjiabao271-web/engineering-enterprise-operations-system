@@ -24,11 +24,11 @@ def main():
         import ttkbootstrap as ttk
         from openpyxl import load_workbook
 
-        import database
+        from db.schema import init_db
         from pages import ImportExportPage
         import pages.import_export_page as module
 
-        database.init_db()
+        init_db()
         root = ttk.Window(themename="flatly")
         root.withdraw()
         try:

@@ -29,12 +29,12 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         import ai_engine
         from ai_client import AIError
         from services import project_service
 
-        database.init_db()
+        init_db()
         projects = project_service.list_projects(active_only=False)
         assert projects
         selected_project = projects[0]

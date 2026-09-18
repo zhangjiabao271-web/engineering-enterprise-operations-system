@@ -12,9 +12,9 @@ if not connection.DB_PATH.exists():
     _base_dir = tempfile.TemporaryDirectory(prefix="oss_base_")
     connection.DB_PATH = Path(_base_dir.name) / "supplier_data.db"
     _runner_module.DB_PATH = connection.DB_PATH
-    import database as _database
+    from db.schema import init_db as _init_db
 
-    _database.init_db()
+    _init_db()
 from services import historical_receivable_service as history
 
 

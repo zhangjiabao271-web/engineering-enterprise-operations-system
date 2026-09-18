@@ -19,13 +19,13 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         from services import (
             contract_service,
             operations_service,
         )
 
-        database.init_db()
+        init_db()
         assert operations_service._percent(0, 0) is None
         before = operations_service.get_executive_overview("2026-07")
         north_star = before["north_star"]

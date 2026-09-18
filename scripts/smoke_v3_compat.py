@@ -17,9 +17,8 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database as db
-
-        db.init_db()
+        from db.schema import init_db
+        init_db()
         supplier_id = db.add_supplier({
             "name": "V3兼容测试供应商",
             "category": "测试",

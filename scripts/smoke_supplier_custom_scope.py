@@ -24,10 +24,10 @@ def main():
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
-        import database
+        from db.schema import init_db
         from services import master_data_service
 
-        database.init_db()
+        init_db()
         supplier_id = master_data_service.create_supplier(
             {
                 "name": "油漆供应商测试",
