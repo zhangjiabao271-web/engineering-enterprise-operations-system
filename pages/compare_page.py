@@ -52,7 +52,7 @@ class ComparePage:
         widths = {
             "recommend": 88,
             "supplier": 145, "category": 75, "product": 105, "spec": 110,
-            "price": 100, "tax_rate": 55, "tax_price": 80,
+            "price": 115, "tax_rate": 55, "tax_price": 80,
             "unit": 60, "quality": 70, "price_level": 70, "export": 70, "notes": 180
         }
         for col in cols:

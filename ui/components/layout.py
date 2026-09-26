@@ -95,7 +95,7 @@ class SectionPanel(ttk.Frame):
     """Bordered card with an optional title — the report sheet block."""
 
     def __init__(self, parent, title=None, *, padding=SPACING["card_pad"], **kwargs):
-        super().__init__(parent, style="Card.TFrame", padding=padding, **kwargs)
+        super().__init__(parent, style="Surface.TFrame", padding=padding, **kwargs)
         self.pack(fill=X, pady=(0, SPACING["md"]))
         if title:
             ttk.Label(

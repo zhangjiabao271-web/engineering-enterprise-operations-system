@@ -51,7 +51,7 @@ class LightUiThemeTests(unittest.TestCase):
     def test_palette_is_fixed_light_and_text_is_accessible(self):
         self.assertEqual(COLORS["background"], "#FFFFFF")
         self.assertEqual(COLORS["surface"], "#FFFFFF")
-        self.assertEqual(COLORS["sidebar"], "#FFFFFF")
+        self.assertNotEqual(COLORS["sidebar"], COLORS["surface"])
         for key in ("text", "text_muted", "primary", "accent"):
             self.assertGreaterEqual(
                 _contrast(COLORS[key], COLORS["surface"]),
@@ -59,12 +59,9 @@ class LightUiThemeTests(unittest.TestCase):
                 key,
             )
 
-    def test_navigation_tags_kpis_and_chat_have_no_colored_fill(self):
+    def test_navigation_selection_is_readable_and_content_stays_neutral(self):
         styles = self.root.style.configurations
         white_styles = (
-            "Sidebar.TFrame",
-            "Nav.TButton",
-            "NavActive.TButton",
             "Card.TFrame",
             "KpiIconBlue.TLabel",
             "KpiIconGreen.TLabel",
@@ -83,11 +80,12 @@ class LightUiThemeTests(unittest.TestCase):
                 COLORS["surface"],
                 style_name,
             )
+        self.assertGreaterEqual(_contrast("#FFFFFF", COLORS["sidebar_active"]), 4.5)
+        self.assertGreaterEqual(_contrast(COLORS["sidebar_text"], COLORS["sidebar"]), 4.5)
 
-    def test_action_buttons_are_white_with_visible_borders(self):
+    def test_primary_action_has_contrast_and_secondary_actions_are_quiet(self):
         styles = self.root.style.configurations
         for style_name in (
-            "primary.TButton",
             "success.TButton",
             "info.TButton",
             "warning.TButton",
@@ -96,9 +94,11 @@ class LightUiThemeTests(unittest.TestCase):
         ):
             self.assertEqual(styles[style_name]["background"], COLORS["surface"])
             self.assertTrue(styles[style_name]["bordercolor"])
+        primary = styles["primary.TButton"]
+        self.assertGreaterEqual(_contrast(primary["foreground"], primary["background"]), 4.5)
 
     def test_typography_and_readonly_inputs_match_precision_ui(self):
-        self.assertEqual(FONT_TITLE, ("Microsoft YaHei UI", 18))
+        self.assertGreaterEqual(FONT_TITLE[1], 20)
         combobox_map = self.root.style.maps["TCombobox"]
         self.assertIn(
             ("readonly", COLORS["surface"]),

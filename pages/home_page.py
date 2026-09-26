@@ -100,7 +100,7 @@ class OperationsDashboardPage:
             )
             card.grid(row=0, column=index, sticky=EW,
                       padx=(0 if index == 0 else 6, 0 if index == 3 else 6))
-            self.kpi_grid.columnconfigure(index, weight=1)
+            self.kpi_grid.columnconfigure(index, weight=1, uniform="dashboard-kpis")
             self.kpi_cards.append(card)
         self.parent.bind("<Configure>", self._layout_kpis, add="+")
 
@@ -145,18 +145,20 @@ class OperationsDashboardPage:
             ).pack(anchor=CENTER, pady=(2, 0))
 
         # ========== 5. 两栏布局 ==========
-        body = ttk.Panedwindow(self.parent, orient="horizontal")
+        body = ttk.Frame(self.parent)
         body.pack(fill=BOTH, expand=True)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
 
         left = ttk.Frame(body)
-        right = ttk.Frame(body, width=scale_px(self.parent, 300))
+        right = ttk.Frame(body, width=scale_px(self.parent, 270))
         right.pack_propagate(False)
-        body.add(left, weight=3)
-        body.add(right, weight=1)
+        left.grid(row=0, column=0, sticky="nsew")
+        right.grid(row=0, column=1, sticky="nsew")
 
         # ---- 左侧：项目经营表格 ----
         project_card = ttk.Frame(
-            left, style="Card.TFrame", padding=(14, 12)
+            left, style="Surface.TFrame", padding=(18, 16)
         )
         project_card.pack(fill=BOTH, expand=True, padx=(0, 6))
 
@@ -228,7 +230,7 @@ class OperationsDashboardPage:
 
         # ---- 右侧：可直接处理的经营待办 ----
         driver_card = ttk.Frame(
-            right, style="Card.TFrame", padding=(14, 12)
+            right, style="Surface.TFrame", padding=(18, 16)
         )
         driver_card.pack(fill=BOTH, expand=True, padx=(6, 0))
 
@@ -291,13 +293,14 @@ class OperationsDashboardPage:
     def _layout_kpis(self, event):
         if event.widget is not self.parent or event.width < 100:
             return
-        columns = 2 if event.width < 850 else 4
+        columns = 2 if event.width < scale_px(self.parent, 850) else 4
         if columns == self.kpi_columns:
             return
         self.kpi_columns = columns
         for index in range(4):
             self.kpi_grid.columnconfigure(
-                index, weight=1 if index < columns else 0
+                index, weight=1 if index < columns else 0,
+                uniform="dashboard-kpis" if index < columns else "",
             )
         for index, card in enumerate(self.kpi_cards):
             row, column = divmod(index, columns)

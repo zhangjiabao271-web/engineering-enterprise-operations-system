@@ -327,7 +327,7 @@ class AIAssistantPage:
 
         ttk.Button(
             panel,
-            text="清空时间、供应商和材料条件",
+            text="清空追问条件",
             bootstyle="secondary-outline",
             command=self.clear_context,
         ).grid(row=12, column=0, sticky=EW)
@@ -377,11 +377,18 @@ class AIAssistantPage:
                 text=reminder.get("title") or "经营提醒",
                 style="ChatCandidateTitle.TLabel",
             ).grid(row=0, column=0, sticky=W)
-            ttk.Label(
+            summary_label = ttk.Label(
                 card,
                 text=reminder.get("value") or "--",
                 style="ChatCandidateText.TLabel",
-            ).grid(row=1, column=0, sticky=W, pady=(2, 0))
+                wraplength=205,
+                justify=LEFT,
+            )
+            summary_label.grid(row=1, column=0, sticky=EW, pady=(2, 0))
+            card.bind(
+                "<Configure>",
+                lambda event, label=summary_label: label.configure(wraplength=max(120, event.width - 20)),
+            )
             actions = ttk.Frame(card, style="ChatCandidate.TFrame")
             actions.grid(row=2, column=0, sticky=W, pady=(5, 0))
             ttk.Button(

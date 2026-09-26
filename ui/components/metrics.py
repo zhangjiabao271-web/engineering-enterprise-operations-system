@@ -1,7 +1,7 @@
 """Metric cards for report-led dashboards (numbers first, no color blocks)."""
 
 import ttkbootstrap as ttk
-from ttkbootstrap.constants import EW, W
+from ttkbootstrap.constants import EW, LEFT, RIGHT, W, X
 
 from ui.theme import SPACING
 
@@ -9,12 +9,11 @@ from ui.theme import SPACING
 class KpiCard(ttk.Frame):
     """A single KPI: label, big value, optional hint line.
 
-    Numbers use the narrow data font (Bahnschrift) to keep the report feel.
     hint_wraplength: 长 hint 文本的换行宽度（像素），防止窄卡片截字。
     """
 
     def __init__(self, parent, label, value_var, hint_var=None, *, hint_wraplength=None, **kwargs):
-        super().__init__(parent, style="Card.TFrame", padding=(16, 12), **kwargs)
+        super().__init__(parent, style="Kpi.TFrame", padding=(18, 16), **kwargs)
         ttk.Label(self, text=label, style="KpiLabel.TLabel").pack(anchor=W)
         ttk.Label(
             self, textvariable=value_var, style="KpiValue.TLabel"
@@ -22,12 +21,19 @@ class KpiCard(ttk.Frame):
         hint_options = {}
         if hint_wraplength:
             hint_options["wraplength"] = hint_wraplength
-        ttk.Label(
+        hint = ttk.Label(
             self,
             textvariable=hint_var if hint_var is not None else ttk.StringVar(value=""),
             style="KpiHintMuted.TLabel",
             **hint_options,
-        ).pack(anchor=W)
+        )
+        hint.pack(anchor=W, fill=X)
+
+        def resize_hint(event):
+            width = max(80, event.width)
+            hint.configure(wraplength=min(width, hint_wraplength) if hint_wraplength else width)
+
+        hint.bind("<Configure>", resize_hint)
 
 
 class StatCard(ttk.Frame):

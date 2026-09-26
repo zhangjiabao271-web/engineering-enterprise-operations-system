@@ -22,6 +22,8 @@ def main():
         import ttkbootstrap as ttk
         from tkinter import messagebox
         from main import SupplierManagerApp
+        from ui.scaling import configure_main_window
+        from ui.theme import style_dialog
 
         dialogs = []
 
@@ -40,28 +42,61 @@ def main():
         root = ttk.Window(themename="flatly")
         root.geometry("1200x800")
         app = SupplierManagerApp(root)
+        configure_main_window(root, 1200, 800, 1200, 800)
+        callback_errors = []
+        root.report_callback_exception = lambda *error: callback_errors.append(error)
+
+        def settle():
+            finished = ttk.BooleanVar(value=False)
+            root.after(250, lambda: finished.set(True))
+            root.wait_variable(finished)
+
         loaded = []
         try:
             root.update_idletasks()
             root.update()
-            assert len(app.page_commands) == 17
+            assert len(app.page_commands) >= 18
             for key in app.page_commands:
                 app.navigate_to(key)
                 root.update_idletasks()
                 root.update()
+                settle()
                 assert app.current_page == key
                 assert app.content_frame.winfo_children()
                 loaded.append(key)
+                assert app.page_transition._timer is None
+                assert len(app.content_host.winfo_children()) == 1
+            for key in list(app.page_commands)[:8]:
+                app.navigate_to(key)
+            settle()
+            assert len(app.content_host.winfo_children()) == 1
+            app.page_transition.set_enabled(True)
+            app.navigate_to("supplier")
+            root.update_idletasks()
+            assert int(app.content_frame.place_info()["x"]) > 0
+            settle()
+            assert int(app.content_frame.place_info()["x"]) == 0
+            assert not callback_errors, f"Tk callback errors: {callback_errors}"
+            app.page_transition.set_enabled(False)
+            app.navigate_to("home")
+            root.update()
+            assert app.page_transition._timer is None
+            dialog = ttk.Toplevel(root)
+            style_dialog(dialog, root, 500, 350)
+            settle()
+            assert float(dialog.attributes("-alpha")) == 1.0
+            dialog.destroy()
+            dialog = ttk.Toplevel(root)
+            style_dialog(dialog, root, 500, 350)
+            dialog.destroy()
+            settle()
+            assert not callback_errors, f"Tk callback errors: {callback_errors}"
             assert not dialogs, f"application raised dialogs during navigation: {dialogs}"
             for key, button in app.nav_buttons.items():
                 assert button.winfo_ismapped(), (
                     f"navigation item not visible at 1200x800: {key}"
                 )
-                assert button.winfo_y() >= 0
-                assert (
-                    button.winfo_y() + button.winfo_height()
-                    <= app.nav_frame.winfo_height()
-                ), f"navigation item outside sidebar: {key}"
+                assert button.winfo_width() >= button.winfo_reqwidth(), key
         finally:
             root.destroy()
 

@@ -1,5 +1,6 @@
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
+from ttkbootstrap.widgets.scrolled import ScrolledFrame
 from db.schema import init_db
 from pages import (
     AIAssistantPage,
@@ -21,8 +22,10 @@ from pages import (
     SupplierPage,
     WorkdayDashboardPage,
 )
-from ui.scaling import configure_main_window, scale_px, scale_treeview_columns
+from ui.scaling import configure_main_window, scale_px
 from ui.theme import configure_design_system
+from ui.desktop_style import install_desktop_style, navigation_icon
+from ui.page_transition import PageTransition
 
 class SupplierManagerApp:
     def __init__(self, root):
@@ -32,20 +35,21 @@ class SupplierManagerApp:
 
         init_db()
         configure_design_system(self.root)
+        install_desktop_style(self.root)
 
         # 左侧导航
         self.nav_frame = ttk.Frame(
             self.root,
-            width=scale_px(self.root, 204),
+            width=scale_px(self.root, 224),
             style="Sidebar.TFrame",
         )
         self.nav_frame.pack(side=LEFT, fill=Y)
         self.nav_frame.pack_propagate(False)
 
         brand = ttk.Frame(self.nav_frame, style="Sidebar.TFrame")
-        brand.pack(fill=X, padx=18, pady=(10, 7))
+        brand.pack(fill=X, padx=scale_px(self.root, 20), pady=(scale_px(self.root, 22), 14))
         ttk.Label(brand, text="工程经营", style="Brand.TLabel").pack(anchor=W)
-        ttk.Label(brand, text="ENGINEERING OPERATIONS", style="BrandSub.TLabel").pack(anchor=W, pady=(3, 0))
+        ttk.Label(brand, text="业务与资金工作台", style="BrandSub.TLabel").pack(anchor=W, pady=(5, 0))
 
         self.page_commands = {
             "home": self.show_home_page,
@@ -68,7 +72,12 @@ class SupplierManagerApp:
             "ai": self.show_ai_page,
         }
         self.nav_buttons = {}
-        self.nav_indicators = {}
+        self.nav_icons = {}
+        navigation = ScrolledFrame(
+            self.nav_frame, autohide=True, bootstyle="secondary", style="Sidebar.TFrame",
+        )
+        navigation.pack(fill=BOTH, expand=True, padx=scale_px(self.root, 10))
+        navigation.container.configure(style="Sidebar.TFrame")
         nav_groups = [
             ("经营决策", [
                 ("home", "经营驾驶舱"),
@@ -100,28 +109,25 @@ class SupplierManagerApp:
             ]),
         ]
         for group_name, items in nav_groups:
-            ttk.Label(self.nav_frame, text=group_name, style="NavSection.TLabel").pack(
-                fill=X, padx=20, pady=(6, 2)
+            ttk.Label(navigation, text=group_name, style="NavSection.TLabel").pack(
+                fill=X, padx=scale_px(self.root, 12), pady=(10, 4)
             )
             for key, text in items:
-                row = ttk.Frame(self.nav_frame, style="Sidebar.TFrame")
-                row.pack(fill=X, padx=(12, 10))
-                indicator = ttk.Frame(
-                    row,
-                    width=scale_px(self.root, 2),
-                    style="NavIndicatorMuted.TFrame",
-                )
-                indicator.pack(side=LEFT, fill=Y, padx=(0, 4), pady=4)
-                indicator.pack_propagate(False)
+                row = ttk.Frame(navigation, style="Sidebar.TFrame")
+                row.pack(fill=X, pady=1)
+                normal_icon = navigation_icon(self.root, key, "#63636B")
+                active_icon = navigation_icon(self.root, key, "#FFFFFF")
+                self.nav_icons[key] = (normal_icon, active_icon)
                 btn = ttk.Button(
                     row,
                     text=text,
                     style="Nav.TButton",
+                    image=normal_icon,
+                    compound=LEFT,
                     command=lambda page_key=key: self.navigate_to(page_key),
                 )
                 btn.pack(side=LEFT, fill=X, expand=True)
                 self.nav_buttons[key] = btn
-                self.nav_indicators[key] = indicator
 
         status = ttk.Frame(self.nav_frame, style="Sidebar.TFrame")
         status.pack(
@@ -133,23 +139,42 @@ class SupplierManagerApp:
         ttk.Separator(status).pack(fill=X, pady=(0, 4))
         ttk.Label(
             status,
-            text="本地数据 · 正常",
+            text="数据保存在本机",
             style="SidebarStatus.TLabel",
         ).pack(anchor=W)
 
-        ttk.Separator(self.root, orient=VERTICAL).pack(side=LEFT, fill=Y)
-
-        # 右侧内容容器
-        self.content_frame = ttk.Frame(
-            self.root, padding=scale_px(self.root, 22)
+        # A stable host clips the short entrance animation of each new page.
+        self.content_host = ttk.Frame(
+            self.root, style="App.TFrame",
         )
-        self.content_frame.pack(side=LEFT, fill=BOTH, expand=True)
+        self.content_host.pack(side=LEFT, fill=BOTH, expand=True)
+        self.page_transition = PageTransition(self.content_host)
+        self.motion_var = ttk.BooleanVar(value=self.page_transition.enabled)
+        self.root._motion_enabled = self.motion_var
+        motion_toggle = ttk.Checkbutton(
+            status, text="页面切换动效", variable=self.motion_var,
+            bootstyle="round-toggle",
+            command=lambda: self.page_transition.set_enabled(self.motion_var.get()),
+        )
+        toggle_style = motion_toggle.cget("style")
+        toggle_layout = self.root.style.layout(toggle_style)[0][1]["children"]
+        self.root.style.layout("Sidebar.Round.Toggle", toggle_layout)
+        self.root.style.configure("Sidebar.Round.Toggle", background="#F2F2F5", foreground="#63636B")
+        self.root.style.map(
+            "Sidebar.Round.Toggle",
+            background=[("!disabled", "#F2F2F5")],
+            foreground=[("!disabled", "#63636B")],
+        )
+        motion_toggle.configure(style="Sidebar.Round.Toggle")
+        motion_toggle.pack(anchor=W, pady=(8, 0))
 
         # 当前页面标记
         self.current_page = None
         self.show_home_page()
 
     def navigate_to(self, page_key):
+        if page_key == self.current_page:
+            return
         command = self.page_commands.get(page_key)
         if command:
             command()
@@ -157,16 +182,10 @@ class SupplierManagerApp:
     def set_active_nav(self, page_key):
         for key, button in self.nav_buttons.items():
             button.configure(style="NavActive.TButton" if key == page_key else "Nav.TButton")
-            self.nav_indicators[key].configure(
-                style="NavIndicator.TFrame" if key == page_key else "NavIndicatorMuted.TFrame"
-            )
+            button.configure(image=self.nav_icons[key][int(key == page_key)])
 
     def clear_content(self):
-        for widget in self.content_frame.winfo_children():
-            widget.destroy()
-        self.root.after_idle(
-            lambda: scale_treeview_columns(self.content_frame)
-        )
+        self.content_frame = self.page_transition.new_page()
 
     def show_home_page(self):
         self.clear_content()

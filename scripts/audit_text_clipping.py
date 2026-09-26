@@ -172,7 +172,7 @@ def main():
         raise AssertionError(
             f"Visible text clipping audit failed: {len(set(issues))} issues"
         )
-    print("Visible text clipping audit passed for navigation and 17 pages")
+    print(f"Visible text clipping audit passed for navigation and {len(app.page_commands)} pages")
 
 
 if __name__ == "__main__":

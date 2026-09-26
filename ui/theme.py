@@ -8,22 +8,23 @@ from ui.scaling import (
 )
 
 COLORS = {
-    "primary": "#986A3E",
-    "primary_hover": "#805630",
-    "primary_soft": "#F8F5F0",
-    "accent": "#52715F",
-    "accent_hover": "#405B4C",
-    "accent_soft": "#F4F7F5",
+    "primary": "#0066CC",
+    "primary_hover": "#0055AD",
+    "primary_soft": "#EAF3FF",
+    "accent": "#26734D",
+    "accent_hover": "#1D5A3B",
+    "accent_soft": "#EDF7F1",
+    "app_background": "#F5F5F7",
     "background": "#FFFFFF",
     "surface": "#FFFFFF",
-    "surface_muted": "#F7F8F5",
-    "sidebar": "#FFFFFF",
-    "sidebar_hover": "#F5F6F3",
-    "sidebar_active": "#FFFFFF",
-    "sidebar_text": "#5F625D",
-    "text": "#20211F",
-    "text_muted": "#6E706B",
-    "border": "#D8DBD4",
+    "surface_muted": "#F5F5F7",
+    "sidebar": "#F2F2F5",
+    "sidebar_hover": "#E6E6EC",
+    "sidebar_active": "#0066CC",
+    "sidebar_text": "#42424A",
+    "text": "#1D1D1F",
+    "text_muted": "#63636B",
+    "border": "#DEDEE5",
     "danger": "#B34242",
     "danger_soft": "#FFFFFF",
     "warning": "#956820",
@@ -33,14 +34,14 @@ COLORS = {
     "cost_other": "#B8894C",
 }
 
-FONT_BODY = ("Microsoft YaHei UI", 9)
-FONT_BODY_MEDIUM = ("Microsoft YaHei UI", 9, "bold")
+FONT_BODY = ("Microsoft YaHei UI", 10)
+FONT_BODY_MEDIUM = ("Microsoft YaHei UI", 10, "bold")
 FONT_CONTROL = ("Microsoft YaHei UI", 9)
-FONT_TITLE = ("Microsoft YaHei UI", 18)
-FONT_SECTION = ("Microsoft YaHei UI", 10, "bold")
-FONT_METRIC = ("Bahnschrift SemiCondensed", 22, "bold")
-FONT_METRIC_SUB = ("Bahnschrift SemiCondensed", 18, "bold")
-FONT_DATA = ("Bahnschrift", 9)
+FONT_TITLE = ("Microsoft YaHei UI", 22, "bold")
+FONT_SECTION = ("Microsoft YaHei UI", 11, "bold")
+FONT_METRIC = ("Segoe UI Semibold", 24)
+FONT_METRIC_SUB = ("Segoe UI Semibold", 19)
+FONT_DATA = ("Segoe UI", 10)
 
 # ---- Spacing tokens (report-style rhythm, all scale-safe) ----
 SPACING = {
@@ -49,9 +50,9 @@ SPACING = {
     "md": 12,
     "lg": 16,
     "xl": 24,
-    "page_gap": 14,       # vertical rhythm between top-level sections
-    "card_pad": 14,       # inside Card.TFrame
-    "row_height": 34,     # Treeview row height
+    "page_gap": 20,       # vertical rhythm between top-level sections
+    "card_pad": 18,
+    "row_height": 38,
     "button_pad": (12, 8),
     "entry_pad": (8, 6),
     "table_head_pad": (8, 9),
@@ -59,23 +60,31 @@ SPACING = {
 
 # ---- Typography tokens (type scale for report-led interfaces) ----
 TYPE = {
-    "page_title": ("Microsoft YaHei UI", 18),
-    "section": ("Microsoft YaHei UI", 10, "bold"),
-    "body": ("Microsoft YaHei UI", 9),
-    "body_medium": ("Microsoft YaHei UI", 9, "bold"),
-    "control": ("Microsoft YaHei UI", 9),
+    "page_title": FONT_TITLE,
+    "section": FONT_SECTION,
+    "body": FONT_BODY,
+    "body_medium": FONT_BODY_MEDIUM,
+    "control": FONT_CONTROL,
     "label": ("Microsoft YaHei UI", 8),
     "label_bold": ("Microsoft YaHei UI", 8, "bold"),
-    "metric": ("Bahnschrift SemiCondensed", 22, "bold"),
-    "metric_sub": ("Bahnschrift SemiCondensed", 18, "bold"),
-    "data": ("Bahnschrift", 9),
-    "data_bold": ("Bahnschrift", 9, "bold"),
+    "metric": FONT_METRIC,
+    "metric_sub": FONT_METRIC_SUB,
+    "data": FONT_DATA,
+    "data_bold": ("Segoe UI", 10, "bold"),
 }
 
 
 def configure_design_system(root):
     style = root.style
-    root.configure(background=COLORS["background"])
+    pixel = (lambda value: scale_px(root, value)) if hasattr(root, "tk") else int
+    if hasattr(style, "colors"):
+        for name, color in (
+            ("primary", COLORS["primary"]), ("success", COLORS["accent"]),
+            ("danger", COLORS["danger"]), ("bg", COLORS["surface"]),
+            ("fg", COLORS["text"]), ("border", COLORS["border"]),
+        ):
+            style.colors.set(name, color)
+    root.configure(background=COLORS["app_background"])
 
     style.configure("TFrame", background=COLORS["background"])
     style.configure("TLabel", background=COLORS["background"], foreground=COLORS["text"], font=FONT_BODY)
@@ -111,17 +120,20 @@ def configure_design_system(root):
     )
 
     style.configure("Sidebar.TFrame", background=COLORS["sidebar"])
+    style.configure("App.TFrame", background=COLORS["app_background"])
+    style.configure("Surface.TFrame", background=COLORS["surface"])
+    style.configure("Kpi.TFrame", background=COLORS["surface_muted"])
     style.configure("NavIndicator.TFrame", background=COLORS["primary"])
     style.configure("NavIndicatorMuted.TFrame", background=COLORS["sidebar"])
     style.configure(
         "Brand.TLabel",
         background=COLORS["sidebar"], foreground=COLORS["text"],
-        font=("Microsoft YaHei UI", 16, "bold"),
+        font=("Microsoft YaHei UI", 17, "bold"),
     )
     style.configure(
         "BrandSub.TLabel",
         background=COLORS["sidebar"], foreground=COLORS["text_muted"],
-        font=("Bahnschrift", 7),
+        font=("Microsoft YaHei UI", 8),
     )
     style.configure(
         "NavSection.TLabel",
@@ -131,7 +143,7 @@ def configure_design_system(root):
     style.configure(
         "Nav.TButton",
         background=COLORS["sidebar"], foreground=COLORS["sidebar_text"],
-        borderwidth=0, anchor="w", padding=(12, 4), font=FONT_BODY,
+        borderwidth=0, anchor="w", padding=(10, 6), font=FONT_BODY,
     )
     style.map(
         "Nav.TButton",
@@ -140,13 +152,13 @@ def configure_design_system(root):
     )
     style.configure(
         "NavActive.TButton",
-        background=COLORS["sidebar_active"], foreground=COLORS["text"],
-        borderwidth=0, anchor="w", padding=(12, 4), font=FONT_BODY_MEDIUM,
+        background=COLORS["sidebar_active"], foreground="#FFFFFF",
+        borderwidth=0, anchor="w", padding=(10, 6), font=FONT_BODY_MEDIUM,
     )
     style.map(
         "NavActive.TButton",
-        background=[("active", COLORS["sidebar_hover"])],
-        foreground=[("active", COLORS["text"])],
+        background=[("active", COLORS["primary_hover"])],
+        foreground=[("active", "#FFFFFF")],
     )
     style.configure(
         "SidebarStatus.TLabel",
@@ -175,15 +187,15 @@ def configure_design_system(root):
 
     style.configure(
         "Card.TFrame",
-        background=COLORS["surface"], relief="solid", borderwidth=1,
+        background=COLORS["surface"], relief="flat", borderwidth=0,
         bordercolor=COLORS["border"],
     )
     style.configure("CardTitle.TLabel", background=COLORS["surface"], foreground=COLORS["text"], font=FONT_SECTION)
     style.configure("CardText.TLabel", background=COLORS["surface"], foreground=COLORS["text_muted"], font=FONT_BODY)
-    style.configure("KpiValue.TLabel", background=COLORS["surface"], foreground=COLORS["text"], font=FONT_METRIC)
-    style.configure("KpiLabel.TLabel", background=COLORS["surface"], foreground=COLORS["text_muted"], font=FONT_BODY)
-    style.configure("KpiHint.TLabel", background=COLORS["surface"], foreground=COLORS["primary"], font=("Microsoft YaHei UI", 8, "bold"))
-    style.configure("KpiHintMuted.TLabel", background=COLORS["surface"], foreground=COLORS["text_muted"], font=("Microsoft YaHei UI", 8))
+    style.configure("KpiValue.TLabel", background=COLORS["surface_muted"], foreground=COLORS["text"], font=FONT_METRIC)
+    style.configure("KpiLabel.TLabel", background=COLORS["surface_muted"], foreground=COLORS["text_muted"], font=FONT_BODY)
+    style.configure("KpiHint.TLabel", background=COLORS["surface_muted"], foreground=COLORS["primary"], font=("Microsoft YaHei UI", 8, "bold"))
+    style.configure("KpiHintMuted.TLabel", background=COLORS["surface_muted"], foreground=COLORS["text_muted"], font=("Microsoft YaHei UI", 8))
     for icon_style in ("KpiIconBlue.TLabel", "KpiIconGreen.TLabel", "KpiIconOrange.TLabel", "KpiIconRed.TLabel"):
         style.configure(
             icon_style, background=COLORS["surface"], foreground=COLORS["primary"],
@@ -330,7 +342,7 @@ def configure_design_system(root):
         style.configure(
             tree_style,
             background=COLORS["surface"], fieldbackground=COLORS["surface"],
-            foreground=COLORS["text"], rowheight=SPACING["row_height"], font=FONT_BODY,
+            foreground=COLORS["text"], rowheight=pixel(SPACING["row_height"]), font=FONT_BODY,
             bordercolor=COLORS["border"], lightcolor=COLORS["border"], darkcolor=COLORS["border"],
         )
         style.map(
@@ -338,6 +350,7 @@ def configure_design_system(root):
             background=[("selected", COLORS["primary_soft"])],
             foreground=[("selected", COLORS["text"])],
         )
+    style.configure("Treeview.Cell", padding=(pixel(7), 0))
     for heading_style in (
         "Treeview.Heading", "primary.Treeview.Heading", "info.Treeview.Heading",
         "success.Treeview.Heading", "warning.Treeview.Heading",
@@ -345,7 +358,7 @@ def configure_design_system(root):
     ):
         style.configure(
             heading_style,
-            background=COLORS["surface"], foreground=COLORS["text_muted"],
+            background=COLORS["surface_muted"], foreground=COLORS["text_muted"],
             font=FONT_BODY_MEDIUM, padding=SPACING["table_head_pad"], relief="flat",
         )
 
@@ -354,7 +367,7 @@ def configure_design_system(root):
     for tab_style in ("TNotebook.Tab", "primary.TNotebook.Tab"):
         style.configure(
             tab_style,
-            background=COLORS["surface"],
+            background=COLORS["surface_muted"],
             foreground=COLORS["text_muted"],
             font=FONT_BODY,
             padding=(13, 8),
@@ -366,9 +379,9 @@ def configure_design_system(root):
             foreground=[("selected", COLORS["primary"])],
         )
 
-    # All actions use white or transparent surfaces; hierarchy comes from borders and text.
+    # Filled primary actions, quiet secondary actions, consistent rounded surfaces.
     button_palettes = {
-        "primary.TButton": (COLORS["surface"], COLORS["text"], COLORS["primary"], COLORS["primary_soft"]),
+        "primary.TButton": (COLORS["primary"], "#FFFFFF", COLORS["primary"], COLORS["primary_hover"]),
         "success.TButton": (COLORS["surface"], COLORS["accent"], COLORS["border"], COLORS["surface_muted"]),
         "info.TButton": (COLORS["surface"], COLORS["primary"], COLORS["border"], COLORS["surface_muted"]),
         "warning.TButton": (COLORS["surface"], COLORS["warning"], COLORS["border"], COLORS["surface_muted"]),
@@ -502,3 +515,6 @@ def style_dialog(
     dialog.geometry(f"{safe_width}x{safe_height}+{x}+{y}")
     dialog.bind("<Escape>", lambda _event: dialog.destroy())
     dialog.after_idle(lambda: scale_treeview_columns(dialog))
+    from ui.page_transition import animate_dialog_open
+
+    animate_dialog_open(dialog, owner)

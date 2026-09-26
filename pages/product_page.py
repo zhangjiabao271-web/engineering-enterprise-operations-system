@@ -115,7 +115,7 @@ class ProductPage:
             "name": 120,
             "specification": 135,
             "unit": 55,
-            "price": 100,
+            "price": 115,
             "tax_rate": 60,
             "tax_inclusive_price": 85,
             "notes": 150,
