@@ -4,15 +4,13 @@ Standardises the hand-built _tree() helpers duplicated across pages:
 same heading style, row height, column scaling and empty message.
 """
 
-import tkinter as tk
 import re
 from decimal import Decimal
 
 import ttkbootstrap as ttk
-from ttkbootstrap.constants import BOTH, CENTER, E, END, LEFT, RIGHT, VERTICAL, W, X, Y
+from ttkbootstrap.constants import BOTH, CENTER, END, HORIZONTAL, LEFT, NS, NSEW, RIGHT, VERTICAL, Y
 
 from ui.scaling import scale_treeview_columns
-from ui.theme import SPACING
 
 
 def display_sort_key(value):
@@ -35,7 +33,8 @@ class DataTable(ttk.Frame):
     """
 
     def __init__(self, parent, specs, *, empty_text="暂无数据", stretch=None,
-                 padding=10, height=None, pack_fill=BOTH, pack_expand=True, **kwargs):
+                 padding=10, height=None, horizontal=False, pack_fill=BOTH,
+                 pack_expand=True, **kwargs):
         super().__init__(parent, style="Card.TFrame", padding=padding, **kwargs)
         self.pack(fill=pack_fill, expand=pack_expand)
         self.specs = specs
@@ -67,8 +66,19 @@ class DataTable(ttk.Frame):
             self, orient=VERTICAL, command=self.tree.yview
         )
         self.tree.configure(yscrollcommand=scrollbar.set)
-        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
-        scrollbar.pack(side=RIGHT, fill=Y)
+        if horizontal:
+            horizontal_scroll = ttk.Scrollbar(
+                self, orient=HORIZONTAL, command=self.tree.xview
+            )
+            self.tree.configure(xscrollcommand=horizontal_scroll.set)
+            self.rowconfigure(0, weight=1)
+            self.columnconfigure(0, weight=1)
+            self.tree.grid(row=0, column=0, sticky=NSEW)
+            scrollbar.grid(row=0, column=1, sticky=NS)
+            horizontal_scroll.grid(row=1, column=0, sticky="ew")
+        else:
+            self.tree.pack(side=LEFT, fill=BOTH, expand=True)
+            scrollbar.pack(side=RIGHT, fill=Y)
 
         self.empty_label = ttk.Label(
             self.tree, text=empty_text, style="CardText.TLabel",

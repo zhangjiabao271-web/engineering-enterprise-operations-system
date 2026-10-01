@@ -217,25 +217,28 @@ class LaborOvertimeTests(unittest.TestCase):
         }
         self.assertNotIn(historical_site, refreshed_names)
 
-    def test_closed_projects_are_not_new_work_log_options(self):
+    def test_completed_and_closed_projects_are_not_new_work_log_options(self):
         suffix = uuid4().hex[:8]
-        project_id = self.project_service.create_project(
-            {
-                "name": f"关闭项目候选测试-{suffix}",
-                "project_code": f"CL-{suffix}",
-                "status": "已关闭",
-            }
-        )
-
+        historical_ids = []
+        for status, code in (("已完工", "DONE"), ("已关闭", "CL")):
+            project_id = self.project_service.create_project(
+                {
+                    "name": f"{status}项目候选测试-{suffix}",
+                    "project_code": f"{code}-{suffix}",
+                    "status": status,
+                }
+            )
+            historical_ids.append(project_id)
         default_ids = {
             row["id"] for row in self.labor_service.list_work_log_project_options()
         }
-        edit_ids = {
-            row["id"]
-            for row in self.labor_service.list_work_log_project_options(project_id)
-        }
-        self.assertNotIn(project_id, default_ids)
-        self.assertIn(project_id, edit_ids)
+        for project_id in historical_ids:
+            edit_ids = {
+                row["id"]
+                for row in self.labor_service.list_work_log_project_options(project_id)
+            }
+            self.assertNotIn(project_id, default_ids)
+            self.assertEqual(edit_ids.intersection(historical_ids), {project_id})
 
     def test_same_day_can_be_split_across_sites_but_total_cannot_exceed_one(self):
         suffix = uuid4().hex[:8]

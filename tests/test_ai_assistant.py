@@ -225,7 +225,7 @@ class AIConversationContextTests(unittest.TestCase):
             {
                 "id": 4,
                 "name": "青岭",
-                "project_code": "LEGACY-0004",
+                "project_code": "DEMO-PROJECT-0004",
                 "status": "进行中",
             },
             {
@@ -281,7 +281,7 @@ class AIConversationContextTests(unittest.TestCase):
             {
                 "id": 4,
                 "name": "青岭",
-                "project_code": "LEGACY-0004",
+                "project_code": "DEMO-PROJECT-0004",
                 "status": "进行中",
             }
         ]
@@ -327,7 +327,7 @@ class AIConversationContextTests(unittest.TestCase):
             {
                 "id": 4,
                 "name": "青岭",
-                "project_code": "LEGACY-0004",
+                "project_code": "DEMO-PROJECT-0004",
                 "status": "进行中",
             }
         ]

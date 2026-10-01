@@ -2,6 +2,7 @@ from services._common import now as _now, organization_id as _organization_id, m
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import uuid4
+from contextlib import nullcontext
 
 from db.connection import db_read, db_transaction
 from services.project_service import validate_cash_income_capacity
@@ -127,11 +128,13 @@ def _project_policy(conn, project_id):
     return project
 
 
-def list_contracts(include_void=False, keyword=""):
+def list_contracts(include_void=False, keyword="", project_id=None):
     with db_read() as conn:
         sql = """
             SELECT c.*, COALESCE(bp.legal_name, c.customer_name_snapshot, '')
                        AS customer_name,
+                   EXISTS(SELECT 1 FROM contract_receipt_income_policies rip
+                          WHERE rip.contract_id=c.id) AS receipt_income_enabled,
                    COALESCE(parent.contract_no, '') AS parent_contract_no,
                    COALESCE((
                        SELECT SUM(a.allocated_amount_minor)
@@ -165,11 +168,26 @@ def list_contracts(include_void=False, keyword=""):
                 "OR c.customer_name_snapshot LIKE ? OR bp.legal_name LIKE ?)"
             )
             params.extend([f"%{keyword}%"] * 4)
+        if project_id is not None:
+            conditions.append(
+                """(EXISTS (
+                     SELECT 1 FROM contract_project_allocations a
+                     WHERE a.contract_id=c.id AND a.project_id=?
+                       AND a.status='active'
+                   ) OR EXISTS (
+                     SELECT 1 FROM settlements s
+                     WHERE s.contract_id=c.id AND s.project_id=?
+                       AND s.status='active'
+                   ))"""
+            )
+            params.extend((project_id, project_id))
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY c.sign_date DESC, c.id DESC"
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
         for row in rows:
+            if row['receipt_income_enabled']:
+                row['income_mode'] = 'receipt'
             row["remaining_minor"] = (
                 row["tax_inclusive_amount_minor"] - row["allocated_minor"]
                 if row["pricing_mode"] == "fixed"
@@ -466,7 +484,10 @@ def list_allocations(contract_id=None, project_id=None):
     with db_read() as conn:
         sql = """
             SELECT a.*, c.contract_no, c.name AS contract_name, c.pricing_mode,
-                   c.income_mode, c.status AS contract_status, p.invoice_policy,
+                   CASE WHEN EXISTS(SELECT 1 FROM contract_receipt_income_policies rip
+                                    WHERE rip.contract_id=c.id)
+                        THEN 'receipt' ELSE c.income_mode END AS income_mode,
+                   c.status AS contract_status, p.invoice_policy,
                    p.project_code, p.name AS project_name
             FROM contract_project_allocations a
             JOIN contracts c ON c.id=a.contract_id
@@ -791,7 +812,7 @@ def _validate_contract_settlement(
         raise ValueError("累计结算金额不能超过该项目的合同分配额")
 
 
-def create_settlement(data):
+def create_settlement(data, *, _conn=None):
     contract_id = int(data.get("contract_id") or 0) or None
     project_id = int(data.get("project_id") or 0)
     amount_minor = _minor(data.get("amount"))
@@ -800,7 +821,7 @@ def create_settlement(data):
     period_end = _date(data.get("period_end"), "结算结束日期", optional=True)
     if period_start and period_end and period_end < period_start:
         raise ValueError("结算结束日期不能早于开始日期")
-    with db_transaction(immediate=True) as conn:
+    with (nullcontext(_conn) if _conn is not None else db_transaction(immediate=True)) as conn:
         from services.invoice_income_service import protect_manual
         protect_manual(conn, contract_id=contract_id)
         project = _project_policy(conn, project_id)

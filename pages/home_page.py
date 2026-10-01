@@ -52,10 +52,6 @@ class OperationsDashboardPage:
         # ========== 2. 工具栏（组件化）==========
         nav_buttons = [
             ttk.Button(
-                self.parent, text="项目工作空间", bootstyle="primary",
-                command=lambda: self.navigate("workspace"),
-            ),
-            ttk.Button(
                 self.parent, text="合同与结算", bootstyle="primary-outline",
                 command=lambda: self.navigate("contract"),
             ),
@@ -225,7 +221,7 @@ class OperationsDashboardPage:
         self.project_tree.pack(side=LEFT, fill=BOTH, expand=True)
         scrollbar.pack(side=RIGHT, fill=Y)
         self.project_tree.bind(
-            "<Double-1>", lambda _event: self.navigate("profit")
+            "<Double-1>", lambda _event: self.open_selected_project()
         )
 
         # ---- 右侧：可直接处理的经营待办 ----
@@ -280,6 +276,11 @@ class OperationsDashboardPage:
             wraplength=scale_px(self.parent, 220),
         ).pack(anchor=W, pady=(5, 0))
 
+    def open_selected_project(self):
+        selected = self.project_tree.selection()
+        if selected:
+            self.navigate("profit", project_id=int(selected[0]))
+
     @staticmethod
     def money(minor):
         amount = int(minor or 0) / 100
@@ -316,6 +317,8 @@ class OperationsDashboardPage:
             )
 
     def refresh(self):
+        self.month = datetime.now().strftime("%Y-%m")
+        self.stat_label.configure(text=f"统计期 {self.month}")
         safe_init_loaders("经营驾驶舱", [self._refresh_data])
 
     def _refresh_data(self):

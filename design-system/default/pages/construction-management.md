@@ -1,6 +1,6 @@
 # Construction Management Page Override
 
-- Treat each project as an independent large location, such as `澄湖` or `蓝湾`.
+- Treat each project as an independent large location, such as `澄湖` or `城北`.
 - A construction record belongs to exactly one project; never mix records across projects.
 - `具体作业位置` is a free-entry field within the selected project, with prior values offered as suggestions.
 - One record represents all installation work at one internal location over an inclusive start/end date range.

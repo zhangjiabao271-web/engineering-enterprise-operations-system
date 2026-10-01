@@ -58,8 +58,35 @@ class CostAllocationTests(unittest.TestCase):
                     "status": "进行中",
                 }
             )
-            for index, name in enumerate(("澄湖药业", "蓝湾", "屹峰药业"), 1)
+            for index, name in enumerate(("澄湖药业", "城北", "屹峰药业"), 1)
         ]
+
+    def test_project_options_hide_finished_but_retain_existing_allocations(self):
+        from db.connection import db_transaction
+
+        active, completed, closed = self.projects
+        with db_transaction() as conn:
+            conn.execute("UPDATE projects SET status='已完工' WHERE id=?", (completed,))
+            conn.execute("UPDATE projects SET status='已关闭' WHERE id=?", (closed,))
+
+        options = self.cost_service.list_cost_project_options()
+        ids = {row["id"] for row in options}
+        self.assertIn(active, ids)
+        self.assertNotIn(completed, ids)
+        self.assertNotIn(closed, ids)
+        self.assertTrue(all(row["status"] in ("筹备中", "进行中") for row in options))
+
+        retained = self.cost_service.list_cost_project_options([completed, closed, completed])
+        retained_ids = [row["id"] for row in retained]
+        self.assertTrue(set(self.projects).issubset(retained_ids))
+        self.assertEqual(retained_ids.count(completed), 1)
+        self.assertTrue(set(self.projects).issubset(
+            {row["id"] for row in self.project_service.list_projects()}
+        ))
+
+        with db_transaction() as conn:
+            conn.execute("UPDATE projects SET status='筹备中' WHERE id=?", (active,))
+        self.assertIn(active, {row["id"] for row in self.cost_service.list_cost_project_options()})
 
     def _summary_cost(self, project_id):
         return self.project_profit_service.get_project_summary(project_id)[

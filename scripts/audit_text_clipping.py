@@ -23,6 +23,7 @@ def _text_width(root, font_spec, text):
 
 def inspect_page(root, app, page_key):
     import ttkbootstrap as ttk
+    from ui.scaling import scale_px
 
     app.navigate_to(page_key)
     root.update_idletasks()
@@ -58,6 +59,8 @@ def inspect_page(root, app, page_key):
         for column in widget.cget("columns"):
             width = int(widget.column(column, "width"))
             heading = str(widget.heading(column, "text") or "")
+            is_full_date = page_key in {"purchase", "workday"} and column == "date"
+            cell_padding = scale_px(root, 24) if is_full_date else 18
             heading_required = _text_width(
                 root, heading_font, heading
             ) + 20
@@ -69,9 +72,9 @@ def inspect_page(root, app, page_key):
 
             for item in widget.get_children():
                 value = str(widget.set(item, column) or "")
-                if not value or len(value) > 8:
+                if not value or (len(value) > 8 and not is_full_date):
                     continue
-                value_required = _text_width(root, body_font, value) + 18
+                value_required = _text_width(root, body_font, value) + cell_padding
                 if width < value_required:
                     issues.append(
                         f"{page_key}: 列“{heading}”内容“{value}” "

@@ -94,7 +94,7 @@ def _project_gaps(summary, facts, project):
     if summary["invoice_minor"] > summary["settlement_minor"]:
         gaps.append("开票超过结算")
     if summary["receipt_minor"] > summary["settlement_minor"]:
-        gaps.append("回款超过结算")
+        gaps.append("部分回款待确认收入")
     if (
         summary["construction_record_count"]
         and not (
@@ -105,6 +105,41 @@ def _project_gaps(summary, facts, project):
     ):
         gaps.append("缺成本归集")
     return gaps
+
+
+def _gap_text(gaps):
+    return "、".join(gaps[:2]) + (f" 等{len(gaps)}项" if len(gaps) > 2 else "")
+
+
+def get_project_guidance(project_id, summary=None):
+    """Return the same stage and data gaps as the dashboard for one project."""
+    summary = summary or project_profit_service.get_project_summary(project_id)
+    project = summary["project"]
+    if project["id"] != project_id:
+        raise ValueError("项目与经营汇总不匹配")
+    with db_read() as conn:
+        facts = dict(conn.execute(
+            """SELECT
+                 (SELECT COUNT(*) FROM contract_project_allocations
+                  WHERE project_id=? AND status='active') AS contract_count,
+                 (SELECT COUNT(*) FROM settlements
+                  WHERE project_id=? AND status='active') AS settlement_count,
+                 (SELECT COUNT(*) FROM sales_invoices
+                  WHERE project_id=? AND status='active') AS invoice_count,
+                 (SELECT COUNT(DISTINCT ra.receipt_id)
+                  FROM receipt_allocations ra
+                  JOIN receipts r ON r.id=ra.receipt_id
+                  WHERE ra.project_id=? AND r.status='active') AS receipt_count""",
+            (project_id,) * 4,
+        ).fetchone())
+    stage_code, stage_label = _project_stage(summary, facts, project)
+    gaps = _project_gaps(summary, facts, project)
+    return {
+        "stage_code": stage_code,
+        "stage_label": stage_label,
+        "gaps": gaps,
+        "gap_text": _gap_text(gaps),
+    }
 
 
 def get_executive_overview(month=None):
@@ -178,8 +213,7 @@ def get_executive_overview(month=None):
                 "stage_code": stage_code,
                 "stage_label": stage_label,
                 "gaps": gaps,
-                "gap_text": "、".join(gaps[:2])
-                + (f" 等{len(gaps)}项" if len(gaps) > 2 else ""),
+                "gap_text": _gap_text(gaps),
                 "contract_minor": summary["contract_minor"],
                 "settlement_minor": summary["settlement_minor"],
                 "invoice_minor": summary["invoice_minor"],

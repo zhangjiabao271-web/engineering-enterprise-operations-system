@@ -4,13 +4,25 @@ from uuid import uuid4
 
 from services._common import now
 
-INCOME_MODES = {'manual': '手动确认收入', 'invoice': '随开票自动确认收入'}
+INCOME_MODES = {
+    'manual': '手动确认收入',
+    'invoice': '随开票自动确认收入',
+    'receipt': '随回款补足实际结算',
+}
+
+
+def is_receipt_driven(conn, contract_id):
+    return bool(contract_id and conn.execute(
+        'SELECT 1 FROM contract_receipt_income_policies WHERE contract_id=?',
+        (contract_id,),
+    ).fetchone())
 
 
 def is_automatic(conn, contract_id):
     row = conn.execute('SELECT income_mode FROM contracts WHERE id=?',
                        (contract_id,)).fetchone()
-    return bool(row and row['income_mode'] == 'invoice')
+    return bool(row and row['income_mode'] == 'invoice'
+                and not is_receipt_driven(conn, contract_id))
 
 
 def audit(conn, contract_id, invoice_id, action, before, after):
@@ -27,6 +39,25 @@ def set_mode(conn, contract_id, mode):
                             (contract_id,)).fetchone()
     if mode not in INCOME_MODES:
         raise ValueError('收入确认方式无效')
+    receipt_driven = is_receipt_driven(conn, contract_id)
+    if mode == 'receipt':
+        if contract['contract_type'] != 'annual' or contract['pricing_mode'] != 'actual':
+            raise ValueError('随回款补足结算仅适用于按实际结算的年度框架合同')
+        if not receipt_driven:
+            pending = conn.execute('''SELECT 1 FROM receipt_allocations a
+                JOIN receipts r ON r.id=a.receipt_id
+                WHERE a.contract_id=? AND a.settlement_id IS NULL
+                  AND a.status='active' AND r.status='active' LIMIT 1''',
+                (contract_id,)).fetchone()
+            if pending:
+                raise ValueError('合同仍有预收或待分配回款，请先核对历史收入再启用随回款结算')
+            conn.execute('INSERT INTO contract_receipt_income_policies VALUES (?, ?)',
+                         (contract_id, now()))
+            audit(conn, contract_id, None, 'mode',
+                  {'income_mode': contract['income_mode']}, {'income_mode': 'receipt'})
+        return
+    if receipt_driven:
+        raise ValueError('已启用随回款补足结算，切换确认方式需先核对历史结算和发票')
     if mode == 'invoice' and (contract['contract_type'] != 'annual'
                               or contract['pricing_mode'] != 'actual'):
         raise ValueError('随开票确认仅适用于按实际结算的年度框架合同')

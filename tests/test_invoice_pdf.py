@@ -4,7 +4,10 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from services.invoice_pdf_service import parse_invoice_text, recognize, save_with_pdf
+from services.invoice_pdf_service import (
+    attach_pdf_to_existing, find_existing_invoice_for_pdf,
+    parse_invoice_text, recognize, save_with_pdf,
+)
 from tests import test_contract_pricing_modes as pricing
 
 TEXT = '''电子发票（增值税专用发票） 发票号码：12345678901234567890
@@ -83,6 +86,162 @@ class InvoicePdfSaveTests(pricing.ContractPricingServiceTests):
             self.assertEqual(old[0], 2574)
         finally:
             conn.close()
+
+    def evidence(self, data, folder):
+        from pypdf import PdfWriter
+
+        path = Path(folder) / 'invoice.pdf'
+        writer = PdfWriter()
+        writer.add_blank_page(width=300, height=300)
+        writer.write(path)
+        return dict(data, source_path=str(path), warnings=[],
+                    sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def business_facts(self):
+        from db.connection import db_read
+
+        with db_read() as conn:
+            return {row[0]: sorted(repr(tuple(value)) for value in conn.execute(f'SELECT * FROM "{row[0]}"'))
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('business_attachments','sqlite_sequence')")}
+
+    def test_existing_invoice_only_gets_attachment_not_new_income_or_form_changes(self):
+        from unittest.mock import patch
+        from services.attachment_service import list_attachments
+
+        data = self.data()
+        invoice = self.finance.create_invoice(data)
+        before = self.business_facts()
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = self.evidence(data, folder)
+            store = Path(folder) / 'stored'
+            existing = find_existing_invoice_for_pdf(evidence)
+            self.assertEqual(existing['id'], invoice)
+            self.assertFalse(existing['has_available_attachment'])
+            self.assertEqual(existing['pdf_conflicts'], [])
+            with patch('services.attachment_service._storage_root', return_value=store):
+                # Ignore the dialog's prior selected project and edited values.
+                returned = save_with_pdf(dict(data, project_id=999999, amount='1'), evidence)
+            self.assertEqual(returned, invoice)
+            attachments = list_attachments('invoice', invoice)
+            self.assertEqual(len(attachments), 1)
+            self.assertTrue(attachments[0]['file_exists'])
+            self.assertEqual(Path(attachments[0]['absolute_path']).read_bytes(), Path(evidence['source_path']).read_bytes())
+            self.assertEqual(self.business_facts(), before)
+
+    def test_existing_available_attachment_rejects_repeat_without_orphan_file(self):
+        from unittest.mock import patch
+        from services.attachment_service import list_attachments
+
+        data = self.data()
+        invoice = self.finance.create_invoice(data)
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = self.evidence(data, folder)
+            store = Path(folder) / 'stored'
+            with patch('services.attachment_service._storage_root', return_value=store):
+                attach_pdf_to_existing(evidence)
+                self.assertTrue(find_existing_invoice_for_pdf(evidence)['has_available_attachment'])
+                with self.assertRaisesRegex(ValueError, '已有可用附件'):
+                    save_with_pdf(data, evidence)
+            self.assertEqual(len(list_attachments('invoice', invoice)), 1)
+            self.assertEqual(len(list(store.iterdir())), 1)
+
+    def test_conflicting_amount_or_buyer_never_attaches_or_changes_invoice(self):
+        from unittest.mock import patch
+        from services.attachment_service import list_attachments
+
+        data = self.data()
+        invoice = self.finance.create_invoice(data)
+        before = self.business_facts()
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = self.evidence(data, folder)
+            store = Path(folder) / 'stored'
+            with patch('services.attachment_service._storage_root', return_value=store):
+                for change in ({'amount': '2601'}, {'amount': ''}, {'buyer_name': '另一客户'}):
+                    with self.subTest(change=change), self.assertRaisesRegex(ValueError, '核对原记录'):
+                        attach_pdf_to_existing(dict(evidence, **change))
+                self.assertEqual(list(store.iterdir()), [])
+            self.assertEqual(list_attachments('invoice', invoice), [])
+            self.assertEqual(self.business_facts(), before)
+
+    def test_date_difference_is_visible_but_attachment_does_not_change_date(self):
+        from unittest.mock import patch
+
+        data = self.data()
+        invoice = self.finance.create_invoice(dict(data, invoice_date='2026-09-17'))
+        before = self.business_facts()
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = self.evidence(data, folder)
+            match = find_existing_invoice_for_pdf(evidence)
+            self.assertTrue(any('不修改原日期' in note for note in match['pdf_warnings']))
+            with patch('services.attachment_service._storage_root', return_value=Path(folder) / 'stored'):
+                attach_pdf_to_existing(evidence)
+            self.assertEqual(self.finance.get_invoice(invoice)['invoice_date'], '2026-09-17')
+            self.assertEqual(self.business_facts(), before)
+
+    def test_void_invoice_gets_evidence_without_restoring(self):
+        from unittest.mock import patch
+
+        data = self.data()
+        invoice = self.finance.create_invoice(data)
+        self.finance.void_invoices([invoice])
+        before = self.business_facts()
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = self.evidence(data, folder)
+            with patch('services.attachment_service._storage_root', return_value=Path(folder) / 'stored'):
+                self.assertEqual(attach_pdf_to_existing(evidence), invoice)
+            self.assertEqual(self.finance.get_invoice(invoice)['status'], 'void')
+            self.assertEqual(self.business_facts(), before)
+
+    def test_missing_file_is_repaired_with_old_metadata_retained(self):
+        from unittest.mock import patch
+        from services.attachment_service import add_attachment, list_attachments
+
+        data = self.data()
+        invoice = self.finance.create_invoice(data)
+        before = self.business_facts()
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = self.evidence(data, folder)
+            store = Path(folder) / 'stored'
+            with patch('services.attachment_service._storage_root', return_value=store):
+                old_id = add_attachment('invoice', invoice, evidence['source_path'])
+                old_path = Path(list_attachments('invoice', invoice)[0]['absolute_path'])
+                old_path.unlink()
+                self.assertFalse(find_existing_invoice_for_pdf(evidence)['has_available_attachment'])
+                attach_pdf_to_existing(evidence)
+            attachments = list_attachments('invoice', invoice, include_void=True)
+            self.assertEqual(len(attachments), 2)
+            self.assertEqual(next(row for row in attachments if row['id'] == old_id)['status'], 'void')
+            self.assertEqual(len(list_attachments('invoice', invoice)), 1)
+            self.assertFalse(find_existing_invoice_for_pdf(evidence)['attachment_needs_attention'])
+            self.assertEqual(self.business_facts(), before)
+
+    def test_existing_attachment_failure_rolls_back_and_changed_pdf_is_rejected(self):
+        from unittest.mock import patch
+        from db.connection import get_connection
+        from services.attachment_service import list_attachments
+
+        data = self.data()
+        invoice = self.finance.create_invoice(data)
+        before = self.business_facts()
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = self.evidence(data, folder)
+            store = Path(folder) / 'stored'
+            with patch('services.attachment_service._storage_root', return_value=store):
+                with self.assertRaisesRegex(ValueError, '变化'):
+                    attach_pdf_to_existing(dict(evidence, sha256='changed'))
+                conn = get_connection()
+                conn.execute("CREATE TRIGGER test_existing_pdf_fail BEFORE INSERT ON business_attachments BEGIN SELECT RAISE(ABORT,'test'); END")
+                conn.commit()
+                try:
+                    with self.assertRaises(Exception):
+                        attach_pdf_to_existing(evidence)
+                    self.assertEqual(list(store.iterdir()), [])
+                finally:
+                    conn.execute('DROP TRIGGER test_existing_pdf_fail')
+                    conn.commit()
+                    conn.close()
+            self.assertEqual(list_attachments('invoice', invoice), [])
+            self.assertEqual(self.business_facts(), before)
 
     def test_invoice_income_and_attachment_rollback_together(self):
         from pypdf import PdfWriter

@@ -205,6 +205,36 @@ class AIClient:
             )
         return content
 
+    def business_query_plan(self, messages):
+        """Return a complete JSON plan; retry once if output ran out of tokens."""
+        choices = []
+        for max_tokens in (4096, 8192):
+            data = self._request_json("POST", "chat/completions", {
+                "model": self.model, "messages": messages, "max_tokens": max_tokens,
+                "stream": False, "response_format": {"type": "json_object"},
+            })
+            choices = data.get("choices") or []
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise AIError("模型没有返回查询计划，请稍后重试。", code="empty_query_plan", retryable=True)
+            reason = choices[0].get("finish_reason")
+            if reason != "length":
+                break
+        if reason == "length":
+            raise AIError("模型连续两次达到输出长度上限，查询未执行。请重试或调整模型设置。",
+                          code="query_plan_truncated", retryable=True)
+        if reason != "stop":
+            raise AIError(f"模型未完成查询计划（结束原因：{reason or '未知'}）。查询未执行。",
+                          code="incomplete_query_plan", retryable=True)
+        try:
+            plan = json.loads(choices[0]["message"]["content"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise AIError("模型返回的查询计划不是完整 JSON，查询未执行。",
+                          code="invalid_query_plan", retryable=True) from error
+        if not isinstance(plan, dict):
+            raise AIError("模型返回的查询计划格式不正确，查询未执行。",
+                          code="invalid_query_plan", retryable=True)
+        return plan
+
     def chat_completion_stream(
         self,
         messages,

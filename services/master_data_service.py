@@ -371,11 +371,14 @@ def list_customers(keyword="", active_only=False, status="", year=None):
             params.extend([f"%{keyword}%"] * 4)
         sql += " ORDER BY yearly_business_minor DESC, bp.legal_name, bp.id"
         result = [dict(row) for row in conn.execute(sql, params).fetchall()]
+        from db.business_facts import customer_receivable_rows
+        current_balances = {}
+        for balance in customer_receivable_rows(conn):
+            key = balance['customer_id']
+            current_balances[key] = current_balances.get(key, 0) + balance['receivable_minor']
         for row in result:
             row["credit_limit"] = row["credit_limit_minor"] / 100
-            row["current_receivable_minor"] = max(
-                row["total_business_minor"] - row["total_receipt_minor"], 0
-            )
+            row["current_receivable_minor"] = current_balances.get(row['id'], 0)
         return result
 
 
@@ -491,11 +494,11 @@ def get_customer_business_detail(partner_id, year=None):
             partner_id, partner_id, partner_id,
         )
         projects = [dict(row) for row in conn.execute(sql, params).fetchall()]
+        from db.business_facts import customer_receivable_rows
+        current_balances = {r['project_id']: r['receivable_minor'] for r in customer_receivable_rows(conn)
+                            if r['customer_id'] == partner_id}
         for project in projects:
-            project["current_receivable_minor"] = max(
-                project["total_business_minor"] - project["total_receipt_minor"],
-                0,
-            )
+            project["current_receivable_minor"] = current_balances.get(project['project_id'], 0)
         summary = {
             "yearly_business_minor": sum(
                 row["yearly_business_minor"] for row in projects

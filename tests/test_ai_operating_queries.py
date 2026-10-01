@@ -179,7 +179,7 @@ class OperatingQueryTests(unittest.TestCase):
         }
         governance = {
             "issue_type": "待验收施工",
-            "project_name": "桑叶殿改造",
+            "project_name": "安和改造",
             "subject": "现场验收",
             "action": "确认验收结果",
         }

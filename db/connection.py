@@ -19,6 +19,7 @@ def get_connection(db_path=None):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=FULL")
     return conn
 
 
@@ -45,9 +46,15 @@ def db_transaction(db_path=None, *, immediate=False):
 
 @contextmanager
 def db_read(db_path=None):
-    """只读查询样板：不产生提交，连接用完即关。"""
-    conn = get_connection(db_path)
+    """OS-level read-only connection and a consistent snapshot across SELECTs."""
+    path = Path(db_path) if db_path else DB_PATH
+    conn = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)
+    conn.row_factory = sqlite3.Row
     try:
+        conn.execute('PRAGMA foreign_keys=ON')
+        conn.execute('PRAGMA query_only=ON')
+        conn.execute('PRAGMA busy_timeout=5000')
+        conn.execute('BEGIN')
         yield conn
     finally:
         conn.close()

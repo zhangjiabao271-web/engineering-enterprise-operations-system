@@ -5,6 +5,7 @@ import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 
 from services import master_data_service, procurement_service
+from ui.components import DataTable
 from ui.dialogs import safe_init_loaders
 
 
@@ -77,59 +78,17 @@ class ProductPage:
             anchor=W, pady=(0, 8)
         )
 
-        tv_frame = ttk.Frame(table_card, style="Card.TFrame")
-        tv_frame.pack(fill=BOTH, expand=True)
-
-        cols = (
-            "id",
-            "supplier_name",
-            "name",
-            "specification",
-            "unit",
-            "price",
-            "tax_rate",
-            "tax_inclusive_price",
-            "notes",
+        self.table = DataTable(
+            table_card,
+            (("id", "ID", 45, CENTER), ("supplier_name", "供应商", 150, W),
+             ("name", "产品名称", 120, W), ("specification", "规格", 135, W),
+             ("unit", "单位", 55, CENTER), ("price", "材料价（未税）", 115, E),
+             ("tax_rate", "税率", 60, E), ("tax_inclusive_price", "含税价", 85, E),
+             ("notes", "备注", 150, W)),
+            empty_text="暂无材料报价，点击“新增材料”开始录入",
+            stretch=("supplier_name", "name", "specification", "notes"), padding=0,
         )
-        self.tree = ttk.Treeview(
-            tv_frame,
-            columns=cols,
-            show="headings",
-            bootstyle=PRIMARY,
-            selectmode="extended",
-        )
-        headings = {
-            "id": "ID",
-            "supplier_name": "供应商",
-            "name": "产品名称",
-            "specification": "规格",
-            "unit": "单位",
-            "price": "材料价（未税）",
-            "tax_rate": "税率",
-            "tax_inclusive_price": "含税价",
-            "notes": "备注",
-        }
-        widths = {
-            "id": 45,
-            "supplier_name": 150,
-            "name": 120,
-            "specification": 135,
-            "unit": 55,
-            "price": 115,
-            "tax_rate": 60,
-            "tax_inclusive_price": 85,
-            "notes": 150,
-        }
-        for col in cols:
-            self.tree.heading(col, text=headings[col])
-            self.tree.column(col, width=widths[col], anchor=CENTER)
-        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
-
-        scrollbar = ttk.Scrollbar(
-            tv_frame, orient=VERTICAL, command=self.tree.yview
-        )
-        scrollbar.pack(side=RIGHT, fill=Y)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree = self.table.tree
 
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
 
@@ -414,13 +373,13 @@ class ProductPage:
     def load_data(self):
         keyword = self.search_entry.get().strip()
         rows = master_data_service.list_supplier_offers(keyword=keyword)
-        self.tree.delete(*self.tree.get_children())
-        for row in rows:
-            self.tree.insert("", END, values=(
+        self.table.refresh(rows, lambda row: (
+            str(row["id"]), (
                 row["id"], row["supplier_name"], row["name"], row["specification"],
                 row["unit"], f"{row['price']:.2f}", f"{row['tax_rate_percent']:g}%",
-                f"{row['tax_inclusive_price']:.2f}", row["notes"]
-            ))
+                f"{row['tax_inclusive_price']:.2f}", row["notes"],
+            ),
+        ))
 
     def on_select(self, event):
         selected = self.tree.selection()

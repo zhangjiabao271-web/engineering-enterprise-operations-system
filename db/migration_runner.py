@@ -43,7 +43,7 @@ def _backup_database(db_path, keep=BACKUP_KEEP):
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    for old in backups[keep:]:
+    for old in (backups[keep:] if keep is not None else []):
         try:
             old.unlink()
             logger.info("Pruned old database backup: %s", old.name)
@@ -52,7 +52,7 @@ def _backup_database(db_path, keep=BACKUP_KEEP):
     return backup
 
 
-def run_migrations(db_path=None):
+def run_migrations(db_path=None, *, backup_keep=BACKUP_KEEP):
     """Apply pending migrations transactionally, backing up before the first change."""
     path = Path(db_path) if db_path else DB_PATH
     conn = get_connection(path)
@@ -63,7 +63,7 @@ def run_migrations(db_path=None):
         if not pending:
             return {"applied": [], "backup": None}
 
-        backup = _backup_database(path)
+        backup = _backup_database(path, keep=backup_keep)
         applied_now = []
         for version, description, migration in pending:
             try:

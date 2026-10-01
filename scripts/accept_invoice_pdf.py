@@ -46,7 +46,7 @@ try:
                 break
             time.sleep(0.05)
     values = [w.get() for w in descendants(dialog) if isinstance(w, ttk.Entry)]
-    for expected in ('2600.00', '2574.26', '25.74', '26332000008063874556'):
+    for expected in ('2600.00', '2574.26', '25.74', '99990000000000000089'):
         assert expected in values, expected
     assert not errors, errors
     dialog.attributes('-topmost', True)

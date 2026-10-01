@@ -9,7 +9,7 @@ from services import (
     master_data_service,
     project_service,
 )
-from ui.components import BottomToolbar, DataTable, DatePicker, PageHeader
+from ui.components import BottomToolbar, DataTable, DatePicker, FilterBar, PageHeader
 from ui.dialogs import add_form_actions, build_form_dialog, safe_init_loaders
 from ui.attachments import open_attachment_manager
 
@@ -17,8 +17,11 @@ from ui.attachments import open_attachment_manager
 class ContractManagementPage:
     """Contracts, project allocations and settlement confirmations."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, initial_project_id=None):
         self.parent = parent
+        self.initial_project_id = initial_project_id
+        self.project_var = ttk.StringVar(value="全部项目")
+        self.project_map = {}
         self.build_ui()
         safe_init_loaders("合同与结算", [self.refresh])
 
@@ -56,6 +59,21 @@ class ContractManagementPage:
                     command=self.open_settlement_dialog,
                 ),
             ],
+        )
+
+        self.project_combo = ttk.Combobox(
+            self.parent, textvariable=self.project_var,
+            state="readonly", width=32,
+        )
+        self.project_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh())
+        FilterBar(
+            self.parent,
+            ("项目", self.project_combo),
+            ttk.Label(
+                self.parent,
+                text="合同金额是整份合同口径；本项目金额看项目分配和收入确认",
+                style="Toolbar.TLabel",
+            ),
         )
 
         self.notebook = ttk.Notebook(self.parent)
@@ -171,7 +189,33 @@ class ContractManagementPage:
     def _table(parent, specs, *, empty_text="暂无数据", stretch=None):
         return DataTable(parent, specs=specs, empty_text=empty_text, stretch=stretch)
 
+    def _refresh_project_options(self):
+        current = self.project_var.get()
+        self.project_map = {"全部项目": None}
+        self.project_map.update({
+            f"{row['name']} · {row['project_code']}": row["id"]
+            for row in project_service.list_projects()
+        })
+        self.project_combo.configure(values=list(self.project_map))
+        if self.initial_project_id is not None:
+            current = next(
+                (label for label, project_id in self.project_map.items()
+                 if project_id == self.initial_project_id),
+                "全部项目",
+            )
+            self.initial_project_id = None
+        self.project_var.set(current if current in self.project_map else "全部项目")
+
+    def selected_project_id(self):
+        return self.project_map.get(self.project_var.get())
+
     def refresh(self):
+        self._refresh_project_options()
+        project_id = self.selected_project_id()
+        allocations = contract_service.list_allocations(project_id=project_id)
+        settlements = contract_service.list_settlements(project_id=project_id)
+        contracts = contract_service.list_contracts(project_id=project_id)
+
         def contract_mapper(row):
             agreed_amount = (
                 "据实结算"
@@ -200,12 +244,12 @@ class ContractManagementPage:
             )
 
         self.contract_tree.refresh(
-            contract_service.list_contracts(),
+            contracts,
             contract_mapper,
         )
 
         self.allocation_tree.refresh(
-            contract_service.list_allocations(),
+            allocations,
             lambda row: (str(row["id"]), (
                 f"{row['contract_no']} · {row['contract_name']}",
                 f"{row['project_name']} · {row['project_code']}",
@@ -240,7 +284,7 @@ class ContractManagementPage:
             )
 
         self.settlement_tree.refresh(
-            contract_service.list_settlements(), settlement_mapper
+            settlements, settlement_mapper
         )
 
     def open_contract_dialog(self, contract_id=None):
@@ -484,6 +528,15 @@ class ContractManagementPage:
                         '仅用于先确认实际结算、再开票的年度框架合同。\n'
                         '启用后登记多少价税合计，就自动确认多少收入；无需重复登记。\n'
                         '已有收入将先核对，不一致时不会切换。确定继续吗？', parent=dialog)):
+                return
+            if (payload['income_mode'] == 'receipt'
+                    and data.get('income_mode', 'manual') != 'receipt'
+                    and not messagebox.askyesno(
+                        '确认随回款结算',
+                        '仅适用于回款同时证明已实际结算的年度框架合同。\n'
+                        '超出已有确认的回款会同步补记结算，后续开票只关联已有收入。\n'
+                        '修改或作废回款不会自动撤销已确认结算，收入更正仍到合同与结算处理。\n'
+                        '确定启用吗？', parent=dialog)):
                 return
             switching_to_actual = (
                 contract_id

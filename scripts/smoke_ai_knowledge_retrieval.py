@@ -234,7 +234,7 @@ def main():
         supplier_project_b = project_service.create_project(
             _project("供应商语义乙项目", "AI-SUPPLIER-B")
         )
-        supplier_full_name = "锦程五金批发部"
+        supplier_full_name = "启航远景五金批发部"
         for purchase in (
             _purchase(
                 supplier_project_a,
@@ -273,7 +273,7 @@ def main():
             procurement_service.add_purchase_order(*purchase)
 
         supplier_knowledge = business_knowledge_service.retrieve_business_knowledge(
-            "锦程五金批发部那里我今年买了多少东西了"
+            "启航远景五金批发部那里我今年买了多少东西了"
         )["supplier_procurement"]
         assert supplier_knowledge["status"] == "matched"
         assert supplier_knowledge["intent"] == "supplier_aggregate"
@@ -292,14 +292,14 @@ def main():
 
         scoped_supplier = (
             business_knowledge_service.retrieve_business_knowledge(
-                "锦程五金批发部那里今年买了多少材料",
+                "启航远景五金批发部那里今年买了多少材料",
                 project_id=supplier_project_a,
             )["supplier_procurement"]
         )
         assert scoped_supplier["candidates"][0]["procurement_total_cents"] == 51000
 
         supplier_material = business_knowledge_service.retrieve_business_knowledge(
-            "锦程五金批发部那里的螺杆今年买了多少"
+            "启航远景五金批发部那里的螺杆今年买了多少"
         )
         assert supplier_material["supplier_procurement"]["status"] == "context_only"
         assert supplier_material["supplier_procurement"]["intent"] == "supplier_material"
@@ -326,7 +326,7 @@ def main():
         assert fake_client.messages is None
 
         supplier_answer = ai_engine.ask_ai(
-            "锦程五金批发部那里我今年买了多少东西了"
+            "启航远景五金批发部那里我今年买了多少东西了"
         )
         assert supplier_full_name in supplier_answer
         assert "采购总额（含税含运费）为 ¥915.00" in supplier_answer
@@ -334,7 +334,7 @@ def main():
         assert "供应商语义乙项目 ¥405.00" in supplier_answer
 
         supplier_material_answer = ai_engine.ask_ai(
-            "锦程五金批发部那里的螺杆今年买了多少"
+            "启航远景五金批发部那里的螺杆今年买了多少"
         )
         assert supplier_full_name in supplier_material_answer
         assert "螺杆" in supplier_material_answer and "2个" in supplier_material_answer
@@ -345,21 +345,21 @@ def main():
                 "槽钢",
                 1,
                 "吨",
-                supplier_name="锦程钢材店",
+                supplier_name="启航远景钢材店",
                 freight_amount_cents=0,
             )
         )
         ambiguous_supplier = (
             business_knowledge_service.retrieve_supplier_procurement_knowledge(
-                "锦程那里买了多少东西"
+                "启航远景那里买了多少东西"
             )
         )
         assert ambiguous_supplier["status"] == "ambiguous"
         assert ambiguous_supplier["requires_confirmation"]
         assert {
             item["supplier_name"] for item in ambiguous_supplier["candidates"]
-        } == {"锦程五金批发部", "锦程钢材店"}
-        ambiguous_supplier_answer = ai_engine.ask_ai("锦程那里买了多少东西")
+        } == {"启航远景五金批发部", "启航远景钢材店"}
+        ambiguous_supplier_answer = ai_engine.ask_ai("启航远景那里买了多少东西")
         assert "供应商" in ambiguous_supplier_answer
 
         answer = ai_engine.ask_ai(

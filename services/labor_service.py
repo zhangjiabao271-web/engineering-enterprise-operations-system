@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import uuid4
 
 from db.connection import db_transaction, db_read
+from services._constraint_errors import translate_constraints
 from services.business_profile import PROJECT_ALIASES as _PROJECT_ALIASES
 
 
@@ -157,6 +158,11 @@ def suggest_project_for_site(site_text):
         return result
 
 
+@translate_constraints(
+    duplicate="工人资料已存在，请刷新后核对",
+    related="工人关联资料已变化，请刷新后重试",
+    invalid="工人资料不符合保存条件，请核对后重试",
+)
 def add_worker(data):
     with db_transaction(immediate=True) as conn:
         now = _now()
@@ -189,6 +195,11 @@ def add_worker(data):
         return worker_id
 
 
+@translate_constraints(
+    duplicate="工人资料与现有记录冲突，请核对后重试",
+    related="工人还有关联记录，无法完成修改",
+    invalid="工人资料不符合保存条件，请核对后重试",
+)
 def update_worker(worker_id, data):
     with db_transaction() as conn:
         existing = conn.execute(
@@ -211,6 +222,11 @@ def update_worker(worker_id, data):
         )
 
 
+@translate_constraints(
+    duplicate="工人关联记录重复，请刷新后重试",
+    related="所选工人还有关联的历史记录，不能删除；可改为“离职”",
+    invalid="工人资料不符合保存条件，请核对后重试",
+)
 def delete_workers(worker_ids):
     if not worker_ids:
         return
@@ -450,6 +466,11 @@ def add_work_logs_batch(entries):
         return len(entries)
 
 
+@translate_constraints(
+    duplicate="工天记录与现有记录冲突，请核对日期和工人",
+    related="工天关联的工人、项目或作业位置已不存在，请刷新后重选",
+    invalid="工天内容不符合记录规则，请核对后重试",
+)
 def update_work_log(log_id, data):
     data = _normalize_work_log_data(data)
     with db_transaction(immediate=True) as conn:
@@ -510,15 +531,14 @@ def set_work_logs_overtime(log_ids, is_overtime):
 def list_work_log_project_options(include_project_id=None):
     """Return projects that can be selected when recording work days.
 
-    Closed projects stay out of new-entry choices.  An existing work log may
-    still retain its closed project while being edited, so callers can include
-    that one project explicitly.
+    Completed and closed projects stay out of new-entry choices. An existing
+    work log keeps its current project available while being edited.
     """
     with db_read() as conn:
-        where_clause = "status<>'已关闭'"
+        where_clause = "status IN ('筹备中', '进行中')"
         params = []
         if include_project_id:
-            where_clause = "(status<>'已关闭' OR id=?)"
+            where_clause = "(status IN ('筹备中', '进行中') OR id=?)"
             params.append(int(include_project_id))
         sql = """
             SELECT id, project_code, name, status
@@ -529,7 +549,6 @@ def list_work_log_project_options(include_project_id=None):
             ORDER BY CASE status
                          WHEN '进行中' THEN 1
                          WHEN '筹备中' THEN 2
-                         WHEN '已完工' THEN 3
                          ELSE 4
                      END,
                      id DESC
@@ -556,6 +575,11 @@ def list_work_log_site_options(project_id):
         return [dict(row) for row in rows]
 
 
+@translate_constraints(
+    duplicate="工天记录与现有记录冲突，请刷新后重试",
+    related="所选工天还有关联的历史记录，不能作废",
+    invalid="所选工天无法作废，请核对状态后重试",
+)
 def delete_work_logs(log_ids):
     if not log_ids:
         return
@@ -611,7 +635,7 @@ def get_work_logs(month="", keyword=""):
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
-def get_labor_cost_summary(start_date=None, end_date=None, project_id=None):
+def get_labor_cost_summary(start_date=None, end_date=None, project_id=None, worker_id=None):
     """Aggregate labor cost with chart-ready breakdowns and traceable rows."""
     with db_read() as conn:
         conditions = ["COALESCE(wl.status, 'active')='active'"]
@@ -625,6 +649,9 @@ def get_labor_cost_summary(start_date=None, end_date=None, project_id=None):
         if project_id:
             conditions.append("wl.project_id=?")
             params.append(int(project_id))
+        if worker_id:
+            conditions.append("wl.worker_id=?")
+            params.append(int(worker_id))
         rows = conn.execute(
             f"""SELECT wl.id, wl.work_date, wl.construction_site,
                        COALESCE(wl.work_type, '') AS work_type,
@@ -701,6 +728,124 @@ def get_labor_cost_summary(start_date=None, end_date=None, project_id=None):
             ),
             "details": details,
         }
+
+
+def _workday_period(start_date, end_date):
+    start = _iso_date(start_date, "开始日期")
+    end = _iso_date(end_date, "结束日期")
+    if start > end:
+        raise ValueError("开始日期不能晚于结束日期")
+    return start, end
+
+
+def get_worker_monthly_workdays(start_date, end_date):
+    """All workers with active logs in an inclusive period, grouped by month."""
+    start, end = _workday_period(start_date, end_date)
+    months = [
+        f"{index // 12:04d}-{index % 12 + 1:02d}"
+        for index in range(
+            start.year * 12 + start.month - 1,
+            end.year * 12 + end.month,
+        )
+    ]
+    with db_read() as conn:
+        logs = conn.execute(
+            """SELECT wl.worker_id, w.name AS worker_name, w.status AS worker_status,
+                      substr(wl.work_date, 1, 7) AS month, wl.work_days,
+                      COALESCE(wl.is_overtime, 0) AS is_overtime
+               FROM work_logs wl JOIN workers w ON w.id=wl.worker_id
+               WHERE wl.work_date BETWEEN ? AND ?
+                 AND COALESCE(wl.status, 'active')='active'
+               ORDER BY w.name, w.id, wl.work_date, wl.id""",
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+
+    by_worker = {}
+    month_totals = {month: Decimal("0") for month in months}
+    overtime_total = Decimal("0")
+    for log in logs:
+        worker_id = int(log["worker_id"])
+        worker = by_worker.setdefault(
+            worker_id,
+            {
+                "worker_id": worker_id,
+                "worker_name": log["worker_name"],
+                "worker_status": log["worker_status"],
+                "work_days": Decimal("0"),
+                "overtime_days": Decimal("0"),
+                "months": {},
+            },
+        )
+        days = Decimal(str(log["work_days"] or 0))
+        worker["work_days"] += days
+        worker["months"][log["month"]] = worker["months"].get(
+            log["month"], Decimal("0")
+        ) + days
+        month_totals[log["month"]] += days
+        if log["is_overtime"]:
+            worker["overtime_days"] += days
+            overtime_total += days
+
+    workers = [
+        {
+            **worker,
+            "work_days": float(worker["work_days"]),
+            "overtime_days": float(worker["overtime_days"]),
+            "months": {
+                month: float(days) for month, days in worker["months"].items()
+            },
+        }
+        for worker in by_worker.values()
+    ]
+    return {
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "months": months,
+        "workers": workers,
+        "worker_count": len(workers),
+        "record_count": len(logs),
+        "work_days": float(sum(month_totals.values(), Decimal("0"))),
+        "overtime_days": float(overtime_total),
+        "month_totals": {month: float(days) for month, days in month_totals.items()},
+    }
+
+
+def get_worker_month_work_logs(worker_id, month, start_date, end_date):
+    """Trace one matrix cell back to active attendance rows within the period."""
+    start, end = _workday_period(start_date, end_date)
+    try:
+        month_start = datetime.strptime(str(month), "%Y-%m").date()
+    except ValueError as error:
+        raise ValueError("月份必须是 YYYY-MM") from error
+    if month_start.strftime("%Y-%m") != str(month):
+        raise ValueError("月份必须是 YYYY-MM")
+    next_month = (
+        date(month_start.year + 1, 1, 1)
+        if month_start.month == 12
+        else date(month_start.year, month_start.month + 1, 1)
+    )
+    first_day = max(start, month_start)
+    last_day = min(end, next_month - timedelta(days=1))
+    if first_day > last_day:
+        return {"record_count": 0, "work_days": 0.0, "overtime_days": 0.0, "details": []}
+    summary = get_labor_cost_summary(
+        start_date=first_day.isoformat(),
+        end_date=last_day.isoformat(),
+        worker_id=int(worker_id),
+    )
+    overtime_days = sum(
+        (
+            Decimal(str(row["work_days"] or 0))
+            for row in summary["details"] if row["is_overtime"]
+        ),
+        Decimal("0"),
+    )
+    return {
+        "record_count": summary["record_count"],
+        "work_days": summary["work_days"],
+        "overtime_days": float(overtime_days),
+        "details": summary["details"],
+    }
 
 
 def get_work_months():
@@ -915,6 +1060,11 @@ def preview_rate_adjustment(data):
         return preview
 
 
+@translate_constraints(
+    duplicate="该调薪记录已存在，请刷新后核对工资版本",
+    related="工人或工天关联已变更，请刷新后重新预览调薪影响",
+    invalid="调薪内容不符合记录规则，请重新预览后重试",
+)
 def apply_rate_adjustment(data):
     with db_transaction(immediate=True) as conn:
         preview = _preview_rate_adjustment(conn, data)

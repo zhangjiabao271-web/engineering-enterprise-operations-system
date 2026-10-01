@@ -8,9 +8,9 @@
 - Project creation/editing uses a centered modal with visible labels, grouped dates and inline validation.
 - Preserve list context after save by reselecting the saved project.
 - Closing a project and deactivating a site require confirmation and retain historical records.
-- Tables use the global 34px row height and avoid adding optional columns that force horizontal overflow.
+- Tables use the global DPI-scaled 38px row height and avoid adding optional columns that force horizontal overflow.
 - At 1200px width, project and site tables remain vertically stacked.
-- Keep the page chromatically restrained: `新增项目` uses the bronze-accent outline; no action uses a large filled color block.
+- Follow the shared desktop style: `新增项目` is the blue primary action; secondary actions use quiet rounded outlines.
 - Editing, closing, site maintenance and deactivation use neutral outline actions.
 - Do not render project statuses as high-contrast square chips or tint entire active rows.
 - Express status with plain text; use muted text only for closed or inactive historical records.

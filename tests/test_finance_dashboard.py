@@ -94,7 +94,7 @@ class FinanceDashboardTests(unittest.TestCase):
     def _create_fifo_invoice(
         self, suffix, project_id, contract_id, invoice_date, amount
     ):
-        return self.finance_service.create_invoice(
+        invoice_id = self.finance_service.create_invoice(
             {
                 "invoice_no": f"FIFO-INVOICE-{suffix}",
                 "contract_id": contract_id,
@@ -103,6 +103,9 @@ class FinanceDashboardTests(unittest.TestCase):
                 "amount": amount,
             }
         )
+        from services.operating_entity_service import assign_records
+        assign_records('sales_invoices', [invoice_id], 1, '测试确认主体')
+        return invoice_id
 
     def _create_fifo_receipt(
         self,
@@ -113,7 +116,7 @@ class FinanceDashboardTests(unittest.TestCase):
         amount,
         invoice_id=None,
     ):
-        return self.finance_service.create_receipt(
+        receipt_id = self.finance_service.create_receipt(
             {
                 "receipt_no": f"FIFO-RECEIPT-{suffix}",
                 "contract_id": contract_id,
@@ -123,6 +126,43 @@ class FinanceDashboardTests(unittest.TestCase):
                 "amount": amount,
             }
         )
+        from services.operating_entity_service import assign_records
+        assign_records('receipts', [receipt_id], 1, '测试确认主体')
+        return receipt_id
+
+    def test_entity_change_reconciles_and_never_cross_matches(self):
+        from services.operating_entity_service import assign_records
+        suffix = uuid4().hex[:8]
+        project, contract = self._create_fifo_case(suffix, f'主体测试-{suffix}')
+        first = self._create_fifo_invoice(suffix+'A', project, contract, '2026-08-01', '100')
+        second = self._create_fifo_invoice(suffix+'B', project, contract, '2026-08-02', '100')
+        assign_records('sales_invoices', [second], 2)
+        receipt = self._create_fifo_receipt(suffix, project, contract, '2026-08-03', '100', invoice_id=first)
+        assign_records('receipts', [receipt], 2)
+        self.assertEqual(self.finance_service.get_invoice(first)['received_minor'], 0)
+        self.assertEqual(self.finance_service.get_invoice(second)['received_minor'], 10000)
+        result = self.finance_service.get_receipt(receipt)
+        self.assertEqual([m['invoice_id'] for m in result['invoice_matches']], [second])
+        self.assertEqual(result['invoice_unmatched_minor'], 0)
+        assign_records('receipts', [receipt], 1)
+        self.assertEqual(self.finance_service.get_invoice(second)['received_minor'], 0)
+        self.assertEqual(self.finance_service.get_invoice(first)['received_minor'], 10000)
+
+    def test_unknown_entity_does_not_use_old_or_manual_matches(self):
+        from db.connection import db_transaction
+        from services.operating_entity_service import assign_records
+        suffix = uuid4().hex[:8]
+        project, contract = self._create_fifo_case(suffix, f'待确认测试-{suffix}')
+        invoice = self._create_fifo_invoice(suffix, project, contract, '2026-08-01', '100')
+        receipt = self._create_fifo_receipt(suffix, project, contract, '2026-08-02', '100', invoice_id=invoice)
+        with db_transaction() as conn:
+            conn.execute("DELETE FROM record_entities WHERE record_type='receipts' AND record_id=?", (receipt,))
+        self.assertEqual(self.finance_service.get_invoice(invoice)['received_minor'], 0)
+        self.assertEqual(self.finance_service.get_receipt(receipt)['invoice_matches'], [])
+        row = next(r for r in self.finance_service.list_invoices(project) if r['id'] == invoice)
+        self.assertEqual(row['received_minor'], 0)
+        assign_records('receipts', [receipt], 1)
+        self.assertEqual(self.finance_service.get_invoice(invoice)['received_minor'], 10000)
 
     def test_invoice_list_distinguishes_missing_and_active_attachments(self):
         suffix = uuid4().hex[:8]
@@ -388,6 +428,7 @@ class FinanceDashboardTests(unittest.TestCase):
         project_id = self.project_service.create_project(
             {
                 "name": f"财务看板测试-{suffix}",
+                "customer_name": f"财务看板客户-{suffix}",
                 "project_code": f"FIN-{suffix}",
                 "status": "进行中",
             }
@@ -439,6 +480,9 @@ class FinanceDashboardTests(unittest.TestCase):
             }
         )
 
+        from services.operating_entity_service import assign_records
+        assign_records('sales_invoices', [invoice_id], 1)
+        assign_records('receipts', [receipt_id], 1)
         invoice = self.finance_service.get_invoice(invoice_id)
         self.assertEqual(invoice["received_minor"], 400_000)
         self.assertEqual(invoice["unreceived_minor"], 100_000)

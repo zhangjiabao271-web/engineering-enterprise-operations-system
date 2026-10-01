@@ -385,6 +385,52 @@ class RestoreBackupTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_unsafe_attachment_rejected_before_database_restore(self):
+        for target in ('main.py', 'config.ini', 'supplier_data.db', 'attachments/../main.py'):
+            with self.subTest(target=target):
+                archive = self.root / 'unsafe.zip'
+                manifest = {'database':'supplier_data.db', 'files':[
+                    {'original_path':target, 'archive_path':'files/evil.pdf'}]}
+                with zipfile.ZipFile(archive, 'w') as zf:
+                    zf.write(self.source_db, 'supplier_data.db')
+                    zf.writestr('files/evil.pdf', b'unsafe')
+                    zf.writestr('manifest.json', json.dumps(manifest))
+                with mock.patch.object(self.backup_service, 'backup_database') as backup:
+                    with self.assertRaisesRegex(ValueError, '附件目录'):
+                        self.backup_service.restore_backup_archive(archive)
+                    backup.assert_not_called()
+
+    def test_restore_targets_allow_configured_storage_and_reject_duplicates(self):
+        storage = self.root / 'attachments'
+        with mock.patch('services.attachment_service._storage_root', return_value=storage):
+            item = {'original_path':str(storage/'original.pdf')}
+            self.assertEqual(self.backup_service._restore_targets({'files':[item]}), [(storage/'original.pdf').resolve()])
+            with self.assertRaisesRegex(ValueError, '重复'):
+                self.backup_service._restore_targets({'files':[item,item]})
+
+    def test_archive_rejects_windows_path_escape(self):
+        archive = self.root / 'windows_escape.zip'
+        with zipfile.ZipFile(archive, 'w') as zf:
+            zf.write(self.source_db, 'supplier_data.db')
+            zf.writestr('manifest.json', json.dumps({'database':'supplier_data.db', 'files':[]}))
+            zf.writestr('files/..\\..\\escaped.py', b'unsafe')
+        with self.assertRaisesRegex(ValueError, '非法路径'):
+            self.backup_service.restore_backup_archive(archive)
+        self.assertFalse((self.root/'escaped.py').exists())
+
+    def test_restore_rejects_attachment_symlink_escape(self):
+        storage = self.root / 'attachments'
+        outside = self.root / 'outside'
+        storage.mkdir()
+        outside.mkdir()
+        try:
+            (storage/'linked').symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest('当前环境不允许创建符号链接')
+        with mock.patch('services.attachment_service._storage_root', return_value=storage):
+            with self.assertRaisesRegex(ValueError, '附件目录'):
+                self.backup_service._restore_targets({'files':[{'original_path':str(storage/'linked'/'main.py')}]})
+
     def test_round_trip_reverts_changes_and_keeps_safety_copy(self):
         archive = self.root / "backup.zip"
         self.backup_service.create_backup_archive(archive)
@@ -409,10 +455,9 @@ class RestoreBackupTests(unittest.TestCase):
         self.assertTrue(Path(result["safety_backup"]).is_file())
 
     def test_restore_recovers_deleted_attachment(self):
-        # 恢复守卫只允许写项目目录内的路径，测试附件放在真实附件目录并自清理
-        attachment_file = (
-            self.backup_service.PROJECT_ROOT / "attachments" / "business" / "restore_test_回执单.pdf"
-        )
+        # Use the isolated attachment root, never a checkout's business folder.
+        from services.attachment_service import _storage_root
+        attachment_file = _storage_root() / "restore_test_回执单.pdf"
         attachment_file.parent.mkdir(parents=True, exist_ok=True)
         attachment_file.write_bytes(b"%PDF-fake")
         self.addCleanup(attachment_file.unlink, missing_ok=True)

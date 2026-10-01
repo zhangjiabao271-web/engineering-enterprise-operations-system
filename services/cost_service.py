@@ -53,6 +53,23 @@ ALLOCATION_METHODS = {
 }
 
 
+def list_cost_project_options(include_project_ids=()):
+    """新增成本只选在建项目；调整历史归集时保留原项目。"""
+    project_ids = sorted({int(value) for value in include_project_ids})
+    where_clause = "status IN ('筹备中', '进行中')"
+    if project_ids:
+        placeholders = ",".join("?" for _ in project_ids)
+        where_clause += f" OR id IN ({placeholders})"
+    with db_read() as conn:
+        return [dict(row) for row in conn.execute(
+            f"""SELECT id, project_code, name, status FROM projects
+                WHERE {where_clause}
+                ORDER BY CASE status WHEN '进行中' THEN 1
+                         WHEN '筹备中' THEN 2 ELSE 4 END, id DESC""",
+            project_ids,
+        ).fetchall()]
+
+
 def build_allocation_plan(total_amount, method, project_ids=None, allocations=None):
     """Validate and return a cent-exact project allocation plan."""
     if method == "unassigned":
@@ -583,244 +600,48 @@ def _month_bounds(month):
     return start, end
 
 def get_cost_dashboard(month=None, project_id=None):
-    """Dashboard aggregates: KPI totals, composition and project ranking.
-
-    Costs are unified in minor units: purchase orders (total_amount_cents),
-    work logs (amount_minor with REAL fallback) and manual cost allocations.
-    """
+    """Use the same allocated cost facts as the assistant; never multiply orders by items."""
+    from db.business_facts import COST_FACTS_SQL
     month = month or datetime.now().strftime("%Y-%m")
-    month_start, next_month = _month_bounds(month)
+    start, end = _month_bounds(month)
+    year, number = map(int, month.split("-"))
+    previous = f"{year - 1}-12" if number == 1 else f"{year}-{number - 1:02d}"
+    previous_start, previous_end = _month_bounds(previous)
+    scope = " AND project_id=?" if project_id else ""
+    params = [start, end] + ([int(project_id)] if project_id else [])
+    base = f"WITH facts AS ({COST_FACTS_SQL})"
+    where = " WHERE date>=? AND date<?" + scope
     with db_read() as conn:
-        project_filter = " AND project_id=?" if project_id else ""
-        params = [month_start, next_month] + ([project_id] if project_id else [])
-
-        if project_id:
-            purchase = conn.execute(
-                """SELECT COUNT(DISTINCT po.id) AS count,
-                          COALESCE(SUM(ppc.cost_minor), 0) AS amount_minor
-                   FROM purchase_project_costs ppc
-                   JOIN purchase_orders po ON po.id=ppc.purchase_order_id
-                   WHERE po.status='active'
-                     AND po.purchase_date >= ? AND po.purchase_date < ?
-                     AND ppc.project_id=?""",
-                params,
-            ).fetchone()
-        else:
-            purchase = conn.execute(
-                """SELECT COUNT(*) AS count,
-                          COALESCE(SUM(total_amount_cents), 0) AS amount_minor
-                   FROM purchase_orders
-                   WHERE status='active'
-                     AND purchase_date >= ? AND purchase_date < ?""",
-                params,
-            ).fetchone()
-
-        labor = conn.execute(
-            f"""SELECT COUNT(*) AS count,
-                       COALESCE(SUM(COALESCE(
-                           amount_minor,
-                           CAST(ROUND(COALESCE(amount, 0) * 100) AS INTEGER)
-                       )), 0) AS amount_minor
-                FROM work_logs
-                WHERE COALESCE(status, 'active')='active'
-                  AND work_date >= ? AND work_date < ?
-                  {project_filter}""",
-            params,
-        ).fetchone()
-
-        manual = conn.execute(
-            f"""SELECT COUNT(DISTINCT ce.id) AS count,
-                       COALESCE(SUM(cal.amount_minor), 0) AS amount_minor
-                FROM cost_entries ce
-                JOIN cost_allocation_lines cal
-                  ON cal.cost_entry_id=ce.id AND cal.status='active'
-                WHERE ce.status='active'
-                  AND ce.cost_date >= ? AND ce.cost_date < ?
-                  {'AND cal.project_id=?' if project_id else ''}""",
-            params,
-        ).fetchone()
-
-        if not project_id:
-            unassigned = conn.execute(
-                """SELECT COALESCE(SUM(amount_minor), 0) AS amount_minor,
-                          COUNT(*) AS count
-                   FROM cost_entries
-                   WHERE status='active'
-                     AND cost_date >= ? AND cost_date < ?
-                     AND project_id IS NULL
-                     AND NOT EXISTS (
-                       SELECT 1 FROM cost_allocation_lines cal
-                       WHERE cal.cost_entry_id=cost_entries.id AND cal.status='active'
-                     )""",
-                (month_start, next_month),
-            ).fetchone()
-        else:
-            unassigned = None
-
-        if unassigned is not None:
-            manual_amount = manual["amount_minor"] + unassigned["amount_minor"]
-            manual_count = manual["count"] + unassigned["count"]
-        else:
-            manual_amount, manual_count = manual["amount_minor"], manual["count"]
-        total_minor = purchase["amount_minor"] + labor["amount_minor"] + manual_amount
-
-        by_source = [
-            ("采购", purchase["amount_minor"]),
-            ("人工", labor["amount_minor"]),
-            ("手工/其他", manual_amount),
-        ]
-
-        purchase_allocation_join = (
-            "JOIN purchase_project_costs ppc ON ppc.purchase_order_id=po.id"
-            if project_id
-            else ""
-        )
-        purchase_amount_column = (
-            "ppc.tax_inclusive_material_minor"
-            if project_id
-            else "poi.line_amount_cents"
-        )
-        purchase_project_filter = "AND ppc.project_id=?" if project_id else ""
-        category_params = params + params + params
+        sources = {r["source"]: dict(r) for r in conn.execute(
+            base + """ SELECT substr(id,1,instr(id,'-')-1) AS source,
+                SUM(amount_minor) AS amount_minor,COUNT(DISTINCT id) AS count
+                FROM facts""" + where + " GROUP BY source", params)}
         category_rows = conn.execute(
-            f"""SELECT '材料费' AS category,
-                       COALESCE(SUM({purchase_amount_column}), 0) AS amount_minor
-                FROM purchase_order_items poi
-                JOIN purchase_orders po ON po.id=poi.purchase_order_id
-                {purchase_allocation_join}
-                WHERE po.status='active'
-                  AND po.purchase_date >= ? AND po.purchase_date < ?
-                  {purchase_project_filter}
-                UNION ALL
-                SELECT '人工成本' AS category,
-                       COALESCE(SUM(COALESCE(
-                           wl.amount_minor,
-                           CAST(ROUND(COALESCE(wl.amount, 0) * 100) AS INTEGER)
-                       )), 0) AS amount_minor
-                FROM work_logs wl
-                WHERE COALESCE(wl.status, 'active')='active'
-                  AND wl.work_date >= ? AND wl.work_date < ?
-                  {'AND wl.project_id=?' if project_id else ''}
-                UNION ALL
-                SELECT ce.category AS category,
-                       COALESCE(SUM(cal.amount_minor), 0) AS amount_minor
-                FROM cost_entries ce
-                JOIN cost_allocation_lines cal
-                  ON cal.cost_entry_id=ce.id AND cal.status='active'
-                WHERE ce.status='active'
-                  AND ce.cost_date >= ? AND ce.cost_date < ?
-                  {'AND cal.project_id=?' if project_id else ''}
-                GROUP BY ce.category""",
-            category_params,
-        ).fetchall()
-        if unassigned is not None and unassigned["amount_minor"] > 0:
-            category_rows = list(category_rows) + [
-                {"category": "待归集", "amount_minor": unassigned["amount_minor"]}
-            ]
-        by_category = [
-            (row["category"], row["amount_minor"])
-            for row in category_rows
-            if row["amount_minor"] > 0
-        ]
-
-        project_params = [month_start, next_month] * 3 + (
-            [project_id] if project_id else []
-        )
-        project_rows = conn.execute(
-            f"""SELECT project_id, SUM(amount_minor) AS amount_minor FROM (
-                    SELECT ppc.project_id, ppc.cost_minor AS amount_minor
-                    FROM purchase_project_costs ppc
-                    JOIN purchase_orders po ON po.id=ppc.purchase_order_id
-                    WHERE po.status='active'
-                      AND po.purchase_date >= ? AND po.purchase_date < ?
-                    UNION ALL
-                    SELECT project_id, COALESCE(
-                        amount_minor,
-                        CAST(ROUND(COALESCE(amount, 0) * 100) AS INTEGER)
-                    ) AS amount_minor
-                    FROM work_logs
-                    WHERE COALESCE(status, 'active')='active'
-                      AND work_date >= ? AND work_date < ?
-                    UNION ALL
-                    SELECT cal.project_id, cal.amount_minor
-                    FROM cost_entries ce
-                    JOIN cost_allocation_lines cal
-                      ON cal.cost_entry_id=ce.id AND cal.status='active'
-                    WHERE ce.status='active'
-                      AND ce.cost_date >= ? AND ce.cost_date < ?
-                ) unified
-                WHERE project_id IS NOT NULL {project_filter}
-                GROUP BY project_id
-                ORDER BY amount_minor DESC""",
-            project_params,
-        ).fetchall()
-        project_names = {
-            row["id"]: row["name"]
-            for row in conn.execute(
-                "SELECT id, name FROM projects WHERE status != '已关闭'"
-            ).fetchall()
-        }
-        by_project = []
-        for row in project_rows:
-            label = project_names.get(row["project_id"], f"项目#{row['project_id']}")
-            by_project.append({"label": label, "amount_minor": row["amount_minor"]})
-        if unassigned is not None and unassigned["amount_minor"] > 0:
-            by_project.append({"label": "待归集", "amount_minor": unassigned["amount_minor"]})
-
-        prev_year, prev_mon = map(int, month.split("-"))
-        prev_month = f"{prev_year - 1}-12" if prev_mon == 1 else f"{prev_year}-{prev_mon - 1:02d}"
-        prev_start, prev_next = _month_bounds(prev_month)
-        prev_params = [prev_start, prev_next] + ([project_id] if project_id else [])
-        purchase_previous_sql = (
-            """SELECT COALESCE(SUM(ppc.cost_minor), 0)
-               FROM purchase_project_costs ppc
-               JOIN purchase_orders po ON po.id=ppc.purchase_order_id
-               WHERE po.status='active'
-                 AND po.purchase_date >= ? AND po.purchase_date < ?
-                 AND ppc.project_id=?"""
-            if project_id
-            else """SELECT COALESCE(SUM(total_amount_cents), 0)
-                    FROM purchase_orders
-                    WHERE status='active'
-                      AND purchase_date >= ? AND purchase_date < ?"""
-        )
-        prev_total = conn.execute(
-            f"""SELECT COALESCE(
-                ({purchase_previous_sql})
-                + (SELECT COALESCE(SUM(COALESCE(amount_minor,
-                        CAST(ROUND(COALESCE(amount, 0) * 100) AS INTEGER))), 0)
-                   FROM work_logs
-                   WHERE COALESCE(status, 'active')='active'
-                     AND work_date >= ? AND work_date < ?
-                     {project_filter})
-                + (SELECT COALESCE(SUM(cal.amount_minor), 0)
-                   FROM cost_entries ce
-                   JOIN cost_allocation_lines cal
-                     ON cal.cost_entry_id=ce.id AND cal.status='active'
-                   WHERE ce.status='active'
-                     AND ce.cost_date >= ? AND ce.cost_date < ?
-                     {'AND cal.project_id=?' if project_id else ''})
-            , 0)""",
-            prev_params + prev_params + prev_params,
-        ).fetchone()[0]
-
-        return {
-            "month": month,
-            "summary": {
-                "total_minor": total_minor,
-                "purchase_minor": purchase["amount_minor"],
-                "purchase_count": purchase["count"],
-                "labor_minor": labor["amount_minor"],
-                "labor_count": labor["count"],
-                "manual_minor": manual_amount,
-                "manual_count": manual_count,
-                "unassigned_minor": unassigned["amount_minor"] if unassigned is not None else 0,
-                "previous_total_minor": prev_total,
-            },
-            "by_source": by_source,
-            "by_category": by_category,
-            "by_project": by_project,
-        }
+            base + " SELECT category,SUM(amount_minor) AS amount_minor FROM facts" + where
+            + " GROUP BY category ORDER BY amount_minor DESC", params).fetchall()
+        projects = conn.execute(
+            base + " SELECT project_id,project,SUM(amount_minor) AS amount_minor FROM facts" + where
+            + " GROUP BY project_id,project ORDER BY amount_minor DESC", params).fetchall()
+        previous_total = conn.execute(
+            base + " SELECT COALESCE(SUM(amount_minor),0) FROM facts" + where,
+            [previous_start, previous_end] + ([int(project_id)] if project_id else [])).fetchone()[0]
+    purchase, labor, manual = (sources.get(key, {"amount_minor": 0, "count": 0})
+                               for key in ("purchase", "labor", "expense"))
+    return {
+        "month": month,
+        "summary": {
+            "total_minor": sum(r["amount_minor"] for r in sources.values()),
+            "purchase_minor": purchase["amount_minor"], "purchase_count": purchase["count"],
+            "labor_minor": labor["amount_minor"], "labor_count": labor["count"],
+            "manual_minor": manual["amount_minor"], "manual_count": manual["count"],
+            "unassigned_minor": sum(r["amount_minor"] for r in projects if r["project_id"] is None),
+            "previous_total_minor": previous_total,
+        },
+        "by_source": [("采购", purchase["amount_minor"]), ("人工", labor["amount_minor"]),
+                      ("手工/其他", manual["amount_minor"])],
+        "by_category": [(r["category"], r["amount_minor"]) for r in category_rows if r["amount_minor"] > 0],
+        "by_project": [{"label": r["project"] or "待归集", "amount_minor": r["amount_minor"]} for r in projects],
+    }
 
 
 def list_cost_months():

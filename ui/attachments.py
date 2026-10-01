@@ -2,7 +2,7 @@ import os
 from tkinter import filedialog, messagebox
 
 import ttkbootstrap as ttk
-from ttkbootstrap.constants import BOTH, CENTER, E, END, LEFT, RIGHT, W, X, Y
+from ttkbootstrap.constants import BOTH, BOTTOM, CENTER, E, END, LEFT, RIGHT, W, X, Y
 
 from services import attachment_service
 from ui.theme import style_dialog
@@ -17,6 +17,10 @@ def open_attachment_manager(
         dialog, parent, 760, 520,
         resizable=True, min_width=620, min_height=420
     )
+
+    # 先为操作栏预留高度，防止高 DPI 下列表把按钮挤出窗口。
+    footer = ttk.Frame(dialog, padding=(18, 8, 18, 16))
+    footer.pack(side=BOTTOM, fill=X)
 
     header = ttk.Frame(dialog, padding=(18, 16, 18, 8))
     header.pack(fill=X)
@@ -128,8 +132,6 @@ def open_attachment_manager(
         if on_change:
             on_change()
 
-    footer = ttk.Frame(dialog, padding=(18, 8, 18, 16))
-    footer.pack(fill=X)
     ttk.Button(
         footer, text="添加文件", bootstyle="primary",
         command=add_file,

@@ -38,7 +38,7 @@ class HistoricalReceivableTests(unittest.TestCase):
         self.assertEqual(row['received_minor'],15000000)
         self.assertIsNone(row['remaining_minor'])
         self.assertEqual(row['state'],'总额待确认')
-        self.assertEqual(history.list_receipts(self.project)[0]['payer_name_snapshot'],'乐平市赛复乐医药化工有限公司')
+        self.assertEqual(history.list_receipts(self.project)[0]['payer_name_snapshot'],'示例历史客户有限公司')
         with self.assertRaises(ValueError):
             history.record_receipt(self.project,'2026-09-15','10','test-key')
 
@@ -62,6 +62,12 @@ class HistoricalReceivableTests(unittest.TestCase):
             history.record_receipt(self.project,'2026-02-30','1','invalid-date')
         with self.assertRaises(ValueError):
             history.save_project(-1,'无效客户')
+
+    def test_duplicate_project_name_is_friendly_and_does_not_write_audit(self):
+        before = len(history.list_projects())
+        with self.assertRaisesRegex(ValueError, '同名历史旧账项目'):
+            history.save_project(26, '历史回款专项测试')
+        self.assertEqual(len(history.list_projects()), before)
 
     def test_payer_override_is_snapshot(self):
         history.record_receipt(self.project,'2026-09-15','1','proxy',payer_name='个人代付测试')

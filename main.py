@@ -26,6 +26,8 @@ from ui.scaling import configure_main_window, scale_px
 from ui.theme import configure_design_system
 from ui.desktop_style import install_desktop_style, navigation_icon
 from ui.page_transition import PageTransition
+from ui.dialogs import safe_init_loaders
+from services.database_maintenance import start_backup_worker
 
 class SupplierManagerApp:
     def __init__(self, root):
@@ -82,7 +84,6 @@ class SupplierManagerApp:
             ("经营决策", [
                 ("home", "经营驾驶舱"),
                 ("governance", "数据治理中心"),
-                ("workspace", "项目工作空间"),
                 ("profit", "项目经营核算"),
             ]),
             ("合同资金", [
@@ -148,7 +149,9 @@ class SupplierManagerApp:
             self.root, style="App.TFrame",
         )
         self.content_host.pack(side=LEFT, fill=BOTH, expand=True)
-        self.page_transition = PageTransition(self.content_host)
+        # Reuse five common synchronous views, never dialogs or AI jobs.
+        self._page_views = {}
+        self.page_transition = PageTransition(self.content_host, self._retire_content)
         self.motion_var = ttk.BooleanVar(value=self.page_transition.enabled)
         self.root._motion_enabled = self.motion_var
         motion_toggle = ttk.Checkbutton(
@@ -172,26 +175,50 @@ class SupplierManagerApp:
         self.current_page = None
         self.show_home_page()
 
-    def navigate_to(self, page_key):
-        if page_key == self.current_page:
+    def navigate_to(self, page_key, project_id=None):
+        if page_key == self.current_page and project_id is None:
             return
         command = self.page_commands.get(page_key)
         if command:
-            command()
+            if project_id is not None and page_key in {"profit", "contract", "finance"}:
+                command(project_id=project_id)
+            else:
+                command()
 
     def set_active_nav(self, page_key):
         for key, button in self.nav_buttons.items():
             button.configure(style="NavActive.TButton" if key == page_key else "Nav.TButton")
             button.configure(image=self.nav_icons[key][int(key == page_key)])
 
-    def clear_content(self):
-        self.content_frame = self.page_transition.new_page()
+    def _retire_content(self, frame):
+        if any(frame is entry[0] for entry in self._page_views.values()):
+            frame.place_forget()
+        else:
+            frame.destroy()
+
+    def clear_content(self, frame=None):
+        self.content_frame = self.page_transition.new_page(frame)
+
+    def _show_reusable_page(self, key, factory, loaders, project_id=None):
+        entry = self._page_views.get(key)
+        self.set_active_nav(key)
+        self.clear_content(entry[0] if entry is not None else None)
+        self.current_page = key
+        if entry is None:
+            page = factory(self.content_frame)
+            self._page_views[key] = (self.content_frame, page)
+        else:
+            page = entry[1]
+            if project_id is not None:
+                page.initial_project_id = project_id
+            # Always reload facts; only widgets and user filters are reused.
+            safe_init_loaders(key, [getattr(page, name) for name in loaders])
 
     def show_home_page(self):
-        self.clear_content()
-        self.current_page = "home"
-        self.set_active_nav("home")
-        OperationsDashboardPage(self.content_frame, self.navigate_to)
+        self._show_reusable_page(
+            "home", lambda frame: OperationsDashboardPage(frame, self.navigate_to),
+            ("refresh",),
+        )
 
     def show_governance_page(self):
         self.clear_content()
@@ -200,10 +227,7 @@ class SupplierManagerApp:
         DataGovernancePage(self.content_frame, self.navigate_to)
 
     def show_supplier_page(self):
-        self.clear_content()
-        self.current_page = "supplier"
-        self.set_active_nav("supplier")
-        SupplierPage(self.content_frame)
+        self._show_reusable_page("supplier", SupplierPage, ("load_data",))
 
     def show_customer_page(self):
         self.clear_content()
@@ -217,11 +241,14 @@ class SupplierManagerApp:
         self.set_active_nav("project")
         ProjectManagementPage(self.content_frame)
 
-    def show_profit_page(self):
+    def show_profit_page(self, project_id=None):
         self.clear_content()
         self.current_page = "profit"
         self.set_active_nav("profit")
-        ProjectProfitPage(self.content_frame)
+        ProjectProfitPage(
+            self.content_frame, navigate=self.navigate_to,
+            initial_project_id=project_id,
+        )
 
     def show_workspace_page(self):
         self.clear_content()
@@ -229,17 +256,17 @@ class SupplierManagerApp:
         self.set_active_nav("workspace")
         ProjectWorkspacePage(self.content_frame, self.navigate_to)
 
-    def show_contract_page(self):
+    def show_contract_page(self, project_id=None):
         self.clear_content()
         self.current_page = "contract"
         self.set_active_nav("contract")
-        ContractManagementPage(self.content_frame)
+        ContractManagementPage(self.content_frame, initial_project_id=project_id)
 
-    def show_finance_page(self):
-        self.clear_content()
-        self.current_page = "finance"
-        self.set_active_nav("finance")
-        ReceivablePage(self.content_frame)
+    def show_finance_page(self, project_id=None):
+        self._show_reusable_page(
+            "finance", lambda frame: ReceivablePage(frame, initial_project_id=project_id),
+            ("refresh",), project_id=project_id,
+        )
 
     def show_funds_page(self):
         self.clear_content()
@@ -260,16 +287,14 @@ class SupplierManagerApp:
         ProductPage(self.content_frame)
 
     def show_purchase_page(self):
-        self.clear_content()
-        self.current_page = "purchase"
-        self.set_active_nav("purchase")
-        PurchasePage(self.content_frame)
+        self._show_reusable_page(
+            "purchase", PurchasePage, ("refresh_filters", "refresh_all"),
+        )
 
     def show_workday_page(self):
-        self.clear_content()
-        self.current_page = "workday"
-        self.set_active_nav("workday")
-        WorkdayDashboardPage(self.content_frame)
+        self._show_reusable_page(
+            "workday", WorkdayDashboardPage, ("refresh_months", "refresh_all"),
+        )
 
     def show_construction_page(self):
         self.clear_content()
@@ -298,7 +323,11 @@ class SupplierManagerApp:
 def main():
     root = ttk.Window(themename="flatly")
     app = SupplierManagerApp(root)
-    root.mainloop()
+    stop_backup = start_backup_worker()
+    try:
+        root.mainloop()
+    finally:
+        stop_backup.set()
 
 
 if __name__ == "__main__":

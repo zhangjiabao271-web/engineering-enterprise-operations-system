@@ -9,7 +9,7 @@ def main():
 
     import ai_engine
 
-    question = "锦帆那里今年买了多少东西？"
+    question = "康飞那里今年买了多少东西？"
     first_turn = ai_engine.ask_ai_turn(question)
     if first_turn["response_type"] != "confirmation":
         raise RuntimeError("供应商简称没有进入可见确认流程")

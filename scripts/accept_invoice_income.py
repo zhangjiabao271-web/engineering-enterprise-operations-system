@@ -43,8 +43,8 @@ try:
                        for w in descendants(dialog))
         else:
             combo = next(w for w in descendants(dialog) if isinstance(w, ttk.Combobox)
-                         and any('HT-20260804-384D68' in str(v) for v in w['values']))
-            combo.set(next(v for v in combo['values'] if 'HT-20260804-384D68' in str(v)))
+                         and any('DEMO-CONTRACT-0003' in str(v) for v in w['values']))
+            combo.set(next(v for v in combo['values'] if 'DEMO-CONTRACT-0003' in str(v)))
             combo.event_generate('<<ComboboxSelected>>')
             root.update()
             assert any(isinstance(w, ttk.Label) and '无需另填收入确认' in str(w.cget('text'))

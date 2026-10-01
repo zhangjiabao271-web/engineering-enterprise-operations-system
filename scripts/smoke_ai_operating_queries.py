@@ -25,7 +25,7 @@ def main():
         ("哪些回款还在等后续开票？", "receipt_matching"),
         ("今年哪个客户业务最多？", "customer_business"),
         ("哪个客户欠款最多？", "customer_business"),
-        ("蓝湾龙门吊基础和零星工程毛利多少？", "project_profit"),
+        ("城北龙门吊基础和零星工程毛利多少？", "project_profit"),
         ("本月成本主要花在哪里？", "cost_breakdown"),
         ("哪些项目现金余额为负？", "cash_risk"),
         ("哪些项目还有数据缺口？", "business_gaps"),

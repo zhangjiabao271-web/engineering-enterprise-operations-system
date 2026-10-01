@@ -9,9 +9,10 @@ import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 
 from services import construction_service as db
-from ui.components import DatePicker
+from ui.components import DataTable, DatePicker
 from ui.dialogs import add_form_actions, build_form_dialog, safe_init_loaders
-from ui.theme import style_dialog
+from ui.scaling import scale_px
+from ui.theme import FONT_BODY, FONT_CONTROL, FONT_SECTION, style_dialog
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -102,30 +103,30 @@ class ConstructionRecordPage:
             ttk.Label(value_row, text=suffix, style="CardText.TLabel").pack(side=LEFT, padx=(4, 0), pady=(10, 0))
             kpis.columnconfigure(index, weight=1)
 
-        overview = ttk.Panedwindow(self.parent, orient=HORIZONTAL)
+        overview = ttk.Panedwindow(
+            self.parent, orient=HORIZONTAL, height=scale_px(self.parent, 150)
+        )
         overview.pack(fill=X, pady=(0, 12))
         site_card = ttk.Frame(overview, style="Card.TFrame", padding=12)
         item_card = ttk.Frame(overview, style="Card.TFrame", padding=12)
         overview.add(site_card, weight=1)
         overview.add(item_card, weight=1)
         ttk.Label(site_card, text="项目施工概览", style="CardTitle.TLabel").pack(anchor=W, pady=(0, 6))
-        self.site_rank = ttk.Treeview(
-            site_card, columns=("site", "records", "pending", "amount"),
-            show="headings", height=3,
+        self.site_table = DataTable(
+            site_card,
+            (("site", "项目", 120, W), ("records", "记录", 60, CENTER),
+             ("pending", "待验收", 65, CENTER), ("amount", "记录金额", 90, E)),
+            empty_text="本月暂无项目施工记录", stretch=("site",),
+            height=3, padding=0, pack_fill=X, pack_expand=False,
         )
         ttk.Label(item_card, text="作业位置金额汇总", style="CardTitle.TLabel").pack(anchor=W, pady=(0, 6))
-        self.area_rank = ttk.Treeview(
-            item_card, columns=("area", "records", "amount"),
-            show="headings", height=3,
+        self.area_table = DataTable(
+            item_card,
+            (("area", "具体作业位置", 180, W), ("records", "记录", 70, CENTER),
+             ("amount", "记录金额", 100, E)),
+            empty_text="本月暂无作业位置金额", stretch=("area",),
+            height=3, padding=0, pack_fill=X, pack_expand=False,
         )
-        for tree, definitions in [
-            (self.site_rank, [("site", "项目", 120), ("records", "记录", 60), ("pending", "待验收", 65), ("amount", "记录金额", 90)]),
-            (self.area_rank, [("area", "具体作业位置", 180), ("records", "记录", 70), ("amount", "记录金额", 100)]),
-        ]:
-            for col, text, width in definitions:
-                tree.heading(col, text=text)
-                tree.column(col, width=width, anchor=CENTER)
-            tree.pack(fill=X)
 
         table_tools = ttk.Frame(self.parent)
         table_tools.pack(fill=X, pady=(0, 7))
@@ -135,25 +136,16 @@ class ConstructionRecordPage:
         ttk.Button(table_tools, text="照片", bootstyle="secondary-outline", command=self.photos_selected).pack(side=RIGHT, padx=4)
         ttk.Button(table_tools, text="验收", bootstyle="secondary-outline", command=self.inspect_selected).pack(side=RIGHT, padx=4)
 
-        table_frame = ttk.Frame(self.parent)
-        table_frame.pack(fill=BOTH, expand=True)
-        cols = ("id", "project", "period", "area", "details", "amount", "status", "photos")
-        self.tree = ttk.Treeview(
-            table_frame, columns=cols, show="headings", selectmode="extended"
+        self.record_table = DataTable(
+            self.parent,
+            (("id", "ID", 45, CENTER), ("project", "所属项目", 100, W),
+             ("period", "施工周期", 145, CENTER), ("area", "具体作业位置", 120, W),
+             ("details", "安装明细", 260, W), ("amount", "工程金额", 90, E),
+             ("status", "验收状态", 75, CENTER), ("photos", "照片", 50, CENTER)),
+            empty_text="暂无符合条件的施工记录", stretch=("project", "area", "details"),
         )
-        for col, text, width in [
-            ("id", "ID", 45), ("project", "所属项目", 100),
-            ("period", "施工周期", 145), ("area", "具体作业位置", 120),
-            ("details", "安装明细", 260), ("amount", "工程金额", 90),
-            ("status", "验收状态", 75),
-            ("photos", "照片", 50),
-        ]:
-            self.tree.heading(col, text=text)
-            self.tree.column(col, width=width, anchor=CENTER)
-        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
-        scroll = ttk.Scrollbar(table_frame, orient=VERTICAL, command=self.tree.yview)
-        scroll.pack(side=RIGHT, fill=Y)
-        self.tree.configure(yscrollcommand=scroll.set)
+        self.tree = self.record_table.tree
+        self.tree.configure(selectmode="extended")
         self.tree.bind("<Double-1>", lambda event: self.photos_selected())
 
     def refresh_filters(self):
@@ -202,27 +194,18 @@ class ConstructionRecordPage:
             str(summary.get("rectification_count", 0) or 0)
         )
         self.kpi_vars["photos"].set(str(summary.get("photo_count", 0) or 0))
-        self.site_rank.delete(*self.site_rank.get_children())
-        for row in data["by_site"]:
-            self.site_rank.insert(
-                "", END,
-                values=(
-                    row["label"], row["record_count"], row["pending_count"],
-                    self.money(row["amount_cents"]),
-                ),
-            )
-        self.area_rank.delete(*self.area_rank.get_children())
-        for row in data["by_area"]:
+        self.site_table.refresh(data["by_site"], lambda row: (
+            None, (row["label"], row["record_count"], row["pending_count"],
+                   self.money(row["amount_cents"])),
+        ))
+
+        def area_values(row):
             area_label = row["label"]
             if not self.selected_project_id():
                 area_label = f"{row['project_name']} · {area_label}"
-            self.area_rank.insert(
-                "", END,
-                values=(
-                    area_label, row["record_count"],
-                    self.money(row["amount_cents"]),
-                ),
-            )
+            return None, (area_label, row["record_count"], self.money(row["amount_cents"]))
+
+        self.area_table.refresh(data["by_area"], area_values)
         self.refresh_records()
 
     def refresh_records(self):
@@ -231,9 +214,8 @@ class ConstructionRecordPage:
             self.month_var.get(), self.selected_project_id(), status,
             self.search_var.get().strip()
         )
-        self.tree.delete(*self.tree.get_children())
-        for row in rows:
-            self.tree.insert("", END, values=(
+        def record_values(row):
+            return str(row["id"]), (
                 row["id"],
                 row["project_name"],
                 self.period_text(
@@ -245,7 +227,9 @@ class ConstructionRecordPage:
                 self.money(row.get("work_amount_cents", 0)),
                 row["inspection_status"],
                 row["photo_count"],
-            ))
+            )
+
+        self.record_table.refresh(rows, record_values)
 
     @staticmethod
     def number(value):
@@ -378,7 +362,7 @@ class ConstructionRecordPage:
             details_box,
             height=10,
             wrap="word",
-            font=("Microsoft YaHei UI", 10),
+            font=FONT_BODY,
             relief="solid",
             borderwidth=1,
             undo=True,
@@ -401,7 +385,7 @@ class ConstructionRecordPage:
         )
         photo_box = ttk.Frame(body)
         photo_box.grid(row=photo_row_index, column=1, sticky=NSEW, pady=7)
-        file_list = Listbox(photo_box, height=4, font=("Microsoft YaHei UI", 9))
+        file_list = Listbox(photo_box, height=4, font=FONT_CONTROL)
         file_list.pack(fill=X)
         photo_buttons = ttk.Frame(photo_box)
         photo_buttons.pack(fill=X, pady=(6, 0))
@@ -528,7 +512,7 @@ class ConstructionRecordPage:
         ttk.Label(
             body,
             text=f"{data['project_name']} · {data['work_area']}",
-            font=("Microsoft YaHei UI", 14, "bold"),
+            font=FONT_SECTION,
         ).grid(row=0, column=0, columnspan=2, sticky=W)
         ttk.Label(
             body,
@@ -546,7 +530,7 @@ class ConstructionRecordPage:
             body,
             height=8,
             wrap="word",
-            font=("Microsoft YaHei UI", 9),
+            font=FONT_CONTROL,
             relief="solid",
             borderwidth=1,
         )
@@ -648,16 +632,19 @@ class ConstructionRecordPage:
         body = ttk.Frame(dialog, padding=18)
         body.pack(fill=BOTH, expand=True)
         ttk.Label(body, text="双击照片可用系统图片查看器打开", bootstyle=SECONDARY).pack(anchor=W, pady=(0, 8))
-        tree = ttk.Treeview(body, columns=("id", "type", "name", "path"), show="headings", bootstyle=PRIMARY)
-        for col, text, width in [("id", "ID", 45), ("type", "类型", 90), ("name", "原文件名", 220), ("path", "保存位置", 300)]:
-            tree.heading(col, text=text)
-            tree.column(col, width=width, anchor=CENTER)
-        tree.pack(fill=BOTH, expand=True)
+        photo_table = DataTable(
+            body,
+            (("id", "ID", 45, CENTER), ("type", "类型", 90, W),
+             ("name", "原文件名", 220, W), ("path", "保存位置", 300, W)),
+            empty_text="尚未添加现场照片", stretch=("name", "path"), padding=0,
+        )
+        tree = photo_table.tree
 
         def refresh():
-            tree.delete(*tree.get_children())
-            for photo in db.get_construction_photos(record_id):
-                tree.insert("", END, values=(photo["id"], photo["photo_type"], photo["original_name"], photo["file_path"]))
+            photo_table.refresh(db.get_construction_photos(record_id), lambda photo: (
+                str(photo["id"]), (photo["id"], photo["photo_type"],
+                                   photo["original_name"], photo["file_path"]),
+            ))
 
         def open_selected(event=None):
             selected = tree.selection()

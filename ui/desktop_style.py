@@ -11,8 +11,8 @@ def install_desktop_style(root):
     images = []
     root._desktop_style_images = images
 
-    def tile(fill, outline=None, radius=8, outside=None):
-        size = scale_px(root, 32)
+    def tile(fill, outline=None, radius=8, outside=None, size=32):
+        size = scale_px(root, size)
         factor = 3
         image = Image.new("RGBA", (size * factor, size * factor), outside or (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
@@ -27,8 +27,14 @@ def install_desktop_style(root):
 
     def surface(name, fill, *, outline=None, outside=None, radius=10):
         element = f"Desktop.{name}.surface"
-        image = tile(fill, outline, radius, outside)
-        style.element_create(element, "image", image, border=scale_px(root, 12), sticky="nsew")
+        # ttk tiles the center of a nine-slice image instead of stretching it.
+        # A 32px surface with 12px borders repeats an 8px tile thousands of times
+        # across dashboard cards; use a larger center without changing geometry.
+        image = tile(fill, outline, radius, outside, size=128)
+        style.element_create(
+            element, "image", image, border=scale_px(root, 12),
+            width=scale_px(root, 32), height=scale_px(root, 32), sticky="nsew",
+        )
         style.layout(name, [(element, {"sticky": "nsew"})])
 
     surface("Surface.TFrame", COLORS["surface"], outline=COLORS["border"])

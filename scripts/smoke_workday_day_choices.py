@@ -44,9 +44,12 @@ def main():
     parser.add_argument("database", type=Path)
     args = parser.parse_args()
 
+    project_root = Path(__file__).resolve().parent.parent
+    os.environ.setdefault("TCL_LIBRARY", str(project_root / ".venv" / "tcl" / "tcl8.6"))
+    os.environ.setdefault("TK_LIBRARY", str(project_root / ".venv" / "tcl" / "tk8.6"))
     with tempfile.TemporaryDirectory(prefix="workday_choices_") as temp_dir:
         test_database = Path(temp_dir) / "supplier_data.db"
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        sys.path.insert(0, str(project_root))
         os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
         from db.backup import backup_database
         backup_database(args.database, test_database)

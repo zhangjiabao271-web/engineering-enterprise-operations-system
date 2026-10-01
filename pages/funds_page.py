@@ -2,7 +2,6 @@
 
 from datetime import date
 from decimal import Decimal
-import sqlite3
 from tkinter import messagebox, simpledialog
 from uuid import uuid4
 
@@ -12,6 +11,7 @@ from ttkbootstrap.constants import BOTH, BOTTOM, E, LEFT, RIGHT, W, X
 from services import collection_service, funds_service as funds
 from ui.components import DataTable, DatePicker, KpiCard, PageHeader
 from ui.dialogs import add_form_actions, build_form_dialog, safe_init_loaders
+from ui.error_handling import show_unexpected_error
 from ui.theme import SPACING
 
 
@@ -72,8 +72,12 @@ class FundForm:
             button.configure(state='disabled')
             try:
                 callback({key: var.get() for key,var in self.values.items()})
-            except (ValueError,sqlite3.Error) as error:
+            except ValueError as error:
                 self.error.set(str(error))
+                button.configure(state='normal')
+                return
+            except Exception:
+                show_unexpected_error('保存失败', parent=self.window)
                 button.configure(state='normal')
                 return
             self.window.destroy()
@@ -424,8 +428,10 @@ class FundsPage:
         try:
             callback()
             self.refresh()
-        except (ValueError,sqlite3.Error) as error:
+        except ValueError as error:
             messagebox.showerror('操作未完成',str(error),parent=self.parent)
+        except Exception:
+            show_unexpected_error('操作未完成', parent=self.parent)
 
     def toggle_account(self):
         row = self._selected(self.account_table,self.accounts)

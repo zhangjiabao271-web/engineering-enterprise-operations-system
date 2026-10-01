@@ -364,7 +364,9 @@ class CostLedgerPage:
     def _build_allocation_editor(
         self, parent, amount_var, *, initial_method="unassigned", initial_lines=None
     ):
-        projects = project_service.list_projects()
+        projects = cost_service.list_cost_project_options(
+            include_project_ids=[line["project_id"] for line in initial_lines or []]
+        )
         project_names = {row["id"]: row["name"] for row in projects}
         project_labels = {
             row["id"]: f"{row['name']} · {row['project_code']}"

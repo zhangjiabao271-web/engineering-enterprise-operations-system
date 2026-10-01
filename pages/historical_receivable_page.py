@@ -1,11 +1,11 @@
 from datetime import date
 from uuid import uuid4
 from tkinter import messagebox
-import sqlite3
 import ttkbootstrap as ttk
 from services import historical_receivable_service as history, master_data_service
 from ui.components import DatePicker
 from ui.dialogs import build_form_dialog, add_form_actions
+from ui.error_handling import show_unexpected_error
 
 
 def money(value):
@@ -87,8 +87,11 @@ class HistoricalReceivablePage:
         def save():
             try:
                 history.save_project(customers.get(customer.get()),name.get(),amount.get(),notes.get(),current['id'] if current else None)
-            except (ValueError,sqlite3.IntegrityError) as error:
+            except ValueError as error:
                 messagebox.showwarning('无法保存',str(error),parent=dialog)
+                return
+            except Exception:
+                show_unexpected_error('保存失败', parent=dialog)
                 return
             dialog.destroy()
             self.refresh()
@@ -117,6 +120,9 @@ class HistoricalReceivablePage:
                 history.record_receipt(row['id'],receipt_date.get(),amount.get(),request_key,method.get(),notes.get(),payer_name=payer.get())
             except ValueError as error:
                 messagebox.showwarning('无法保存',str(error),parent=dialog)
+                return
+            except Exception:
+                show_unexpected_error('保存失败', parent=dialog)
                 return
             dialog.destroy()
             self.refresh()

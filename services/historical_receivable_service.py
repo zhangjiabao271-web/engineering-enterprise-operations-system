@@ -3,6 +3,7 @@ import json
 from datetime import date
 from db.connection import db_read, db_transaction
 from services._common import now
+from services._constraint_errors import translate_constraints
 from services.funds_service import _money
 
 
@@ -17,6 +18,11 @@ def audit(conn, entity, entity_id, before, after, reason):
                  (entity, entity_id, json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False), reason, now()))
 
 
+@translate_constraints(
+    duplicate="该客户已有同名历史旧账项目，请修改名称或选中原项目",
+    related="关联的客户档案已不存在，请刷新后重选",
+    invalid="历史旧账项目资料不符合保存条件，请核对后重试",
+)
 def save_project(customer_id, name, opening_amount=None, notes='', project_id=None):
     name = str(name).strip()
     if not name:
@@ -43,6 +49,11 @@ def save_project(customer_id, name, opening_amount=None, notes='', project_id=No
         return project_id
 
 
+@translate_constraints(
+    duplicate='这笔历史回款已登记，请刷新后核对，勿重复录入',
+    related='历史项目或客户档案已变化，请刷新后重选',
+    invalid='历史回款不符合保存条件，请核对后重试',
+)
 def record_receipt(project_id, receipt_date, amount, request_key, payment_method='待确认', notes='', *, payer_name=None):
     amount_minor = _money(amount)
     try:

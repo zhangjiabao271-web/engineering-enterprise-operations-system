@@ -6,6 +6,7 @@ import json
 
 from db.connection import db_read, db_transaction
 from services._common import now
+from services._constraint_errors import translate_constraints
 
 
 ACCOUNT_KINDS = {'bank': '公司银行', 'personal': '经营用个人银行卡',
@@ -21,6 +22,12 @@ OTHER_CATEGORIES = {
 CATEGORY_LABELS = {**SOURCE_LABELS,
                    **{key: value[0] for key, value in OTHER_CATEGORIES.items()},
                    'transfer': '内部转账'}
+
+_funds_write = translate_constraints(
+    duplicate='资金记录已存在，请刷新后核对，避免重复登记',
+    related='关联的账户、计划或业务来源已变化，请刷新后重选',
+    invalid='资金记录不符合保存条件，请核对后重试',
+)
 
 
 def _connection(*, write=False):
@@ -81,6 +88,11 @@ def _start_date(conn):
     return conn.execute('SELECT MIN(opening_date) FROM fund_accounts').fetchone()[0]
 
 
+@translate_constraints(
+    duplicate="账户名称已存在，请使用可区分的名称",
+    related="账户关联的记录已变化，请刷新后重试",
+    invalid="账户资料不符合保存条件，请核对后重试",
+)
 def save_account(data, account_id=None):
     name = _text(data.get('name'), '账户名称')
     kind = data.get('kind')
@@ -142,6 +154,11 @@ def list_accounts(as_of=None):
         return rows
 
 
+@translate_constraints(
+    duplicate="账户状态与现有记录冲突，请刷新后重试",
+    related="账户仍有相关记录，不能更改状态",
+    invalid="账户状态不符合变更条件，请刷新后重试",
+)
 def set_account_archived(account_id, archived):
     with _connection(write=True) as conn:
         before = _account(conn, account_id)
@@ -258,6 +275,7 @@ def _verify_source(conn, kind, source_id, period, settled_minor, payee, reason):
            {'settled_minor': settled_minor, 'payee': payee}, reason)
 
 
+@_funds_write
 def verify_source(kind, source_id, period, data):
     with _connection(write=True) as conn:
         _verify_source(conn, kind, int(source_id), period,
@@ -309,6 +327,11 @@ def _validate_plan(conn, plan_id, direction, amount, kind, source_id, period):
         raise ValueError('收付款来源与计划不一致')
 
 
+@translate_constraints(
+    duplicate="这笔资金流水已登记，请刷新后核对，不要重复录入",
+    related="收付款关联的账户或计划已变化，请刷新后重选",
+    invalid="收付款内容不符合记录规则，请核对后重试",
+)
 def record_transaction(data):
     """One transaction per actual movement; a transfer is one indivisible row."""
     request_key = _text(data.get('request_key'), '本次登记标识')
@@ -384,6 +407,7 @@ def record_transaction(data):
         return transaction_id
 
 
+@_funds_write
 def void_transaction(transaction_id, reason):
     reason = _text(reason, '作废原因（只用于录错，真实退款应另记收支）')
     with _connection(write=True) as conn:
@@ -398,6 +422,7 @@ def void_transaction(transaction_id, reason):
         _audit(conn, 'transaction', transaction_id, 'void', dict(row), {'status': 'void'}, reason)
 
 
+@_funds_write
 def link_transaction_plan(transaction_id, plan_id, reason):
     """Changing a plan association never rewrites actual movement or business facts."""
     reason = _text(reason,'关联调整说明')
@@ -436,6 +461,7 @@ def list_transactions(*, start=None, end=None, account_id=None, include_void=Fal
             ' ORDER BY t.transaction_date DESC,t.id DESC', params)]
 
 
+@_funds_write
 def save_plan(data, plan_id=None):
     direction = data.get('direction')
     if direction not in ('in', 'out'):
@@ -487,6 +513,7 @@ def save_plan(data, plan_id=None):
         return plan_id
 
 
+@_funds_write
 def cancel_plan(plan_id, reason):
     reason = _text(reason, '取消原因')
     with _connection(write=True) as conn:
@@ -536,6 +563,7 @@ def list_plans(*, include_closed=False):
         return rows if include_closed else [r for r in rows if r['state'] not in ('已取消','已完成')]
 
 
+@_funds_write
 def reconcile_account(account_id, balance_date, actual_amount, notes):
     balance_date = _date(balance_date)
     actual = _money(actual_amount, zero=True)

@@ -34,11 +34,11 @@ def main():
             root.update()
             dialog = next(w for w in root.winfo_children() if isinstance(w, ttk.Toplevel))
             combos = [w for w in descendants(dialog) if isinstance(w, ttk.Combobox)]
-            project_combo = next(w for w in combos if any('前丁赤圣庵改造戏棚' in v for v in w['values']))
-            project_label = next(v for v in project_combo['values'] if '前丁赤圣庵改造戏棚' in v)
+            project_combo = next(w for w in combos if any('示例现金改造项目' in v for v in w['values']))
+            project_label = next(v for v in project_combo['values'] if '示例现金改造项目' in v)
             assert '无需开票' in project_label
-            contract_combo = next(w for w in combos if any('HT-20260911-E5FD53' in v for v in w['values']))
-            contract_combo.set(next(v for v in contract_combo['values'] if 'HT-20260911-E5FD53' in v))
+            contract_combo = next(w for w in combos if any('DEMO-CASH-CONTRACT' in v for v in w['values']))
+            contract_combo.set(next(v for v in contract_combo['values'] if 'DEMO-CASH-CONTRACT' in v))
             contract_combo.event_generate('<<ComboboxSelected>>')
             project_combo.set(project_label)
             amount = next(w for w in descendants(dialog) if w.winfo_class() == 'TEntry')

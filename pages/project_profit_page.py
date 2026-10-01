@@ -1,3 +1,5 @@
+from tkinter import messagebox
+
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import (
     BOTH,
@@ -11,17 +13,22 @@ from ttkbootstrap.constants import (
     X,
 )
 
-from services import project_profit_service, project_service
+from pages.project_cost_detail_dialog import show_project_cost_details
+from services import operations_service, project_profit_service, project_service
 from ui.components import DataTable, FilterBar, KpiCard, PageHeader
+from ui.error_handling import show_unexpected_error
 from ui.theme import SPACING
 
 
 class ProjectProfitPage:
     """Project-level operating profit and cash view with explicit metric scope."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, navigate=None, initial_project_id=None):
         self.parent = parent
+        self.navigate = navigate
+        self.initial_project_id = initial_project_id
         self.project_var = ttk.StringVar()
+        self.guidance_var = ttk.StringVar()
         self.guardrail_var = ttk.StringVar()
         self.project_map = {}
         self.kpi_vars = {
@@ -68,15 +75,27 @@ class ProjectProfitPage:
         self.project_combo.bind(
             "<<ComboboxSelected>>", lambda _event: self.refresh_all()
         )
+        navigation_actions = []
+        if self.navigate:
+            navigation_actions.extend((
+                ttk.Button(
+                    self.parent, text="合同与结算", bootstyle="secondary-outline",
+                    command=lambda: self.navigate(
+                        "contract", project_id=self.selected_project_id()
+                    ),
+                ),
+                ttk.Button(
+                    self.parent, text="开票与回款", bootstyle="secondary-outline",
+                    command=lambda: self.navigate(
+                        "finance", project_id=self.selected_project_id()
+                    ),
+                ),
+            ))
         FilterBar(
             self.parent,
             ("当前项目", self.project_combo),
-            ttk.Label(
-                self.parent,
-                text="业务事实请在合同、开票回款和成本台账中登记",
-                style="Toolbar.TLabel",
-            ),
             actions=[
+                *navigation_actions,
                 ttk.Button(
                     self.parent, text="刷新", bootstyle="secondary-outline",
                     command=self.refresh_all,
@@ -88,6 +107,13 @@ class ProjectProfitPage:
             self.parent, style="Card.TFrame", padding=(14, 9)
         )
         guardrail.pack(fill=X, pady=(0, SPACING["md"]))
+        ttk.Label(
+            guardrail,
+            textvariable=self.guidance_var,
+            style="CardTitle.TLabel",
+            wraplength=850,
+            justify=LEFT,
+        ).pack(anchor=W, pady=(0, SPACING["xs"]))
         ttk.Label(
             guardrail,
             textvariable=self.guardrail_var,
@@ -156,9 +182,15 @@ class ProjectProfitPage:
             pack_expand=False,
         )
 
+        cost_header = ttk.Frame(cost_card, style="Card.TFrame")
+        cost_header.pack(fill=X, pady=(0, 6))
         ttk.Label(
-            cost_card, text="成本与现金支出", style="CardTitle.TLabel"
-        ).pack(anchor=W, pady=(0, 6))
+            cost_header, text="成本与现金支出", style="CardTitle.TLabel"
+        ).pack(side=LEFT)
+        ttk.Button(
+            cost_header, text="查看项目成本明细", bootstyle="secondary-outline",
+            command=self.open_cost_details,
+        ).pack(side=RIGHT)
         self.cost_tree = DataTable(
             cost_card,
             specs=(
@@ -173,6 +205,8 @@ class ProjectProfitPage:
             pack_fill=X,
             pack_expand=False,
         )
+        self.cost_tree.tree.bind("<Double-1>", self._open_selected_cost_details)
+        self.cost_tree.tree.bind("<Return>", self._open_selected_cost_details)
 
         ledger = ttk.Frame(
             parent, style="Card.TFrame", padding=12
@@ -244,6 +278,15 @@ class ProjectProfitPage:
             for project in projects
         }
         self.project_combo["values"] = list(self.project_map)
+        if self.initial_project_id is not None:
+            label = next(
+                (label for label, value in self.project_map.items()
+                 if value == self.initial_project_id),
+                None,
+            )
+            if label:
+                self.project_var.set(label)
+            self.initial_project_id = None
         if self.project_var.get() not in self.project_map and self.project_map:
             self.project_var.set(next(iter(self.project_map)))
 
@@ -254,11 +297,17 @@ class ProjectProfitPage:
         self.refresh_projects()
         project_id = self.selected_project_id()
         if not project_id:
+            self.guidance_var.set("")
             self.guardrail_var.set(
                 "请先在项目管理中建立项目，利润中心才能开始核算。"
             )
             return
         summary = project_profit_service.get_project_summary(project_id)
+        guidance = operations_service.get_project_guidance(project_id, summary)
+        self.guidance_var.set(
+            f"经营阶段：{guidance['stage_label']} · "
+            f"待补：{guidance['gap_text'] or '资料已形成闭环'}"
+        )
         self.refresh_summary(summary)
         self.refresh_entries(project_id)
         self.refresh_portfolio()
@@ -362,6 +411,31 @@ class ProjectProfitPage:
                 row.get("notes") or "",
             )),
         )
+
+    def open_cost_details(self, section="purchase"):
+        project_id = self.selected_project_id()
+        if project_id:
+            try:
+                show_project_cost_details(self.parent, project_id, section=section)
+            except ValueError as error:
+                messagebox.showerror("无法查看项目成本明细", str(error), parent=self.parent)
+            except Exception:
+                show_unexpected_error("无法查看项目成本明细", parent=self.parent)
+
+    def _open_selected_cost_details(self, _event):
+        selected = self.cost_tree.tree.selection()
+        if not selected:
+            return
+        category = self.cost_tree.tree.set(selected[0], "category")
+        if category.startswith("采购") or category == "已付款采购":
+            section = "purchase"
+        elif category == "人工成本":
+            section = "labor"
+        elif category == "其他成本":
+            section = "other"
+        else:
+            return
+        self.open_cost_details(section)
 
     def refresh_portfolio(self):
         result = project_profit_service.get_portfolio_summary()

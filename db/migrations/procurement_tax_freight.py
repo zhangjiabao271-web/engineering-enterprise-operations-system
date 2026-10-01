@@ -72,7 +72,7 @@ def add_procurement_tax_and_freight(conn):
         """UPDATE supplier_profiles
            SET default_tax_rate_bps=1000
            WHERE partner_id IN (
-               SELECT id FROM business_partners WHERE legal_name='砺锋钢铁'
+               SELECT id FROM business_partners WHERE legal_name='东盛钢铁'
            )"""
     )
     conn.execute(
@@ -80,7 +80,7 @@ def add_procurement_tax_and_freight(conn):
            SET tax_rate_bps=1000
            WHERE tax_rate_bps=0
              AND supplier_partner_id IN (
-                 SELECT id FROM business_partners WHERE legal_name='砺锋钢铁'
+                 SELECT id FROM business_partners WHERE legal_name='东盛钢铁'
              )"""
     )
 

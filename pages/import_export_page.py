@@ -12,6 +12,7 @@ from services import (
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from openpyxl import Workbook, load_workbook
+from ui.components import PageHeader, SectionPanel
 
 
 def import_decimal(value, label, default=None):
@@ -54,36 +55,24 @@ class ImportExportPage:
         self.build_ui()
 
     def build_ui(self):
-        header = ttk.Frame(self.parent)
-        header.pack(fill=X, pady=(0, 16))
-        ttk.Label(header, text="数据导入导出", style="PageTitle.TLabel").pack(anchor=W)
-        ttk.Label(
-            header, text="通过标准 Excel 模板批量维护主数据和采购记录",
-            style="PageSub.TLabel",
-        ).pack(anchor=W, pady=(4, 0))
+        PageHeader(self.parent, "数据导入导出", "通过标准 Excel 模板批量维护主数据和采购记录")
 
         # 供应商导出导入
-        frame1 = ttk.Labelframe(self.parent, text="供应商数据", bootstyle=PRIMARY)
-        frame1.pack(fill=X, pady=(0, 10), padx=0, ipady=4)
+        frame1 = SectionPanel(self.parent, "供应商数据", padding=12)
         ttk.Button(frame1, text="导出供应商到 Excel", bootstyle=INFO, command=self.export_suppliers).pack(side=LEFT, padx=10, pady=10)
         ttk.Button(frame1, text="从 Excel 导入供应商", bootstyle=SUCCESS, command=self.import_suppliers).pack(side=LEFT, padx=10, pady=10)
 
         # 产品导出导入
-        frame2 = ttk.Labelframe(self.parent, text="材料与供应商报价", bootstyle=PRIMARY)
-        frame2.pack(fill=X, pady=(0, 10), padx=0, ipady=4)
+        frame2 = SectionPanel(self.parent, "材料与供应商报价", padding=12)
         ttk.Button(frame2, text="导出产品到 Excel", bootstyle=INFO, command=self.export_products).pack(side=LEFT, padx=10, pady=10)
         ttk.Button(frame2, text="从 Excel 导入产品", bootstyle=SUCCESS, command=self.import_products).pack(side=LEFT, padx=10, pady=10)
 
         # 采购记录导出导入
-        frame3 = ttk.Labelframe(self.parent, text="采购记录", bootstyle=PRIMARY)
-        frame3.pack(fill=X, pady=(0, 10), padx=0, ipady=4)
+        frame3 = SectionPanel(self.parent, "采购记录", padding=12)
         ttk.Button(frame3, text="导出采购记录到 Excel", bootstyle=INFO, command=self.export_purchases).pack(side=LEFT, padx=10, pady=10)
         ttk.Button(frame3, text="从 Excel 导入采购记录", bootstyle=SUCCESS, command=self.import_purchases).pack(side=LEFT, padx=10, pady=10)
 
-        frame4 = ttk.Labelframe(
-            self.parent, text="经营数据归档", bootstyle=PRIMARY
-        )
-        frame4.pack(fill=X, pady=(0, 10), padx=0, ipady=4)
+        frame4 = SectionPanel(self.parent, "经营数据归档", padding=12)
         ttk.Button(
             frame4,
             text="导出项目经营全量工作簿",

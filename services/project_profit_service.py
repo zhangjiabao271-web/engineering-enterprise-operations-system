@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from db.connection import db_read
+from db.business_facts import project_finance_rows
 
 
 ENTRY_TYPES = {
@@ -73,30 +74,10 @@ def _labor_allocation(conn):
 
 
 def _manual_totals(conn, project_id):
-    totals = {key: 0 for key in ENTRY_TYPES}
-    totals["contract_value"] = conn.execute(
-        """SELECT COALESCE(SUM(allocated_amount_minor), 0)
-           FROM contract_project_allocations
-           WHERE project_id=? AND status='active'""",
-        (project_id,),
-    ).fetchone()[0]
-    totals["settlement"] = conn.execute(
-        """SELECT COALESCE(SUM(amount_minor), 0) FROM settlements
-           WHERE project_id=? AND status='active'""",
-        (project_id,),
-    ).fetchone()[0]
-    totals["invoice"] = conn.execute(
-        """SELECT COALESCE(SUM(amount_minor), 0) FROM sales_invoices
-           WHERE project_id=? AND status='active'""",
-        (project_id,),
-    ).fetchone()[0]
-    totals["receipt"] = conn.execute(
-        """SELECT COALESCE(SUM(ra.allocated_amount_minor), 0)
-           FROM receipt_allocations ra
-           JOIN receipts r ON r.id=ra.receipt_id
-           WHERE ra.project_id=? AND r.status='active'""",
-        (project_id,),
-    ).fetchone()[0]
+    finance = project_finance_rows(conn, project_id)[0]
+    totals = {**dict.fromkeys(ENTRY_TYPES, 0),
+              'contract_value': finance['allocated_minor'], 'settlement': finance['settlement_minor'],
+              'invoice': finance['invoice_minor'], 'receipt': finance['receipt_minor']}
     totals["other_cost"] = conn.execute(
         """SELECT COALESCE(SUM(amount_minor), 0)
            FROM (
@@ -167,6 +148,10 @@ def _purchase_item_breakdown(conn, project_id, field):
            WHERE ppc.project_id=? AND po.status='active'
            ORDER BY po.id, poi.id""", (project_id,)
     ).fetchall()
+    return _group_purchase_items(rows, field)
+
+
+def _group_purchase_items(rows, field):
     orders = {}
     for row in rows:
         orders.setdefault(row["purchase_order_id"], []).append(row)
@@ -231,8 +216,8 @@ def _other_cost_categories(conn, project_id):
     return [dict(row) for row in rows]
 
 
-def _project_summary_from_connection(conn, project_id, labor_by_project):
-    project = conn.execute(
+def _project_summary_from_connection(conn, project_id, labor_by_project, bulk=None):
+    project = bulk['projects'].get(project_id) if bulk else conn.execute(
         """SELECT p.id, p.project_code, p.name, p.status,
                   p.business_mode, p.invoice_policy,
                   COALESCE(bp.legal_name, p.customer_name, '') AS customer_name
@@ -244,9 +229,20 @@ def _project_summary_from_connection(conn, project_id, labor_by_project):
     if not project:
         raise ValueError("项目不存在")
 
-    manual = _manual_totals(conn, project_id)
-    purchase = _purchase_totals(conn, project_id)
-    construction = _construction_totals(conn, project_id)
+    if bulk:
+        manual = bulk['manual'][project_id]
+        purchase = bulk['purchase'][project_id]
+        construction = bulk['construction'].get(
+            project_id, {'record_count': 0, 'recorded_minor': 0, 'accepted_minor': 0}
+        )
+        materials = bulk['materials'].get(project_id, [])
+        other_categories = bulk['other_categories'].get(project_id, [])
+    else:
+        manual = _manual_totals(conn, project_id)
+        purchase = _purchase_totals(conn, project_id)
+        construction = _construction_totals(conn, project_id)
+        materials = _purchase_material_breakdown(conn, project_id)
+        other_categories = _other_cost_categories(conn, project_id)
     labor = labor_by_project.get(
         project_id, {"amount_minor": 0, "record_count": 0}
     )
@@ -259,11 +255,8 @@ def _project_summary_from_connection(conn, project_id, labor_by_project):
         gross_profit_minor / manual["settlement"] * 100
         if manual["settlement"] else None
     )
-    pending = conn.execute('''SELECT COALESCE(SUM(a.allocated_amount_minor),0)
-        FROM receipt_allocations a JOIN receipts r ON r.id=a.receipt_id
-        WHERE a.project_id=? AND a.settlement_id IS NULL AND r.status='active' ''',
-        (project_id,)).fetchone()[0]
-    receivable_minor = max(manual["settlement"] - manual["receipt"] + pending, 0)
+    finance = bulk['finance'][project_id] if bulk else project_finance_rows(conn, project_id)[0]
+    receivable_minor = finance['receivable_minor']
     # Legacy comparison only: excludes opening funds, wages and expense payments.
     # Real account balances are computed exclusively by funds_service.
     cash_out_minor = purchase["paid_minor"]
@@ -302,10 +295,8 @@ def _project_summary_from_connection(conn, project_id, labor_by_project):
         "labor_record_count": labor["record_count"],
         "construction_record_count": construction["record_count"],
         "purchase_categories": purchase["categories"],
-        "purchase_material_breakdown": _purchase_material_breakdown(
-            conn, project_id
-        ),
-        "other_cost_categories": _other_cost_categories(conn, project_id),
+        "purchase_material_breakdown": materials,
+        "other_cost_categories": other_categories,
     }
 
 
@@ -334,6 +325,7 @@ def get_project_summary(project_id):
 def get_portfolio_summary():
     with db_read() as conn:
         labor_by_project, unassigned_labor = _labor_allocation(conn)
+        bulk = _portfolio_facts(conn)
         project_ids = [
             row["id"]
             for row in conn.execute(
@@ -344,10 +336,60 @@ def get_portfolio_summary():
             ).fetchall()
         ]
         rows = [
-            _project_summary_from_connection(conn, project_id, labor_by_project)
+            _project_summary_from_connection(conn, project_id, labor_by_project, bulk)
             for project_id in project_ids
         ]
         return {
             "projects": rows,
             "unassigned_labor": unassigned_labor,
         }
+
+
+def _portfolio_facts(conn):
+    """Fetch each fact set once; query count is independent of project count."""
+    finance = {r['project_id']: r for r in project_finance_rows(conn)}
+    projects = {r['id']: dict(r) for r in conn.execute('''
+        SELECT p.id,p.project_code,p.name,p.status,p.business_mode,p.invoice_policy,
+          COALESCE(bp.legal_name,p.customer_name,'') AS customer_name
+        FROM projects p LEFT JOIN business_partners bp ON bp.id=p.customer_partner_id''')}
+    other_categories = {}
+    for row in conn.execute('''SELECT project_id,category AS label,SUM(amount_minor) AS amount_minor FROM (
+        SELECT a.project_id,c.category,a.amount_minor FROM cost_allocation_lines a
+        JOIN cost_entries c ON c.id=a.cost_entry_id WHERE a.status='active' AND c.status='active'
+        UNION ALL SELECT c.project_id,c.category,c.amount_minor FROM cost_entries c WHERE c.status='active'
+        AND NOT EXISTS(SELECT 1 FROM cost_allocation_lines a WHERE a.cost_entry_id=c.id AND a.status='active')
+        ) GROUP BY project_id,category ORDER BY amount_minor DESC'''):
+        other_categories.setdefault(row['project_id'], []).append({'label': row['label'], 'amount_minor': row['amount_minor']})
+    manual = {pid: {**dict.fromkeys(ENTRY_TYPES, 0), 'contract_value': f['allocated_minor'],
+                   'settlement': f['settlement_minor'], 'invoice': f['invoice_minor'], 'receipt': f['receipt_minor'],
+                   'other_cost': sum(r['amount_minor'] for r in other_categories.get(pid, []))}
+              for pid, f in finance.items()}
+    purchases = {pid: dict.fromkeys(('cost_minor','material_minor','tax_minor','tax_inclusive_material_minor',
+                                    'freight_minor','paid_minor','order_count'), 0) for pid in projects}
+    for row in conn.execute('''SELECT pc.project_id,SUM(pc.cost_minor) AS cost_minor,
+        SUM(pc.material_minor) AS material_minor,SUM(pc.tax_minor) AS tax_minor,
+        SUM(pc.tax_inclusive_material_minor) AS tax_inclusive_material_minor,SUM(pc.freight_minor) AS freight_minor,
+        SUM(CASE WHEN po.payment_status='已付款' THEN pc.cost_minor ELSE 0 END) AS paid_minor,
+        COUNT(DISTINCT pc.purchase_order_id) AS order_count
+        FROM purchase_project_costs pc JOIN purchase_orders po ON po.id=pc.purchase_order_id
+        WHERE po.status='active' GROUP BY pc.project_id'''):
+        purchases[row['project_id']] = {k: row[k] for k in purchases[row['project_id']]}
+    items = {}
+    for row in conn.execute('''SELECT poi.*,pc.project_id,pc.tax_inclusive_material_minor AS project_material_minor
+        FROM purchase_project_costs pc JOIN purchase_orders po ON po.id=pc.purchase_order_id
+        JOIN purchase_order_items poi ON poi.purchase_order_id=po.id WHERE po.status='active'
+        ORDER BY pc.project_id,po.id,poi.id'''):
+        items.setdefault(row['project_id'], []).append(row)
+    materials = {}
+    for pid, purchase in purchases.items():
+        purchase['categories'] = _group_purchase_items(items.get(pid, []), 'cost_category')
+        if purchase['freight_minor']:
+            purchase['categories'].append({'label': '采购运费', 'amount_minor': purchase['freight_minor']})
+        materials[pid] = _group_purchase_items(items.get(pid, []), 'material_name_snapshot')
+    construction = {r['project_id']: dict(r) for r in conn.execute('''
+        SELECT s.project_id,COUNT(*) AS record_count,COALESCE(SUM(c.work_amount_cents),0) AS recorded_minor,
+          SUM(CASE WHEN c.inspection_status='已验收' THEN c.work_amount_cents ELSE 0 END) AS accepted_minor
+        FROM construction_records c JOIN construction_sites s ON s.id=c.site_id
+        WHERE c.record_status='有效' GROUP BY s.project_id''')}
+    return {'projects': projects, 'finance': finance, 'manual': manual, 'purchase': purchases,
+            'materials': materials, 'construction': construction, 'other_categories': other_categories}

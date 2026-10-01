@@ -357,66 +357,15 @@ def summarize_finance_projects(projects):
 def get_finance_dashboard(project_id=None):
     """Return settlement, invoice and receipt totals without merging projects."""
     with db_read() as conn:
-        sql = """
-            SELECT p.id AS project_id, p.project_code, p.name AS project_name,
-                   p.status AS project_status, p.business_mode,
-                   p.invoice_policy,
-                   COALESCE((
-                       SELECT SUM(a.allocated_amount_minor)
-                       FROM contract_project_allocations a
-                       WHERE a.project_id=p.id AND a.status='active'
-                   ), 0) AS allocated_minor,
-                   COALESCE((
-                       SELECT SUM(s.amount_minor)
-                       FROM settlements s
-                       WHERE s.project_id=p.id AND s.status='active'
-                   ), 0) AS settlement_minor,
-                   COALESCE((
-                       SELECT SUM(i.amount_minor)
-                       FROM sales_invoices i
-                       WHERE i.project_id=p.id AND i.status='active'
-                   ), 0) AS invoice_minor,
-                   COALESCE((
-                       SELECT SUM(ra.allocated_amount_minor)
-                       FROM receipt_allocations ra
-                       JOIN receipts r ON r.id=ra.receipt_id
-                       WHERE ra.project_id=p.id AND r.status='active'
-                   ), 0) AS receipt_minor,
-                   COALESCE((
-                       SELECT SUM(ra.allocated_amount_minor)
-                       FROM receipt_allocations ra
-                       JOIN receipts r ON r.id=ra.receipt_id
-                       WHERE ra.project_id=p.id AND ra.settlement_id IS NULL
-                         AND r.status='active'
-                   ), 0) AS pending_receipt_minor
-            FROM projects p
-        """
-        params = []
-        if project_id:
-            sql += " WHERE p.id=?"
-            params.append(int(project_id))
-        sql += """
-            ORDER BY CASE p.status
-                WHEN '进行中' THEN 1 WHEN '筹备中' THEN 2 ELSE 3 END,
-                p.id DESC
-        """
+        from db.business_facts import project_finance_rows
         projects = []
-        for source in conn.execute(sql, params).fetchall():
-            row = dict(source)
-            row['advance_minor'] = conn.execute('''SELECT COALESCE(SUM(a.allocated_amount_minor),0)
-                FROM receipt_allocations a JOIN receipts r ON r.id=a.receipt_id
-                WHERE a.project_id=? AND a.settlement_id IS NULL
-                  AND r.status='active' AND r.automatic_income_allocation=1''',
-                (row['project_id'],)).fetchone()[0]
+        for row in project_finance_rows(conn, project_id):
             row["invoice_applicable_minor"] = (
                 0 if row["invoice_policy"] == "not_required"
                 else row["settlement_minor"]
             )
             row["uninvoiced_minor"] = max(
                 row["invoice_applicable_minor"] - row["invoice_minor"], 0
-            )
-            row["receivable_minor"] = max(
-                row["settlement_minor"] - row["receipt_minor"] + row['pending_receipt_minor'], 0
             )
             row["invoice_rate_percent"] = _percent(
                 row["invoice_minor"], row["invoice_applicable_minor"]
@@ -494,8 +443,9 @@ def _receipt_customer_id(conn, receipt_id):
 
 def _customer_invoice_receipt_plan(conn, customer_id):
     invoices = conn.execute(
-        """SELECT i.id, i.invoice_date, i.amount_minor
+        """SELECT i.id, i.invoice_date, i.amount_minor, e.entity_id
            FROM sales_invoices i
+           JOIN record_entities e ON e.record_type='sales_invoices' AND e.record_id=i.id
            JOIN projects p ON p.id=i.project_id
            LEFT JOIN contracts c ON c.id=i.contract_id
            WHERE i.status='active'
@@ -507,13 +457,14 @@ def _customer_invoice_receipt_plan(conn, customer_id):
         int(row["id"]): int(row["amount_minor"]) for row in invoices
     }
     receipts = conn.execute(
-        """SELECT r.id, r.receipt_date, r.amount_minor,
+        """SELECT r.id, r.receipt_date, r.amount_minor, e.entity_id,
                   CASE
                     WHEN COUNT(DISTINCT ra.invoice_id)=1
                      AND SUM(CASE WHEN ra.invoice_id IS NULL THEN 1 ELSE 0 END)=0
                     THEN MIN(ra.invoice_id)
                   END AS manual_invoice_id
            FROM receipts r
+           JOIN record_entities e ON e.record_type='receipts' AND e.record_id=r.id
            JOIN receipt_allocations ra
              ON ra.receipt_id=r.id AND ra.status='active'
            JOIN projects p ON p.id=ra.project_id
@@ -531,12 +482,14 @@ def _customer_invoice_receipt_plan(conn, customer_id):
     ).fetchall()
 
     plan = []
+    invoice_entities = {int(row['id']): row['entity_id'] for row in invoices}
     automatic_receipts = []
     for receipt in receipts:
         receipt_id = int(receipt["id"])
         remaining = int(receipt["amount_minor"])
         manual_invoice_id = receipt["manual_invoice_id"]
-        if manual_invoice_id in invoice_remaining:
+        if (manual_invoice_id in invoice_remaining
+                and invoice_entities[manual_invoice_id] == receipt['entity_id']):
             manual_invoice_id = int(manual_invoice_id)
             allocated = min(remaining, invoice_remaining[manual_invoice_id])
             if allocated:
@@ -546,12 +499,15 @@ def _customer_invoice_receipt_plan(conn, customer_id):
                 invoice_remaining[manual_invoice_id] -= allocated
                 remaining -= allocated
         if remaining:
-            automatic_receipts.append((receipt_id, remaining))
+            automatic_receipts.append((receipt_id, remaining, receipt['entity_id']))
 
-    invoice_index = 0
-    for receipt_id, receipt_remaining in automatic_receipts:
+    for receipt_id, receipt_remaining, entity_id in automatic_receipts:
+        invoice_index = 0
         while receipt_remaining and invoice_index < len(invoices):
             invoice_id = int(invoices[invoice_index]["id"])
+            if invoice_entities[invoice_id] != entity_id:
+                invoice_index += 1
+                continue
             available = invoice_remaining[invoice_id]
             if not available:
                 invoice_index += 1
@@ -624,6 +580,20 @@ def _reconcile_customer_ids(conn, customer_ids, changed_at):
         _reconcile_customer_invoice_receipts(conn, customer_id, changed_at)
 
 
+def _entity_safe_invoice_values(conn, row, customer_totals):
+    # Do not trust historical allocations made before entity isolation existed.
+    row = dict(row)
+    customer_id = _invoice_customer_id(conn, row['id'])
+    if customer_id not in customer_totals:
+        totals = {}
+        if customer_id:
+            for invoice_id, _, amount, _ in _customer_invoice_receipt_plan(conn, customer_id):
+                totals[invoice_id] = totals.get(invoice_id, 0) + amount
+        customer_totals[customer_id] = totals
+    row['received_minor'] = customer_totals[customer_id].get(row['id'], 0)
+    return _invoice_collection_values(row)
+
+
 def list_invoices(project_id=None, include_void=False):
     with db_read() as conn:
         sql = """
@@ -645,25 +615,7 @@ def list_invoices(project_id=None, include_void=False):
                        SELECT COUNT(*)
                        FROM invoice_settlement_allocations a
                        WHERE a.invoice_id=i.id
-                   ) AS settlement_count,
-                   COALESCE((
-                       SELECT COALESCE(
-                           (
-                               SELECT SUM(ira.allocated_amount_minor)
-                               FROM invoice_receipt_allocations ira
-                               WHERE ira.invoice_id=i.id
-                                 AND ira.status='active'
-                           ),
-                           (
-                               SELECT SUM(ra.allocated_amount_minor)
-                               FROM receipt_allocations ra
-                               JOIN receipts r ON r.id=ra.receipt_id
-                               WHERE ra.invoice_id=i.id
-                                 AND ra.status='active'
-                                 AND r.status='active'
-                           )
-                       )
-                   ), 0) AS received_minor
+                   ) AS settlement_count
             FROM sales_invoices i
             JOIN projects p ON p.id=i.project_id
             LEFT JOIN contracts c ON c.id=i.contract_id
@@ -676,8 +628,9 @@ def list_invoices(project_id=None, include_void=False):
             sql += " AND i.project_id=?"
             params.append(project_id)
         sql += " ORDER BY i.invoice_date DESC, i.id DESC"
+        customer_totals = {}
         rows = [
-            _invoice_collection_values(row)
+            _entity_safe_invoice_values(conn, row, customer_totals)
             for row in conn.execute(sql, params).fetchall()
         ]
         statuses = invoice_attachment_statuses(conn, [row["id"] for row in rows])
@@ -707,32 +660,14 @@ def get_invoice(invoice_id):
                           SELECT COUNT(*)
                           FROM invoice_settlement_allocations a
                           WHERE a.invoice_id=i.id
-                      ) AS settlement_count,
-                      COALESCE((
-                          SELECT COALESCE(
-                              (
-                                  SELECT SUM(ira.allocated_amount_minor)
-                                  FROM invoice_receipt_allocations ira
-                                  WHERE ira.invoice_id=i.id
-                                    AND ira.status='active'
-                              ),
-                              (
-                                  SELECT SUM(ra.allocated_amount_minor)
-                                  FROM receipt_allocations ra
-                                  JOIN receipts r ON r.id=ra.receipt_id
-                                  WHERE ra.invoice_id=i.id
-                                    AND ra.status='active'
-                                    AND r.status='active'
-                              )
-                          )
-                      ), 0) AS received_minor
+                      ) AS settlement_count
                FROM sales_invoices i
                JOIN projects p ON p.id=i.project_id
                LEFT JOIN contracts c ON c.id=i.contract_id
                WHERE i.id=?""",
             (int(invoice_id),),
         ).fetchone()
-        return _invoice_collection_values(row) if row else None
+        return _entity_safe_invoice_values(conn, row, {}) if row else None
 
 
 def create_invoice(data, *, _conn=None):
@@ -962,36 +897,24 @@ def _receipt_record(conn, receipt_id):
     ).fetchone()
 
 
-def _invoice_matches_for_receipt(conn, receipt_id):
-    rows = conn.execute(
-        """SELECT i.id AS invoice_id, i.invoice_no, i.invoice_date,
-                  SUM(ira.allocated_amount_minor) AS allocated_amount_minor,
-                  MIN(ira.allocation_method) AS allocation_method
-           FROM invoice_receipt_allocations ira
-           JOIN sales_invoices i ON i.id=ira.invoice_id
-           WHERE ira.receipt_id=? AND ira.status='active'
-             AND i.status='active'
-           GROUP BY i.id, i.invoice_no, i.invoice_date
-           ORDER BY i.invoice_date, i.id""",
-        (int(receipt_id),),
-    ).fetchall()
-    if rows:
-        return [dict(row) for row in rows]
-    return [
-        dict(row)
-        for row in conn.execute(
-            """SELECT i.id AS invoice_id, i.invoice_no, i.invoice_date,
-                      SUM(ra.allocated_amount_minor) AS allocated_amount_minor,
-                      'manual' AS allocation_method
-               FROM receipt_allocations ra
-               JOIN sales_invoices i ON i.id=ra.invoice_id
-               WHERE ra.receipt_id=? AND ra.status='active'
-                 AND i.status='active'
-               GROUP BY i.id, i.invoice_no, i.invoice_date
-               ORDER BY i.invoice_date, i.id""",
-            (int(receipt_id),),
-        ).fetchall()
-    ]
+def _invoice_matches_for_receipt(conn, receipt_id, plans=None):
+    customer_id = _receipt_customer_id(conn, receipt_id)
+    if not customer_id:
+        return []
+    if plans is None:
+        plans = {}
+    if customer_id not in plans:
+        plans[customer_id] = _customer_invoice_receipt_plan(conn, customer_id)
+    matches = []
+    for invoice_id, matched_receipt, amount, method in plans[customer_id]:
+        if matched_receipt != int(receipt_id):
+            continue
+        invoice = conn.execute(
+            'SELECT id AS invoice_id, invoice_no, invoice_date FROM sales_invoices WHERE id=?',
+            (invoice_id,),
+        ).fetchone()
+        matches.append(dict(invoice, allocated_amount_minor=amount, allocation_method=method))
+    return sorted(matches, key=lambda row: (row['invoice_date'], row['invoice_id']))
 
 
 def _apply_receipt_invoice_values(row, invoice_matches):
@@ -1057,11 +980,12 @@ def list_receipts(project_id=None):
             params.append(int(project_id))
         sql += " GROUP BY r.id ORDER BY r.receipt_date DESC, r.id DESC"
         receipts = []
+        plans = {}
         for source in conn.execute(sql, params).fetchall():
             row = _receipt_listing_row(source)
             receipts.append(
                 _apply_receipt_invoice_values(
-                    row, _invoice_matches_for_receipt(conn, row["id"])
+                    row, _invoice_matches_for_receipt(conn, row["id"], plans)
                 )
             )
         return receipts
@@ -1381,13 +1305,18 @@ def preview_receipt_allocations(data, exclude_receipt_id=None):
     invoice_id = int(data.get("invoice_id") or 0) or None
     amount_minor = _minor(data.get("amount"))
     with db_read() as conn:
+        receipt_driven = invoice_income_service.is_receipt_driven(conn, contract_id)
+        planning_data = dict(data)
+        if (receipt_driven and not invoice_id and not data.get('settlement_id')
+                and data.get('settlement_allocations') is None):
+            planning_data['allow_advance'] = True
         planned = _plan_receipt_allocations(
             conn,
             project_id=project_id,
             contract_id=contract_id,
             invoice_id=invoice_id,
             amount_minor=amount_minor,
-            data=data,
+            data=planning_data,
             exclude_receipt_id=exclude_receipt_id,
         )
         capacities = {
@@ -1398,6 +1327,8 @@ def preview_receipt_allocations(data, exclude_receipt_id=None):
         }
         capacities[None] = {'settlement_no': '预收款', 'settlement_date': '',
                             'available_minor': None}
+        if receipt_driven:
+            capacities[None]['settlement_no'] = '保存后同步补足实际结算'
         return [
             {
                 **allocation,
@@ -1458,6 +1389,35 @@ def default_receipt_payer(project_id, contract_id=None):
             FROM projects p LEFT JOIN business_partners b ON b.id=p.customer_partner_id
             WHERE p.id=?""", (project_id,)).fetchone()
         return row[0] if row else ''
+
+
+def _confirm_receipt_shortfall(conn, receipt_id, project_id, contract_id,
+                              receipt_date, amount_minor):
+    """Append a confirmed settlement; receipt corrections do not reverse income."""
+    if not invoice_income_service.is_receipt_driven(conn, contract_id):
+        return
+    confirmed = conn.execute('''SELECT COALESCE(SUM(amount_minor),0)
+        FROM settlements WHERE project_id=? AND contract_id=? AND status='active' ''',
+        (project_id, contract_id)).fetchone()[0]
+    other_received = conn.execute('''SELECT COALESCE(SUM(a.allocated_amount_minor),0)
+        FROM receipt_allocations a JOIN receipts r ON r.id=a.receipt_id
+        WHERE a.project_id=? AND a.contract_id=? AND a.receipt_id<>?
+          AND a.status='active' AND r.status='active' ''',
+        (project_id, contract_id, receipt_id)).fetchone()[0]
+    shortage = max(other_received + amount_minor - confirmed, 0)
+    if not shortage:
+        return
+    receipt_no = conn.execute('SELECT receipt_no FROM receipts WHERE id=?',
+                              (receipt_id,)).fetchone()[0]
+    from services.contract_service import create_settlement
+    settlement_id = create_settlement({
+        'contract_id': contract_id, 'project_id': project_id,
+        'settlement_date': receipt_date,
+        'amount': str(Decimal(shortage) / 100),
+        'basis': '按回款确认实际结算差额：' + receipt_no,
+    }, _conn=conn)
+    conn.execute('INSERT INTO receipt_confirmed_settlements VALUES (?, ?, ?)',
+                 (receipt_id, settlement_id, _now()))
 
 
 def create_receipt(data):
@@ -1563,6 +1523,9 @@ def create_receipt(data):
                 notes,
                 now,
             )
+            if automatic:
+                _confirm_receipt_shortfall(conn, receipt_id, project_id, contract_id,
+                                          receipt_date, amount_minor)
             from services.advance_receipt_service import reconcile
             reconcile(conn, project_id, contract_id)
             _reconcile_customer_invoice_receipts(
@@ -1663,6 +1626,9 @@ def update_receipt(receipt_id, data):
             )
             conn.execute('UPDATE receipts SET automatic_income_allocation=? WHERE id=?',
                          (int(automatic), receipt_id))
+            if automatic:
+                _confirm_receipt_shortfall(conn, receipt_id, receipt['project_id'],
+                                          receipt['contract_id'], receipt_date, amount_minor)
             from services.advance_receipt_service import reconcile
             reconcile(conn, receipt['project_id'], receipt['contract_id'])
             _reconcile_customer_ids(

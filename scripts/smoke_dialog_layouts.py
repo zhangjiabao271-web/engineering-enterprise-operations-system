@@ -416,7 +416,7 @@ def main():
         )
         checked.append("登记回款")
 
-        assert len(page.notebook.tabs()) == 4
+        assert len(page.notebook.tabs()) == 7
         assert "回款跟进" in page.notebook.tab(3, "text")
         page.notebook.select(3)
         root.update_idletasks()
@@ -461,16 +461,14 @@ def main():
         host, page = page_host(root, CostLedgerPage)
         page.open_cost_dialog()
         cost_dialog = root.winfo_children()[-1]
+        from services.expense_categories import CATEGORIES as EXPENSE_CATEGORIES
+
         category_combo = next(
             widget for widget in descendants(cost_dialog)
             if isinstance(widget, ttk.Combobox)
-            and tuple(widget.cget("values"))
-            == (
-                "用车", "饮食", "房租", "水电煤", "机械费",
-                "外包施工费", "管理费",
-            )
+            and tuple(widget.cget("values")) == tuple(EXPENSE_CATEGORIES)
         )
-        assert category_combo.get() == "用车"
+        assert category_combo.get() == "车辆使用 / 燃油费"
         assert cost_dialog.title() == "登记成本"
         allocation_method_combo = next(
             widget for widget in descendants(cost_dialog)
@@ -555,7 +553,8 @@ def main():
         host.destroy()
 
         host, page = page_host(root, WorkdayDashboardPage)
-        worker = db.get_workers()[0]
+        from services import labor_service
+        worker = labor_service.get_workers()[0]
         page.open_worker_dialog(worker["id"])
         verify_dialog(root, root.winfo_children()[-1], "保存工人")
         checked.append("修改工人")
@@ -574,7 +573,7 @@ def main():
             required_date_pickers=2,
         )
         checked.append("工资调整预览")
-        work_log = db.get_work_logs()[0]
+        work_log = labor_service.get_work_logs()[0]
         page.open_log_dialog(work_log["id"])
         verify_dialog(
             root,
@@ -598,13 +597,17 @@ def main():
         host.destroy()
 
         host, page = page_host(root, ConstructionRecordPage)
-        record = db.get_construction_records()[0]
+        from services import construction_service
+        record = construction_service.get_construction_records()[0]
         page.open_record_dialog(record["id"])
         verify_dialog(
             root, root.winfo_children()[-1], "保存施工记录",
             required_date_pickers=2,
         )
         checked.append("修改施工记录")
+        # 页面默认过滤当月，冒烟数据在 2026-07/08，先切到记录所在月份
+        page.month_var.set(record["record_date"][:7])
+        page.refresh_all()
         page.tree.selection_set(page.tree.get_children()[0])
         page.inspect_selected()
         verify_dialog(
@@ -629,7 +632,7 @@ def main():
             if isinstance(child, ttk.Combobox)
             and "待归集（稍后分配）" in tuple(child.cget("values"))
         )
-        assert any("山峪拆盖旧工厂" in value for value in project_values)
+        assert any("示例零星拆盖旧工厂" in value for value in project_values)
         assert not any("澄湖环保站" in value for value in project_values)
         purchase_combos = [
             child
@@ -678,25 +681,26 @@ def main():
         verify_dialog(
             root,
             purchase_dialog,
-            "保存并继续录入",
+            "保存整单并新增下一单",
             required_date_pickers=1,
         )
         checked.append("新增采购包含已完工项目")
         for purchase_type in ("正式采购", "零星采购"):
-            order = db.get_purchase_orders(purchase_type=purchase_type)[0]
+            from services import procurement_service
+            order = procurement_service.list_purchase_orders(purchase_type=purchase_type)[0]
+            saved_order = procurement_service.get_purchase_order(order["id"])
+            inclusive = saved_order.get("price_basis", "inclusive") == "inclusive"
             page.open_purchase_dialog(purchase_type, order["id"])
             verify_dialog(
                 root,
                 root.winfo_children()[-1],
                 "保存修改",
                 required_labels=(
-                    "材料单价（未税，元）*",
+                    "材料单价（含税，元）*" if inclusive else "材料单价（未税，元）*",
                     "税率（%）*",
-                    "含税单价（元）",
-                    "未税材料额（元）",
-                    "税额（元）",
+                    "含税成交单价（元）" if inclusive else "含税单价（约，元）",
                     "运费（元）",
-                    "计入项目成本（元）",
+                    "当前材料金额（含税，不含运费）：",
                 ),
                 required_date_pickers=1,
             )

@@ -1,5 +1,4 @@
 import ttkbootstrap as ttk
-import sqlite3
 from ttkbootstrap.constants import *
 from tkinter import messagebox, filedialog, simpledialog, Listbox, EXTENDED, END as TK_END
 from services import labor_service as db
@@ -8,7 +7,9 @@ from datetime import date, datetime
 from openpyxl import Workbook
 from ui.components import DataTable, DatePicker, FilterBar, KpiCard, PageHeader
 from ui.dialogs import add_form_actions, build_form_dialog, safe_init_loaders
+from ui.error_handling import show_unexpected_error
 from ui.theme import COLORS, SPACING
+from pages.workday_monthly_panel import WorkdayMonthlyPanel
 
 UNASSIGNED_LABEL = "待归集（不归入任何项目）"
 
@@ -79,9 +80,21 @@ class WorkdayDashboardPage:
             )
             kpi_frame.columnconfigure(index, weight=1)
 
-        # ---- 两栏 Overview ----
-        overview = ttk.Panedwindow(self.parent, orient=HORIZONTAL)
-        overview.pack(fill=X, pady=(0, SPACING["md"]))
+        # 明细和统计独立使用剩余高度，避免高缩放下互相挤压。
+        notebook = ttk.Notebook(self.parent, bootstyle=PRIMARY)
+        notebook.pack(fill=BOTH, expand=True)
+        detail_tab = ttk.Frame(notebook, padding=10)
+        stats_tab = ttk.Frame(notebook)
+        monthly_tab = ttk.Frame(notebook)
+        worker_tab = ttk.Frame(notebook, padding=10)
+        notebook.add(detail_tab, text="  工天明细  ")
+        notebook.add(stats_tab, text="  工时统计  ")
+        notebook.add(monthly_tab, text="  月度汇总  ")
+        notebook.add(worker_tab, text="  工人档案  ")
+        self.monthly_panel = WorkdayMonthlyPanel(monthly_tab)
+
+        overview = ttk.Panedwindow(stats_tab, orient=HORIZONTAL)
+        overview.pack(fill=BOTH, expand=True)
 
         worker_card = ttk.Frame(overview, style="Card.TFrame", padding=14)
         site_card = ttk.Frame(overview, style="Card.TFrame", padding=14)
@@ -129,15 +142,6 @@ class WorkdayDashboardPage:
                 font=("Microsoft YaHei UI", 9, "bold"),
             )
 
-        # ---- Notebook 标签页 ----
-        notebook = ttk.Notebook(self.parent, bootstyle=PRIMARY)
-        notebook.pack(fill=BOTH, expand=True)
-
-        detail_tab = ttk.Frame(notebook, padding=10)
-        worker_tab = ttk.Frame(notebook, padding=10)
-        notebook.add(detail_tab, text="  工天明细  ")
-        notebook.add(worker_tab, text="  工人档案  ")
-
         # 工天明细：工具条（组件化，保持原左右分区与按钮顺序）
         FilterBar(
             detail_tab,
@@ -178,7 +182,7 @@ class WorkdayDashboardPage:
         self.log_table = DataTable(
             detail_tab,
             specs=(
-                ("date", "日期", 90, CENTER),
+                ("date", "日期", 120, CENTER),
                 ("worker", "工人", 85, CENTER),
                 ("trade", "工种", 80, CENTER),
                 ("site", "施工工地", 145, CENTER),
@@ -286,6 +290,7 @@ class WorkdayDashboardPage:
         self.refresh_ranks()
         self.refresh_logs()
         self.refresh_workers()
+        self.monthly_panel.refresh()
 
     def refresh_kpis(self):
         summary = db.get_work_dashboard(self.month_var.get())["summary"]
@@ -432,8 +437,11 @@ class WorkdayDashboardPage:
                     db.update_worker(worker_id, payload)
                 else:
                     db.add_worker(payload)
-            except Exception as error:
+            except ValueError as error:
                 messagebox.showwarning("无法保存", str(error), parent=dialog)
+                return
+            except Exception:
+                show_unexpected_error("保存失败", parent=dialog)
                 return
             dialog.destroy()
             self.refresh_workers()
@@ -461,8 +469,11 @@ class WorkdayDashboardPage:
             return
         try:
             db.delete_workers(ids)
-        except (ValueError, sqlite3.IntegrityError) as error:
+        except ValueError as error:
             messagebox.showwarning("无法删除", str(error))
+            return
+        except Exception:
+            show_unexpected_error("删除失败", parent=self.parent)
             return
         self.refresh_workers()
 
@@ -644,8 +655,11 @@ class WorkdayDashboardPage:
                 return
             try:
                 applied = db.apply_rate_adjustment(request_payload())
-            except (ValueError, sqlite3.IntegrityError) as error:
+            except ValueError as error:
                 messagebox.showwarning("无法调薪", str(error), parent=dialog)
+                return
+            except Exception:
+                show_unexpected_error("调薪失败", parent=dialog)
                 return
             dialog.destroy()
             self.refresh_all()
@@ -660,7 +674,7 @@ class WorkdayDashboardPage:
         )
 
     def _project_choices(self, include_project_id=None):
-        """工天项目候选：排除已关闭项目，编辑时保留当前项目。"""
+        """工天项目候选：只显示在建项目，编辑时保留当前项目。"""
         projects = db.list_work_log_project_options(include_project_id)
         label_by_id = {
             project["id"]: f"{project['name']} · {project['project_code']}"
@@ -877,15 +891,11 @@ class WorkdayDashboardPage:
                     payload["project_site_id"] = project_site_id
             try:
                 db.update_work_log(log_id, payload)
-            except (ValueError, sqlite3.IntegrityError) as error:
+            except ValueError as error:
                 messagebox.showwarning("无法保存", str(error), parent=dialog)
                 return
-            except Exception as error:
-                messagebox.showerror(
-                    "保存失败",
-                    f"记录没有保存，程序遇到异常：{error}",
-                    parent=dialog,
-                )
+            except Exception:
+                show_unexpected_error("保存失败", parent=dialog)
                 return
             self.month_var.set(payload["work_date"][:7])
             dialog.destroy()
@@ -1074,12 +1084,8 @@ class WorkdayDashboardPage:
             except ValueError as error:
                 messagebox.showwarning("无法保存", str(error), parent=dialog)
                 return
-            except Exception as error:
-                messagebox.showerror(
-                    "保存失败",
-                    f"本批记录没有保存，程序遇到异常：{error}",
-                    parent=dialog,
-                )
+            except Exception:
+                show_unexpected_error("保存失败", parent=dialog)
                 return
             self.month_var.set(work_date[:7])
             dialog.destroy()
@@ -1144,8 +1150,11 @@ class WorkdayDashboardPage:
             return
         try:
             db.delete_work_logs(ids)
-        except (ValueError, sqlite3.IntegrityError) as error:
+        except ValueError as error:
             messagebox.showwarning("无法删除", str(error))
+            return
+        except Exception:
+            show_unexpected_error("删除失败", parent=self.parent)
             return
         self.refresh_all()
 

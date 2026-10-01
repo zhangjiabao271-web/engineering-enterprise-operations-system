@@ -67,14 +67,14 @@ def main():
                 """SELECT default_tax_rate_bps
                    FROM supplier_profiles
                    WHERE partner_id=(
-                       SELECT id FROM business_partners WHERE legal_name='砺锋钢铁'
+                       SELECT id FROM business_partners WHERE legal_name='东盛钢铁'
                    )""",
             ) == 1000
             assert scalar(
                 conn,
                 """SELECT COUNT(*) FROM supplier_offers
                    WHERE supplier_partner_id=(
-                       SELECT id FROM business_partners WHERE legal_name='砺锋钢铁'
+                       SELECT id FROM business_partners WHERE legal_name='东盛钢铁'
                    ) AND tax_rate_bps<>1000""",
             ) == 0
             assert scalar(
@@ -113,7 +113,7 @@ def main():
         meifeng = next(
             row
             for row in master_data_service.list_suppliers()
-            if row["name"] == "砺锋钢铁"
+            if row["name"] == "东盛钢铁"
         )
         assert meifeng["default_tax_rate_percent"] == 10
         offer = master_data_service.list_supplier_offers(

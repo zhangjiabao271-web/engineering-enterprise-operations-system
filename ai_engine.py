@@ -7,6 +7,8 @@ from datetime import datetime
 
 from ai_client import AIClient, AIError, DEFAULT_API_BASE, DEFAULT_MODEL
 from services import (
+    ai_labor_query_service,
+    ai_query_planner,
     ai_operating_query_service,
     ai_secret_store,
     business_knowledge_service,
@@ -499,7 +501,7 @@ def _knowledge_time_scope(knowledge):
 
 
 def _context_updates_from_knowledge(knowledge, project_id=None):
-    updates = {"pending_confirmation": None}
+    updates = {"pending_confirmation": None, "labor_query": None}
     if project_id:
         updates["project_id"] = int(project_id)
     labor_cost = (knowledge or {}).get("labor_cost") or {}
@@ -852,6 +854,22 @@ def ask_ai_turn(
     conversation_context = dict(conversation_context or {})
     if project_id is None:
         project_id = conversation_context.get("project_id")
+    if cancel_event is not None and cancel_event.is_set():
+        raise AIError("本次查询已停止。", code="cancelled")
+    if not ai_query_planner.use_fast_path(question, conversation_context):
+        return ai_query_planner.query_turn(
+            question, make_ai_client(), project_id=project_id,
+            conversation_context=conversation_context, cancel_event=cancel_event,
+        )
+    try:
+        labor_query = ai_labor_query_service.retrieve_labor_query(
+            question, project_id=project_id, conversation_context=conversation_context,
+        )
+    except Exception as error:
+        raise AIError(f"读取工天记录失败：{error}", code="local_labor_query_error") from error
+    if labor_query:
+        return labor_query
+    conversation_context.pop("labor_query", None)
     try:
         knowledge = business_knowledge_service.retrieve_business_knowledge(
             question,
@@ -865,6 +883,7 @@ def ask_ai_turn(
         ) from error
     confirmation = _confirmation_turn(knowledge, project_id=project_id)
     if confirmation:
+        confirmation.setdefault("context_updates", {})["labor_query"] = None
         confirmation["question"] = question
         return confirmation
 
@@ -885,7 +904,7 @@ def ask_ai_turn(
             "message_type": "answer",
             "answer": operating_query["answer"],
             "question": question,
-            "context_updates": operating_query.get("context_updates") or {},
+            "context_updates": {**(operating_query.get("context_updates") or {}), "labor_query": None},
             "sources": operating_query.get("sources") or [],
             "answer_mode": "local",
             "intent": operating_query.get("intent"),
@@ -905,75 +924,10 @@ def ask_ai_turn(
             "sources": _sources_from_knowledge(knowledge),
             "answer_mode": "local",
         }
-    project_id = _project_id_from_knowledge(knowledge, project_id)
-    context = build_operating_context(project_id=project_id)
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        *_conversation_messages(history),
-        {
-            "role": "user",
-            "content": (
-                f"经营问题：{question}\n\n"
-                "当前连续对话上下文（JSON）：\n"
-                f"{json.dumps(conversation_context, ensure_ascii=False, default=str)}\n\n"
-                "以下是针对本次问题只读检索出的业务知识（JSON）：\n"
-                f"{json.dumps(knowledge, ensure_ascii=False, default=str)}\n\n"
-                "以下是只读的本地经营数据：\n"
-                f"{_format_operating_context(context)}"
-            ),
-        },
-    ]
-    client = make_ai_client()
-    if on_chunk and hasattr(client, "chat_completion_stream"):
-        chunks = []
-        for chunk in client.chat_completion_stream(
-            messages,
-            temperature=0.2,
-            max_completion_tokens=3072,
-            cancel_event=cancel_event,
-        ):
-            if cancel_event is not None and cancel_event.is_set():
-                raise AIError("本次生成已停止。", code="cancelled")
-            chunks.append(chunk)
-            on_chunk(chunk)
-        answer = "".join(chunks)
-    else:
-        answer = client.chat_completion(
-            messages,
-            temperature=0.2,
-            max_completion_tokens=3072,
-        )
-    if cancel_event is not None and cancel_event.is_set():
-        raise AIError("本次生成已停止。", code="cancelled")
-    answer = (answer or "").strip()
-    if not answer:
-        raise AIError(
-            "DeepSeek 没有生成可显示的回答，请重试。",
-            code="empty_answer",
-            retryable=True,
-        )
-    source = {
-        "module": "项目经营总览" if project_id else "公司经营总览",
-        "page_key": "profit" if project_id else "home",
-        "label": "本地经营数据口径",
-        "record_count": len(context["overview"].get("projects") or []),
-        "scope_label": "选中项目" if project_id else "全公司",
-        "details": [],
-    }
-    sources = _sources_from_knowledge(knowledge) or [source]
-    updates = _context_updates_from_knowledge(knowledge, project_id=project_id)
-    updates["data_modules"] = sorted(
-        set((updates.get("data_modules") or []) + [source["module"]])
+    return ai_query_planner.query_turn(
+        question, make_ai_client(), project_id=project_id,
+        conversation_context=conversation_context, cancel_event=cancel_event,
     )
-    return {
-        "response_type": "answer",
-        "message_type": "answer",
-        "answer": answer,
-        "question": question,
-        "context_updates": updates,
-        "sources": sources,
-        "answer_mode": "deepseek",
-    }
 
 
 def ask_ai(user_input, project_id=None):

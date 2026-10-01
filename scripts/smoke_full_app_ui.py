@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import tempfile
+from time import monotonic
 from pathlib import Path
 
 
@@ -16,6 +17,7 @@ def main():
         test_database = Path(temp_dir) / "supplier_data.db"
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         os.environ["SUPPLY_CHAIN_DB_PATH"] = str(test_database)
+        os.environ["SUPPLY_CHAIN_ATTACHMENTS_PATH"] = str(Path(temp_dir) / "attachments")
         from db.backup import backup_database
         backup_database(args.database, test_database)
 
@@ -24,6 +26,7 @@ def main():
         from main import SupplierManagerApp
         from ui.scaling import configure_main_window
         from ui.theme import style_dialog
+        from ui.page_transition import motion_is_enabled
 
         dialogs = []
 
@@ -48,8 +51,20 @@ def main():
 
         def settle():
             finished = ttk.BooleanVar(value=False)
-            root.after(250, lambda: finished.set(True))
+            deadline = monotonic() + 10
+            def check():
+                if app.page_transition._timer is None or monotonic() >= deadline:
+                    finished.set(True)
+                else:
+                    root.after(16, check)
+            root.after(250, check)
             root.wait_variable(finished)
+
+        def check_views():
+            frames = app.content_host.winfo_children()
+            assert sum(bool(frame.winfo_ismapped()) for frame in frames) == 1
+            assert len(app._page_views) <= 5
+            assert len(frames) <= len(app._page_views) + 1
 
         loaded = []
         try:
@@ -65,17 +80,23 @@ def main():
                 assert app.content_frame.winfo_children()
                 loaded.append(key)
                 assert app.page_transition._timer is None
-                assert len(app.content_host.winfo_children()) == 1
+                check_views()
             for key in list(app.page_commands)[:8]:
                 app.navigate_to(key)
             settle()
-            assert len(app.content_host.winfo_children()) == 1
+            check_views()
             app.page_transition.set_enabled(True)
             app.navigate_to("supplier")
             root.update_idletasks()
-            assert int(app.content_frame.place_info()["x"]) > 0
+            assert int(app.content_frame.place_info()["x"]) == 0
+            if motion_is_enabled():
+                assert app.page_transition._overlay is not None
+            else:
+                assert app.page_transition._overlay is None
             settle()
             assert int(app.content_frame.place_info()["x"]) == 0
+            assert app.page_transition._overlay is None
+            assert app.page_transition._image is None
             assert not callback_errors, f"Tk callback errors: {callback_errors}"
             app.page_transition.set_enabled(False)
             app.navigate_to("home")
