@@ -44,8 +44,8 @@ class DesktopStartupTests(unittest.TestCase):
     def test_existing_db_is_inspected_without_writes_or_backups(self):
         path = self.ledger()
         before = path.read_bytes()
-        self.assertEqual(runtime.prepare_database(db=path), path)
-        self.assertEqual(os.environ['SUPPLY_CHAIN_DB_PATH'], str(path))
+        self.assertEqual(runtime.prepare_database(db=path), path.resolve())
+        self.assertEqual(os.environ['SUPPLY_CHAIN_DB_PATH'], str(path.resolve()))
         self.assertEqual(before, path.read_bytes())
         self.assertFalse((path.parent / 'backups').exists())
 
@@ -77,7 +77,8 @@ class DesktopStartupTests(unittest.TestCase):
                   'c=sqlite3.connect(p); assert c.execute("SELECT COUNT(*) FROM projects").fetchone()[0]>0; '
                   'assert c.execute("PRAGMA integrity_check").fetchone()[0]=="ok"; c.close()')
         result = subprocess.run([sys.executable, '-B', '-X', 'utf8', '-c', script],
-                                cwd=desktop.ROOT, capture_output=True, text=True, timeout=25)
+                                cwd=desktop.ROOT, capture_output=True, text=True,
+                                encoding='utf-8', timeout=25)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((directory / 'supplier_data.db').exists())
 

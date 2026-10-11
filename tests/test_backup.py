@@ -17,6 +17,23 @@ from unittest import mock
 from db.backup import backup_database
 
 
+class BackupHashTests(unittest.TestCase):
+    def test_sha256_streams_files_without_newer_python_api(self):
+        from services.backup_service import _sha256
+        from web_workbench.backup import file_hash
+
+        with tempfile.TemporaryDirectory(prefix="backup_hash_") as folder:
+            path = Path(folder) / "sample.bin"
+            with mock.patch.object(hashlib, "file_digest", create=True,
+                                   side_effect=AssertionError("Python 3.10 has no file_digest")):
+                for content in (b"", b"backup-content", b"x" * (1024 * 1024 + 37)):
+                    path.write_bytes(content)
+                    expected = hashlib.sha256(content).hexdigest()
+                    for calculate in (_sha256, file_hash):
+                        with self.subTest(size=len(content), calculate=calculate.__name__):
+                            self.assertEqual(calculate(path), expected)
+
+
 class BackupDatabaseTests(unittest.TestCase):
     """db.backup.backup_database：SQLite 备份 API 快照及错误路径。"""
 
