@@ -63,7 +63,7 @@ class WebBackupTests(unittest.TestCase):
         saved.write_bytes(raw)
         with zipfile.ZipFile(saved) as archive:
             manifest = json.loads(archive.read('manifest.json'))
-            self.assertEqual(manifest['files'][0]['original_path'], str(source))
+            self.assertEqual(Path(manifest['files'][0]['original_path']).resolve(), source.resolve())
         self.assertEqual(self.request('backup/download?token=unknown')[0], 400)
 
     def test_restore_is_confirmed_restores_attachments_and_invalidates_old_forms(self):
