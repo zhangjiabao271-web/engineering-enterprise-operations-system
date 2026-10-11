@@ -1,7 +1,9 @@
 import shutil
 import tempfile
 import unittest
+import os
 from pathlib import Path
+from unittest.mock import patch, Mock
 from uuid import uuid4
 
 
@@ -10,23 +12,9 @@ class DataGovernanceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="data_governance_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
-        source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
+        source_db = Path(os.environ["SUPPLY_CHAIN_DB_PATH"])
         from db.backup import backup_database
-        _oss_source_db = source_db
-        if _oss_source_db.exists():
-            backup_database(_oss_source_db, cls.test_db)
-        else:
-            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
-            import db.connection as _conn_module
-            import db.migration_runner as _runner_module
-            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
-            _conn_module.DB_PATH = cls.test_db
-            _runner_module.DB_PATH = cls.test_db
-            try:
-                from db.schema import init_db as _init_db
-                _init_db()
-            finally:
-                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
+        backup_database(source_db, cls.test_db)
 
         import db.connection as connection
         from db.migration_runner import run_migrations
@@ -36,12 +24,14 @@ class DataGovernanceTests(unittest.TestCase):
         connection.DB_PATH = cls.test_db
 
         from services import data_governance_service, labor_service, procurement_service
-        from services import project_service
+        from services import project_service, contract_service, attachment_service
 
         cls.governance = data_governance_service
         cls.labor = labor_service
         cls.procurement = procurement_service
         cls.projects = project_service
+        cls.contracts = contract_service
+        cls.attachments = attachment_service
 
     @classmethod
     def tearDownClass(cls):
@@ -58,6 +48,59 @@ class DataGovernanceTests(unittest.TestCase):
                 "status": "进行中",
             }
         )
+
+    def test_contract_attachment_and_project_link_are_separate(self):
+        suffix = uuid4().hex[:8]
+        project_id = self._project(suffix)
+        contract_id = self.contracts.create_contract({
+            "name": f"治理附件合同-{suffix}", "contract_type": "annual",
+            "pricing_mode": "actual", "sign_date": "2026-10-01",
+            "status": "active",
+        })
+        source = Path(self.temp_dir.name) / f"contract-{suffix}.pdf"
+        source.write_bytes(b"%PDF-1.4 test contract attachment")
+        with patch.dict(os.environ, SUPPLY_CHAIN_ATTACHMENTS_PATH=str(
+            Path(self.temp_dir.name) / "attachments"
+        )):
+            attachment_id = self.attachments.add_attachment("contract", contract_id, source)
+            row = self._completeness(project_id)
+            self.assertEqual(row["contract_count"], 0)
+            self.assertEqual(row["contract_attachment_count"], 0)
+            missing_before = self.governance.get_governance_summary()["missing_contract_count"]
+            self.contracts.create_allocation({"contract_id": contract_id, "project_id": project_id})
+            row = self._completeness(project_id)
+            self.assertEqual(row["contract_count"], 1)
+            self.assertEqual(row["contract_attachment_count"], 1)
+            self.assertEqual(row["settlement_count"], 0)
+            self.assertEqual(self.governance.get_governance_summary()["missing_contract_count"], missing_before - 1)
+            self.assertFalse(any(item["id"] == contract_id and item["issue_type"] == "合同缺附件"
+                                 for item in self.governance.list_fulfillment_gaps()))
+            self.attachments.void_attachments([attachment_id])
+            row = self._completeness(project_id)
+            self.assertEqual(row["contract_count"], 1)
+            self.assertEqual(row["contract_attachment_count"], 0)
+
+    def _completeness(self, project_id):
+        return next(row for row in self.governance.list_project_completeness()
+                    if row["id"] == project_id)
+
+    def test_governance_contract_action_keeps_project_scope(self):
+        from pages.data_governance_page import DataGovernancePage
+        page = DataGovernancePage.__new__(DataGovernancePage)
+        page.project_table = Mock()
+        page.project_table.tree.selection.return_value = ("42",)
+        page.navigate = Mock()
+        page.go_to_project_contract()
+        page.navigate.assert_called_once_with("contract", project_id=42)
+
+    def test_contract_attachment_dialog_refreshes_parent(self):
+        from pages.contract_page import ContractManagementPage
+        page = ContractManagementPage.__new__(ContractManagementPage)
+        page.parent, page.contract_tree, page.refresh = Mock(), Mock(spec=["selection"]), Mock()
+        page.contract_tree.selection.return_value = ("21",)
+        with patch("pages.contract_page.open_attachment_manager") as manager:
+            page.open_contract_attachments()
+        manager.assert_called_once_with(page.parent, "contract", 21, "合同", on_change=page.refresh)
 
     def test_summary_and_explicit_labor_assignment(self):
         suffix = uuid4().hex[:8]

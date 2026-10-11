@@ -632,7 +632,7 @@ def main():
             if isinstance(child, ttk.Combobox)
             and "待归集（稍后分配）" in tuple(child.cget("values"))
         )
-        assert any("示例零星拆盖旧工厂" in value for value in project_values)
+        assert any("示例山地拆盖旧工厂" in value for value in project_values)
         assert not any("澄湖环保站" in value for value in project_values)
         purchase_combos = [
             child

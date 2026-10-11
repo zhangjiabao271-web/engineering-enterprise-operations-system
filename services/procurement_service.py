@@ -5,6 +5,7 @@ from uuid import uuid4
 import json
 
 from db.connection import db_read, db_transaction
+from services._constraint_errors import translate_constraints
 
 
 TOOL_EQUIPMENT_CATEGORY = "工具和设备"
@@ -567,6 +568,11 @@ def get_purchase_allocations(order_id, include_void=False):
         ]
 
 
+@translate_constraints(
+    duplicate='采购单编号已存在，请核对原记录',
+    related='采购关联的供应商、材料或项目已变化，请重新核对',
+    invalid='采购内容不符合记录规则，请核对金额和明细',
+)
 def update_purchase_order(order_id, header, item):
     single_item_request = isinstance(item, dict)
     items, item_amounts, amounts = _prepare_order_items(header, item)
@@ -655,6 +661,11 @@ def assign_purchase_project(order_ids, project_id):
         return result.rowcount
 
 
+@translate_constraints(
+    duplicate='采购状态修改记录已存在，请刷新核对',
+    related='采购关联记录已变化，请刷新核对',
+    invalid='采购状态不符合记录规则，请重新核对',
+)
 def update_purchase_order_status(
     order_ids, payment_method, payment_status, invoice_status
 ):
@@ -671,6 +682,11 @@ def update_purchase_order_status(
         return result.rowcount
 
 
+@translate_constraints(
+    duplicate='采购更正记录已存在，请刷新核对',
+    related='采购关联记录已变化，请刷新核对',
+    invalid='采购当前状态不允许作废，请核对相关业务',
+)
 def void_purchase_orders(order_ids):
     if not order_ids:
         return 0

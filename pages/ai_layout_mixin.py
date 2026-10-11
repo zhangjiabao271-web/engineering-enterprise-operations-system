@@ -6,7 +6,7 @@ import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from ttkbootstrap.widgets.scrolled import ScrolledFrame
 
-from ui.theme import COLORS
+from ui.theme import COLORS, FONT_BODY
 from ui.scaling import scale_px
 
 
@@ -80,16 +80,17 @@ class AILayoutMixin:
         panel.rowconfigure(1, weight=1)
         self.chat_panel = panel
         self.chat_panel.bind("<Configure>", self._on_chat_resize)
+        self.chat_panel.bind("<Destroy>", self._cancel_chat_resize, add="+")
 
         chat_header = ttk.Frame(panel, style="ChatPane.TFrame", padding=(14, 11))
         chat_header.grid(row=0, column=0, sticky=EW)
         chat_header.columnconfigure(0, weight=1)
         actions = ttk.Frame(chat_header)
         actions.grid(row=0, column=1, rowspan=2, sticky=E)
-        for text, command in (("历史", lambda: self._toggle_side_panel("history")),
+        for text, command in (("对话历史", lambda: self._toggle_side_panel("history")),
                               ("新对话", self.new_conversation),
                               ("范围与条件", lambda: self._toggle_side_panel("context"))):
-            ttk.Button(actions, text=text, command=command, bootstyle="secondary-outline").pack(side=LEFT, padx=(6, 0))
+            ttk.Button(actions, text=text, command=command, style="ChatAction.TButton").pack(side=LEFT, padx=(6, 0))
         ttk.Label(
             chat_header,
             textvariable=self.scope_var,
@@ -109,7 +110,7 @@ class AILayoutMixin:
         )
         self.thread.grid(row=1, column=0, sticky=NSEW)
 
-        composer = ttk.Frame(panel, style="ChatPane.TFrame", padding=(14, 10))
+        composer = ttk.Frame(panel, style="ChatPane.TFrame", padding=(14, 12))
         self.composer = composer
         composer.grid(row=2, column=0, sticky=EW)
         composer.columnconfigure(0, weight=1)
@@ -117,13 +118,17 @@ class AILayoutMixin:
         self.suggestions.grid(
             row=0, column=0, columnspan=2, sticky=EW, pady=(0, 7)
         )
+        entry_shell = ttk.Frame(composer, style="ChatComposer.TFrame", padding=(14, 10))
+        entry_shell.grid(row=1, column=0, columnspan=2, sticky=EW)
+        entry_shell.columnconfigure(0, weight=1)
+        self.entry_shell = entry_shell
 
         self.input_text = scrolledtext.ScrolledText(
-            composer,
+            entry_shell,
             height=3,
             width=1,
             wrap=WORD,
-            font=("Microsoft YaHei UI", 10),
+            font=FONT_BODY,
             relief="flat",
             borderwidth=0,
             padx=10,
@@ -134,27 +139,30 @@ class AILayoutMixin:
             selectbackground=COLORS["primary_soft"],
             selectforeground=COLORS["text"],
         )
-        self.input_text.grid(row=1, column=0, sticky=EW, padx=(0, 8))
-        self.input_text.configure(background=COLORS["surface_muted"])
+        self.input_text.grid(row=0, column=0, columnspan=2, sticky=EW)
+        self.input_text.configure(background=COLORS["surface_muted"], relief="flat",
+                                  borderwidth=0, highlightthickness=0)
         self.input_text.bind("<Control-Return>", self.on_ctrl_enter)
         self.send_btn = ttk.Button(
-            composer,
+            entry_shell,
             text="发送",
             bootstyle="primary",
             command=self.send,
         )
         self.send_btn.grid(row=1, column=1, sticky=SE)
         self.stop_btn = ttk.Button(
-            composer,
+            entry_shell,
             text="停止生成",
             bootstyle="danger-outline",
             command=self.stop_generation,
         )
         self.stop_btn.grid(row=1, column=1, sticky=SE)
         self.stop_btn.grid_remove()
+        ttk.Label(entry_shell, text="输入经营问题，支持连续追问", style="ChatComposer.TLabel").grid(
+            row=1, column=0, sticky=W, padx=(6, 8), pady=(7, 0))
         ttk.Label(
             composer,
-            text="Ctrl + Enter 发送 · 可连续追问 · 只读查账，不修改业务数据",
+            text="Ctrl + Enter 发送 · 数字来自正式台账 · 只读查询",
             style="CardText.TLabel",
         ).grid(row=2, column=0, columnspan=2, sticky=W, pady=(6, 0))
 

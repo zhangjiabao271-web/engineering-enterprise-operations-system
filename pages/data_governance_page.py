@@ -164,10 +164,14 @@ class DataGovernancePage:
         FilterBar(
             tab,
             ttk.Label(
-                tab, text="进行中项目的客户、地点、合同与结算完整度",
+                tab, text="合同关联 ≠ 附件上传",
                 style="Toolbar.TLabel",
             ),
             actions=[
+                ttk.Button(
+                    tab, text="关联合同 / 查看附件", bootstyle="primary-outline",
+                    command=self.go_to_project_contract,
+                ),
                 ttk.Button(
                     tab, text="确认客户", bootstyle="primary-outline",
                     command=self.confirm_customer,
@@ -186,7 +190,8 @@ class DataGovernancePage:
                 ("customer", "客户", 150, W),
                 ("mode", "业务模式", 105, CENTER),
                 ("site", "施工地点", 90, CENTER),
-                ("contract", "合同分配", 90, CENTER),
+                ("contract", "合同关联", 90, CENTER),
+                ("attachment", "合同附件", 100, CENTER),
                 ("settlement", "收入确认", 80, CENTER),
                 ("action", "建议动作", 220, W),
             ),
@@ -301,12 +306,22 @@ class DataGovernancePage:
 
         def mapper(row):
             actions = []
+            if row["business_mode"] == "cash":
+                attachment_text = "不适用"
+            elif not row["contract_count"]:
+                attachment_text = "待关联合同"
+            elif row["contract_attachment_count"]:
+                attachment_text = f"已上传 {row['contract_attachment_count']} 份"
+            else:
+                attachment_text = "未上传"
             if not row["customer_partner_id"]:
                 actions.append("确认客户")
             if not row["site_count"]:
                 actions.append("建立地点")
             if row["business_mode"] == "contract" and not row["contract_count"]:
-                actions.append("分配合同")
+                actions.append("关联合同（非上传附件）")
+            elif row["business_mode"] == "contract" and not row["contract_attachment_count"]:
+                actions.append("补合同附件")
             if not row["settlement_count"]:
                 actions.append(
                     "登记完工金额" if row["business_mode"] == "cash" else "登记结算"
@@ -320,11 +335,17 @@ class DataGovernancePage:
                     else f"{row['contract_count']} 份" if row["contract_count"]
                     else "缺失"
                 ),
+                attachment_text,
                 f"{row['settlement_count']} 笔" if row["settlement_count"] else "缺失",
                 "、".join(actions),
             ), ("gap",)
 
         self.project_table.refresh(rows, mapper)
+
+    def go_to_project_contract(self):
+        ids = self._selected_ids(self.project_table, "请先选择项目。")
+        if ids and self.navigate:
+            self.navigate("contract", project_id=ids[0])
 
     def load_gaps(self):
         rows = data_governance_service.list_fulfillment_gaps()

@@ -6,6 +6,7 @@ import json
 
 from db.connection import db_read, db_transaction
 from services.expense_categories import CATEGORIES, NON_COST
+from services._constraint_errors import translate_constraints
 
 
 COST_CATEGORIES = [
@@ -398,6 +399,11 @@ def create_cost(data):
         return cursor.lastrowid
 
 
+@translate_constraints(
+    duplicate='成本编号已存在，请核对原记录',
+    related='成本关联记录已变化，请刷新核对',
+    invalid='成本内容不符合记录规则，请核对日期、金额和类别',
+)
 def update_cost_details(cost_id, data):
     cost_id = int(cost_id)
     category = (data.get("category") or "").strip()
@@ -563,6 +569,11 @@ def allocate_cost(cost_id, method, project_ids=None, allocations=None):
         return plan
 
 
+@translate_constraints(
+    duplicate='成本更正记录已存在，请刷新核对',
+    related='成本关联记录已变化，请刷新核对',
+    invalid='成本当前状态不允许作废，请核对相关业务',
+)
 def void_costs(cost_ids):
     _void("cost_entries", cost_ids)
 

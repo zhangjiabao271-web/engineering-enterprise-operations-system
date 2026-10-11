@@ -10,7 +10,6 @@ from pages import (
     CostLedgerPage,
     CustomerPage,
     DataGovernancePage,
-    FundsPage,
     ImportExportPage,
     OperationsDashboardPage,
     ProductPage,
@@ -63,7 +62,6 @@ class SupplierManagerApp:
             "workspace": self.show_workspace_page,
             "contract": self.show_contract_page,
             "finance": self.show_finance_page,
-            "funds": self.show_funds_page,
             "cost": self.show_cost_page,
             "product": self.show_product_page,
             "compare": self.show_compare_page,
@@ -89,7 +87,6 @@ class SupplierManagerApp:
             ("合同资金", [
                 ("contract", "合同与结算"),
                 ("finance", "开票与回款"),
-                ("funds", "资金预算"),
                 ("cost", "成本"),
             ]),
             ("项目履约", [
@@ -268,12 +265,6 @@ class SupplierManagerApp:
             ("refresh",), project_id=project_id,
         )
 
-    def show_funds_page(self):
-        self.clear_content()
-        self.current_page = "funds"
-        self.set_active_nav("funds")
-        FundsPage(self.content_frame, self.navigate_to)
-
     def show_cost_page(self):
         self.clear_content()
         self.current_page = "cost"
@@ -321,13 +312,20 @@ class SupplierManagerApp:
         AIAssistantPage(self.content_frame, self.navigate_to)
 
 def main():
-    root = ttk.Window(themename="flatly")
-    app = SupplierManagerApp(root)
-    stop_backup = start_backup_worker()
     try:
-        root.mainloop()
-    finally:
-        stop_backup.set()
+        from db.application_lock import ledger_writer
+        from db.connection import DB_PATH
+        with ledger_writer(DB_PATH):
+            root = ttk.Window(themename="flatly")
+            app = SupplierManagerApp(root)
+            stop_backup = start_backup_worker()
+            try:
+                root.mainloop()
+            finally:
+                stop_backup.set()
+    except ValueError as error:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, str(error), '工程企业经营系统', 0x10)
 
 
 if __name__ == "__main__":

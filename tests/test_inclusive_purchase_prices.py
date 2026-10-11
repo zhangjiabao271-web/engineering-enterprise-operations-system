@@ -6,17 +6,6 @@ from contextlib import closing
 
 from db import connection
 from db.backup import backup_database
-
-if not connection.DB_PATH.exists():
-    # 开源环境无生产库：构建空库（基础表 + 全量迁移）作为测试基准
-    import db.migration_runner as _runner_module
-
-    _base_dir = tempfile.TemporaryDirectory(prefix="oss_base_")
-    connection.DB_PATH = Path(_base_dir.name) / "supplier_data.db"
-    _runner_module.DB_PATH = connection.DB_PATH
-    from db.schema import init_db as _init_db
-
-    _init_db()
 from db.migration_runner import run_migrations
 from services import procurement_service as purchase, master_data_service as master, project_service
 

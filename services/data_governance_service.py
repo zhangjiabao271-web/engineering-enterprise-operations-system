@@ -38,6 +38,7 @@ def get_governance_summary():
                        ) THEN 1 ELSE 0 END) AS missing_site_count,
                    SUM(CASE WHEN NOT EXISTS (
                            SELECT 1 FROM contract_project_allocations a
+                           JOIN contracts c ON c.id=a.contract_id AND c.status<>'void'
                            WHERE a.project_id=projects.id AND a.status='active'
                        ) AND projects.business_mode='contract'
                        THEN 1 ELSE 0 END) AS missing_contract_count,
@@ -250,7 +251,13 @@ def list_project_completeness(active_only=True):
                        (SELECT COUNT(*) FROM project_sites ps
                         WHERE ps.project_id=p.id AND ps.is_active=1) AS site_count,
                        (SELECT COUNT(*) FROM contract_project_allocations a
+                        JOIN contracts c ON c.id=a.contract_id AND c.status<>'void'
                         WHERE a.project_id=p.id AND a.status='active') AS contract_count,
+                       (SELECT COUNT(DISTINCT ba.id)
+                        FROM contract_project_allocations a
+                        JOIN contracts c ON c.id=a.contract_id AND c.status<>'void'
+                        JOIN business_attachments ba ON ba.contract_id=c.id AND ba.status='active'
+                        WHERE a.project_id=p.id AND a.status='active') AS contract_attachment_count,
                        (SELECT COUNT(*) FROM settlements s
                         WHERE s.project_id=p.id AND s.status='active') AS settlement_count
                 FROM projects p

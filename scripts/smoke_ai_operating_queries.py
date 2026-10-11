@@ -20,7 +20,7 @@ def main():
 
     ai_engine.make_ai_client = no_remote_model
     cases = (
-        ("青岭目前确认了多少收入、开了多少票、回了多少？", "project_finance"),
+        ("示例化工目前确认了多少收入、开了多少票、回了多少？", "project_finance"),
         ("哪些发票还有余额？", "invoice_balance"),
         ("哪些回款还在等后续开票？", "receipt_matching"),
         ("今年哪个客户业务最多？", "customer_business"),

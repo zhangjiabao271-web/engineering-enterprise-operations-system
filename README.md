@@ -3,13 +3,13 @@
 [![Tests](https://github.com/zhangjiabao271-web/engineering-enterprise-operations-system/actions/workflows/tests.yml/badge.svg)](https://github.com/zhangjiabao271-web/engineering-enterprise-operations-system/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-986A3E.svg)](LICENSE)
 
-面向小微工程企业的单机桌面经营管理系统（Tkinter + ttkbootstrap + SQLite）。
+面向小微工程企业的本机经营工作台：网页界面 + Python 业务服务 + SQLite，可像桌面软件一样独立窗口打开，也可在浏览器使用。旧 Tkinter/ttkbootstrap 界面保留兼容入口。
 
 **产品北极星：项目经营可核算率** —— 让每一个独立项目都能回答"赚没赚钱、钱有没有回来、结论是否可信"。
 
 ## 主要功能
 
-- **经营驾驶舱**：以项目经营可核算率为北极星指标，分开展示已确认项目毛利、应收未收和未归集成本，逐项目展示经营阶段、结算、成本、毛利、现金和数据缺口
+- **经营驾驶舱**：8类可点击指标，展示确认收入、项目回款、应收、开票、成本、在营可核算毛利及待办；近6个月走势、成本结构和客户欠款分布；明细可搜索、分页和返回
 - **项目成本明细**：从项目经营核算直接查看材料、人工和其他费用明细；原项目工作空间保留兼容入口，不再重复占用主导航
 - **合同、结算、开票与回款**：支持年度框架合同、单项目合同和补充协议；分配、结算、开票、回款全程带超额护栏
 - **成本台账**：统一查看采购、人工和手工其他成本，待归集成本可后续归入项目
@@ -20,13 +20,16 @@
 - **施工记录与验收**：现场照片附件、验收状态流转、按月份/厂区/状态检索
 - **项目经营核算**：项目独立核算，自动归集采购与人工成本，分别计算确认口径毛利、应收未收和经营现金净额
 - **AI 经营助手**：结合本地事实查询、受控查询规划和计算验证，支持 DeepSeek 只读经营分析，不修改任何业务记录
+- **业务附件与资料理解**：图片及PDF本机预览，PDF连续滚动阅读；可在明确模型授权后理解合同付款条件与资料证据，人工确认后才能形成计划
 - **数据治理中心**：待归集采购 / 工天、待确认客商等数据缺口的集中处理入口
+
+原资金预算跑道功能已停止使用；资金账户、真实收支、待收待付和独立历史旧账仍保留，不删除历史记录。
 
 详细产品与架构说明见 [PRODUCT_PRD_V4.md](PRODUCT_PRD_V4.md)、[ARCHITECTURE_V4.md](ARCHITECTURE_V4.md) 和 [DATABASE_ARCHITECTURE.md](DATABASE_ARCHITECTURE.md)。
 
 ## 快速开始
 
-环境要求：Windows，Python 3.10+
+环境要求：Windows，Python 3.10+；原生桌面窗口另需 Microsoft Edge WebView2。
 
 ```bash
 # 1. 创建虚拟环境
@@ -35,11 +38,26 @@ python -m venv .venv
 # 2. 安装依赖
 .venv\Scripts\python -m pip install -r requirements.txt
 
-# 3. 启动
-.venv\Scripts\python main.py
+# 3. 先体验隔离合成演示（不需要正式数据库）
+run_web_demo.bat
 ```
 
-也可以直接双击 `run.bat` 启动。脚本会检查虚拟环境，并只在虚拟环境自带 Tcl/Tk 时设置对应路径。
+演示每次创建新的合成账本；不会读取你的原有业务资料。原生桌面演示可安装可选依赖后运行：
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements-desktop.txt
+.venv\Scripts\python web_workbench/desktop.py --demo qa/my-first-demo
+```
+
+首次正式使用、目录中不存在 `supplier_data.db` 时，可明确创建空账本：
+
+```powershell
+.venv\Scripts\python -c "from db.schema import init_db; init_db()"
+```
+
+之后双击 `run_workbench.vbs` 打开可录入桌面工作台，或用 `run_web.bat` 打开只读浏览器入口。已有旧账本先备份、在隔离副本核对迁移，再切换；新版入口不会自动升级已有账本。详细说明见 [本机网页桌面版](docs/desktop-workbench.md)。
+
+旧版可通过 `run.bat` 或 `.venv\Scripts\python main.py` 打开。脚本只在虚拟环境自带 Tcl/Tk 时设置对应路径。
 
 如果系统提示缺少 Tkinter/Tcl，请从 <https://www.python.org/downloads/windows/> 安装官方 Windows Python，并确保安装时包含 Tcl/Tk 支持。
 
@@ -64,11 +82,15 @@ python -m venv .venv
 
 pytest 自动从空库建立独立临时基准，数据库和附件均隔离；依赖本地历史业务数据的旧用例会明确跳过，不将真实数据作为公开测试夹具。GUI 测试需要单独启用并准备可用的 Tcl/Tk 桌面环境。
 
+前端无需打包；安装Node.js后可运行 `node scripts/test_cockpit_detail.mjs`，其他无数据库交互回归见 CI。CI覆盖Windows/Python 3.10与3.12以及静态脚本语法和前端专项；跳过的GUI或历史数据用例不计为实际验收通过。
+
 ## 使用边界
 
 - 安装后预置的两个经营主体是匿名示例，使用前请核对并修改，不自动推断历史单据归属。
 - 进项票台账不等于完整多主体账套，也不代替会计确认或税务申报；进项税不会自动改写原有成本和利润口径。
 - 开票、回款、收入确认、成本和现金仍是独立业务事实，不能互相替代。
+- 所有入口只监听本机；本版本不提供公网建站、跨设备同步或完整多用户账套。
+- 外部模型默认未授权，配置密钥不代表自动授权发送资料；资料理解及回款计划仍须分别人工核对。
 
 ## 开源与安全
 
@@ -82,7 +104,8 @@ pytest 自动从空库建立独立临时基准，数据库和附件均隔离；�
 ## 目录结构
 
 ```
-main.py            # 应用入口与导航
+web_workbench/     # 当前网页与原生桌面窗口入口
+main.py            # 旧 Tkinter 应用入口与导航
 ai_engine.py       # AI 经营助手引擎
 ai_client.py       # DeepSeek API 客户端
 db/                # 基础建表、连接管理与编号迁移
@@ -91,6 +114,7 @@ pages/             # 页面层
 ui/                # 通用 UI 组件
 tests/             # pytest 测试套件
 scripts/           # 冒烟与审计脚本
+docs/              # 安装、使用与安全边界
 design-system/     # 设计系统文档
 ```
 

@@ -66,6 +66,19 @@ def _assign(conn, kind, record_id, entity_id, reason):
     old = entity_for(conn, kind, record_id)
     if old == entity_id:
         return
+    sources = {'receipts': 'receipt', 'purchase_orders': 'purchase', 'cost_entries': 'cost'}
+    if kind in sources:
+        conflict = conn.execute('''SELECT 1 FROM fund_transactions t
+            JOIN record_entities e ON e.record_type='fund_transactions' AND e.record_id=t.id
+            WHERE t.source_kind=? AND t.source_id=? AND t.status='active' AND e.entity_id<>?''',
+            (sources[kind], record_id, entity_id)).fetchone()
+        if conflict:
+            raise ValueError('关联的有效资金流水已确认其他经营主体，请先核对两边归属；原记录未改动')
+    elif kind == 'fund_transactions' and record['status'] == 'active':
+        source_table = next((table for table, source in sources.items() if source == record['source_kind']), None)
+        source_entity = entity_for(conn, source_table, record['source_id']) if source_table else None
+        if source_entity is not None and source_entity != entity_id:
+            raise ValueError('关联的业务单据已确认其他经营主体，请先核对两边归属；原记录未改动')
     if kind in ('purchase_orders', 'cost_entries'):
         column = 'purchase_order_id' if kind == 'purchase_orders' else 'cost_entry_id'
         if conn.execute(f'''SELECT 1 FROM input_invoice_links l JOIN input_invoices i ON i.id=l.invoice_id

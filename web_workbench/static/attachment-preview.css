@@ -1,0 +1,27 @@
+.attachment-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; }
+#attachment-preview { width: min(1180px, calc(100vw - 32px)); height: min(900px, calc(100dvh - 32px)); max-width: none; max-height: none; padding: 0; overflow: hidden; }
+#attachment-preview[open] { display: flex; flex-direction: column; }
+#attachment-preview .dialog-head { flex: none; padding: 18px 22px; gap: 16px; }
+#attachment-preview-title { overflow-wrap: anywhere; font-size: 18px; line-height: 1.4; }
+.attachment-preview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 22px; border-bottom: 1px solid var(--line); }
+#attachment-image-tools, #attachment-page-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#attachment-image-tools[hidden], #attachment-page-tools[hidden] { display: none; }
+#attachment-zoom-label { min-width: 72px; text-align: center; color: var(--muted); }
+#attachment-preview-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; background: #f5f5f7; padding: 16px; }
+.attachment-pdf-document { display: flex; flex-direction: column; gap: 20px; width: min(100%, 960px); margin: 0 auto; }
+.attachment-pdf-page { flex: none; margin: 0; }
+.attachment-pdf-page figcaption { padding: 0 0 6px; color: var(--muted); font-size: 12px; }
+.attachment-pdf-sheet { position: relative; background: #fff; box-shadow: 0 1px 6px #00000014; }
+.attachment-pdf-sheet img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
+.attachment-pdf-sheet img[hidden] { display: none; }
+.attachment-pdf-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; color: var(--muted); text-align: center; overflow-wrap: anywhere; }
+.attachment-pdf-placeholder[hidden] { display: none; }
+.attachment-preview-image { display: block; margin: auto; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
+.attachment-preview-image.is-zoomed { max-width: none; max-height: none; }
+#attachment-preview .dialog-foot { flex: none; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px 22px; }
+#attachment-preview-status { font-size: 12px; color: var(--muted); }
+@media (max-width: 600px) {
+  #attachment-preview { width: calc(100vw - 16px); height: calc(100dvh - 16px); }
+  #attachment-preview .dialog-head, .attachment-preview-toolbar, #attachment-preview .dialog-foot { padding: 12px; }
+  #attachment-preview-body { padding: 6px; }
+}

@@ -56,6 +56,10 @@ class ProjectManagementPage:
                     self.parent, text="关闭项目", bootstyle="secondary-outline",
                     command=self.close_selected_projects,
                 ),
+                ttk.Button(
+                    self.parent, text="资料现金流分析", bootstyle="primary-outline",
+                    command=self.open_document_cashflow,
+                ),
             ],
         )
 
@@ -173,6 +177,14 @@ class ProjectManagementPage:
             "<Double-1>", lambda _event: self.edit_selected_project()
         )
         return table
+
+    def open_document_cashflow(self):
+        selected = self._current_project_tree().tree.selection()
+        if len(selected) != 1:
+            messagebox.showwarning("资料分析", "请选择一个项目")
+            return
+        from pages.document_cashflow_dialog import open_document_cashflow
+        return open_document_cashflow(self.parent, project_id=int(selected[0]))
 
     def _current_project_group(self):
         index = self.project_notebook.index(self.project_notebook.select())

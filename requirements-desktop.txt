@@ -1,0 +1,2 @@
+# Optional native window for the existing local web workbench.
+pywebview==6.2.1

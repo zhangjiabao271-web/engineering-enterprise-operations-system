@@ -174,16 +174,16 @@ class FundsManagementTests(unittest.TestCase):
         purchase = self.purchase()
         self.opening('purchase',purchase)
         payment = self.record('purchase','100',source_id=purchase)
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaisesRegex(ValueError, '资金流水'):
             procurement_service.void_purchase_orders([purchase])
         cost = self.cost()
         self.opening('cost',cost)
         self.record('cost','100',source_id=cost)
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaisesRegex(ValueError, '资金流水'):
             cost_service.void_costs([cost])
         receipt = self.receipt()
         self.record('receipt','100',source_id=receipt)
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaisesRegex(ValueError, '资金流水'):
             finance_service.void_receipts([receipt])
         with closing(connection.get_connection()) as conn:
             with self.assertRaises(sqlite3.IntegrityError):
@@ -279,7 +279,7 @@ class FundsManagementTests(unittest.TestCase):
         result = retrieve_operating_query('现在账户余额多少')
         self.assertEqual(result['intent'],'funds_overview')
         self.assertIn('10,200.00',result['answer'])
-        self.assertEqual(result['sources'][0]['page_key'],'funds')
+        self.assertEqual(result['sources'][0]['page_key'],'')
 
     def test_concurrent_payments_cannot_overpay_source(self):
         cost = self.cost()

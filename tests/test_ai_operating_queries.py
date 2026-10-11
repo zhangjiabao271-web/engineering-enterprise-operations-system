@@ -18,7 +18,7 @@ from services import (
 class OperatingQueryTests(unittest.TestCase):
     project = {
         "id": 7,
-        "name": "蓝湾轨道基础",
+        "name": "城北轨道基础",
         "project_code": "P-TEST-7",
         "status": "进行中",
     }
@@ -34,7 +34,7 @@ class OperatingQueryTests(unittest.TestCase):
             "summary": {},
             "projects": [{
                 "project_id": 7,
-                "project_name": "蓝湾轨道基础",
+                "project_name": "城北轨道基础",
                 "settlement_minor": 7_500_000,
                 "invoice_minor": 5_900_000,
                 "receipt_minor": 4_000_000,
@@ -61,7 +61,7 @@ class OperatingQueryTests(unittest.TestCase):
             ),
         ):
             result = ai_operating_query_service.retrieve_operating_query(
-                "蓝湾轨道基础确认了多少收入、开了多少票、回了多少？"
+                "城北轨道基础确认了多少收入、开了多少票、回了多少？"
             )
         self.assertEqual(result["intent"], "project_finance")
         self.assertIn("¥75,000.00", result["answer"])
@@ -110,14 +110,14 @@ class OperatingQueryTests(unittest.TestCase):
     def test_procurement_question_is_not_intercepted(self):
         with self._project_patch():
             result = ai_operating_query_service.retrieve_operating_query(
-                "蓝湾轨道基础今年买了多少螺栓？"
+                "城北轨道基础今年买了多少螺栓？"
             )
         self.assertEqual(result["status"], "not_applicable")
 
     def test_collection_action_plan_is_local_and_traceable(self):
         row = {
             "project_id": 7,
-            "project_name": "蓝湾轨道基础",
+            "project_name": "城北轨道基础",
             "customer_name": "测试客户",
             "receivable_minor": 700_000,
             "aging_bucket": "31—60天",
@@ -139,14 +139,14 @@ class OperatingQueryTests(unittest.TestCase):
                 "今天该催谁？"
             )
         self.assertEqual(result["intent"], "collection_actions")
-        self.assertIn("蓝湾轨道基础", result["answer"])
+        self.assertIn("城北轨道基础", result["answer"])
         self.assertIn("¥7,000.00", result["answer"])
         self.assertEqual(result["sources"][0]["page_key"], "finance")
 
     def test_promised_overdue_query_does_not_mix_other_followups(self):
         row = {
             "project_id": 7,
-            "project_name": "蓝湾轨道基础",
+            "project_name": "城北轨道基础",
             "customer_name": "测试客户",
             "receivable_minor": 700_000,
             "aging_bucket": "31—60天",
@@ -172,14 +172,14 @@ class OperatingQueryTests(unittest.TestCase):
 
     def test_business_action_plan_combines_collection_and_governance(self):
         collection = {
-            "project_name": "蓝湾轨道基础",
+            "project_name": "城北轨道基础",
             "receivable_minor": 700_000,
             "attention_status": "今日跟进",
             "next_action": "电话确认付款",
         }
         governance = {
             "issue_type": "待验收施工",
-            "project_name": "安和改造",
+            "project_name": "示例礼堂改造",
             "subject": "现场验收",
             "action": "确认验收结果",
         }

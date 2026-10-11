@@ -1,11 +1,25 @@
 import os
 import sqlite3
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("SUPPLY_CHAIN_DB_PATH", PROJECT_ROOT / "supplier_data.db"))
+_READ_SNAPSHOT = ContextVar('business_read_snapshot', default=None)
+
+
+@contextmanager
+def use_read_snapshot(conn):
+    """Reuse one caller-owned, read-only snapshot across nested business services."""
+    if not conn.in_transaction or conn.execute('PRAGMA query_only').fetchone()[0] != 1:
+        raise ValueError('共享查询必须使用已开启事务的只读快照')
+    token = _READ_SNAPSHOT.set(conn)
+    try:
+        yield
+    finally:
+        _READ_SNAPSHOT.reset(token)
 
 
 def get_connection(db_path=None):
@@ -14,6 +28,8 @@ def get_connection(db_path=None):
     Connections are intentionally not shared across threads. Callers own and close
     the returned connection, which matches the existing repository functions.
     """
+    if _READ_SNAPSHOT.get() is not None:
+        raise RuntimeError('只读查询中不能打开写连接')
     path = Path(db_path) if db_path else DB_PATH
     conn = sqlite3.connect(path, timeout=5)
     conn.row_factory = sqlite3.Row
@@ -47,6 +63,12 @@ def db_transaction(db_path=None, *, immediate=False):
 @contextmanager
 def db_read(db_path=None):
     """OS-level read-only connection and a consistent snapshot across SELECTs."""
+    shared = _READ_SNAPSHOT.get()
+    if shared is not None:
+        if db_path is not None:
+            raise ValueError('共享只读查询不能切换数据库')
+        yield shared
+        return
     path = Path(db_path) if db_path else DB_PATH
     conn = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)
     conn.row_factory = sqlite3.Row

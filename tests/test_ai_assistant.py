@@ -44,14 +44,14 @@ class AIConversationServiceTests(unittest.TestCase):
         ai_conversation_service.add_message(
             conversation["id"],
             "user",
-            "锦帆那里今年买了多少东西？",
+            "演示紧固件商店那里今年买了多少东西？",
             db_path=self.db_path,
         )
         ai_conversation_service.update_context(
             conversation["id"],
             {
                 "time": {"code": "current_year", "label": "2026年"},
-                "supplier_name": "锦帆钢结构预埋螺丝批发部",
+                "supplier_name": "演示紧固件商店钢结构预埋螺丝批发部",
             },
             db_path=self.db_path,
         )
@@ -65,9 +65,9 @@ class AIConversationServiceTests(unittest.TestCase):
         self.assertEqual(reloaded["project_name"], "澄湖药业")
         self.assertEqual(
             reloaded["context"]["supplier_name"],
-            "锦帆钢结构预埋螺丝批发部",
+            "演示紧固件商店钢结构预埋螺丝批发部",
         )
-        self.assertEqual(messages[0]["content"], "锦帆那里今年买了多少东西？")
+        self.assertEqual(messages[0]["content"], "演示紧固件商店那里今年买了多少东西？")
 
     def test_archived_conversation_leaves_recent_list(self):
         conversation = ai_conversation_service.create_conversation(
@@ -106,8 +106,8 @@ class AIConversationContextTests(unittest.TestCase):
                 "order_no": "CG-20260301-001",
                 "purchase_date": "2026-03-01",
                 "project_name": "澄湖药业",
-                "supplier_name": "锦帆钢结构预埋螺丝批发部",
-                "merchant_name_snapshot": "锦帆钢结构预埋螺丝批发部",
+                "supplier_name": "演示紧固件商店钢结构预埋螺丝批发部",
+                "merchant_name_snapshot": "演示紧固件商店钢结构预埋螺丝批发部",
                 "material_name_snapshot": "螺帽",
                 "specification_snapshot": "M20",
                 "unit_snapshot": "个",
@@ -121,9 +121,9 @@ class AIConversationContextTests(unittest.TestCase):
                 "id": 2,
                 "order_no": "CG-20260401-001",
                 "purchase_date": "2026-04-01",
-                "project_name": "蓝湾",
-                "supplier_name": "锦帆钢结构预埋螺丝批发部",
-                "merchant_name_snapshot": "锦帆钢结构预埋螺丝批发部",
+                "project_name": "城北",
+                "supplier_name": "演示紧固件商店钢结构预埋螺丝批发部",
+                "merchant_name_snapshot": "演示紧固件商店钢结构预埋螺丝批发部",
                 "material_name_snapshot": "螺帽",
                 "specification_snapshot": "M24",
                 "unit_snapshot": "个",
@@ -138,22 +138,22 @@ class AIConversationContextTests(unittest.TestCase):
     @patch(
         "services.business_knowledge_service.procurement_service.list_purchase_orders"
     )
-    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+    @unittest.skip("Legacy production-data fixture is not published")
     def test_supplier_abbreviation_becomes_visible_confirmation(self, list_orders):
         list_orders.return_value = self.rows
-        turn = ai_engine.ask_ai_turn("锦帆那里今年买了多少东西？")
+        turn = ai_engine.ask_ai_turn("演示紧固件商店那里今年买了多少东西？")
         self.assertEqual(turn["response_type"], "confirmation")
-        self.assertEqual(turn["candidates"][0]["label"], "锦帆钢结构预埋螺丝批发部")
+        self.assertEqual(turn["candidates"][0]["label"], "演示紧固件商店钢结构预埋螺丝批发部")
         self.assertEqual(turn["context_updates"]["time"]["code"], "current_year")
 
     @patch(
         "services.business_knowledge_service.procurement_service.list_purchase_orders"
     )
-    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+    @unittest.skip("Legacy production-data fixture is not published")
     def test_followup_inherits_confirmed_supplier_and_year(self, list_orders):
         list_orders.return_value = self.rows
         context = {
-            "supplier_name": "锦帆钢结构预埋螺丝批发部",
+            "supplier_name": "演示紧固件商店钢结构预埋螺丝批发部",
             "time": {
                 "code": "current_year",
                 "label": "2026年",
@@ -164,14 +164,14 @@ class AIConversationContextTests(unittest.TestCase):
         turn = ai_engine.ask_ai_turn("那螺帽呢？", conversation_context=context)
         self.assertEqual(turn["response_type"], "answer")
         self.assertEqual(turn["answer_mode"], "local")
-        self.assertIn("锦帆钢结构预埋螺丝批发部", turn["answer"])
+        self.assertIn("演示紧固件商店钢结构预埋螺丝批发部", turn["answer"])
         self.assertIn("2400个", turn["answer"])
         self.assertEqual(turn["sources"][0]["record_count"], 2)
 
     @patch(
         "services.business_knowledge_service.procurement_service.list_purchase_orders"
     )
-    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+    @unittest.skip("Legacy production-data fixture is not published")
     def test_company_material_spend_is_aggregate_not_material_name(self, list_orders):
         list_orders.return_value = self.rows
         with patch(
@@ -196,8 +196,8 @@ class AIConversationContextTests(unittest.TestCase):
                 "id": 3,
                 "order_no": "CG-20260501-001",
                 "purchase_date": "2026-05-01",
-                "supplier_name": "砺锋钢铁",
-                "merchant_name_snapshot": "砺锋钢铁",
+                "supplier_name": "东盛钢铁",
+                "merchant_name_snapshot": "东盛钢铁",
                 "material_name_snapshot": "H型钢",
                 "line_amount_cents": 10000,
                 "material_amount_cents": 9091,
@@ -211,7 +211,7 @@ class AIConversationContextTests(unittest.TestCase):
             project_id=4,
             conversation_context={
                 "project_id": 4,
-                "supplier_name": "锦帆钢结构预埋螺丝批发部",
+                "supplier_name": "演示紧固件商店钢结构预埋螺丝批发部",
             },
         )
         self.assertIn("¥2,520.00", turn["answer"])
@@ -224,13 +224,13 @@ class AIConversationContextTests(unittest.TestCase):
         projects = [
             {
                 "id": 4,
-                "name": "青岭",
-                "project_code": "DEMO-PROJECT-0004",
+                "name": "示例化工",
+                "project_code": "LEGACY-0004",
                 "status": "进行中",
             },
             {
                 "id": 10,
-                "name": "青岭201",
+                "name": "示例化工201",
                 "project_code": "P-201",
                 "status": "已关闭",
             },
@@ -259,7 +259,7 @@ class AIConversationContextTests(unittest.TestCase):
                 side_effect=AssertionError("人工事实查询不应调用联网模型"),
             ),
         ):
-            turn = ai_engine.ask_ai_turn("青岭今年的人工成本是多少")
+            turn = ai_engine.ask_ai_turn("示例化工今年的人工成本是多少")
 
         today = date.today()
         labor_summary.assert_called_once_with(
@@ -269,7 +269,7 @@ class AIConversationContextTests(unittest.TestCase):
         )
         purchase_orders.assert_not_called()
         self.assertEqual(turn["answer_mode"], "local")
-        self.assertIn("“青岭”项目人工成本为 ¥32,600.00", turn["answer"])
+        self.assertIn("“示例化工”项目人工成本为 ¥32,600.00", turn["answer"])
         self.assertEqual(turn["context_updates"]["project_id"], 4)
         self.assertEqual(
             turn["context_updates"]["time"]["code"], "current_year"
@@ -280,15 +280,15 @@ class AIConversationContextTests(unittest.TestCase):
         projects = [
             {
                 "id": 4,
-                "name": "青岭",
-                "project_code": "DEMO-PROJECT-0004",
+                "name": "示例化工",
+                "project_code": "LEGACY-0004",
                 "status": "进行中",
             }
         ]
         project_rows = [
             {
                 **self.rows[0],
-                "project_name": "青岭",
+                "project_name": "示例化工",
                 "line_amount_cents": 150000,
                 "material_amount_cents": 136364,
                 "tax_amount_cents": 13636,
@@ -313,21 +313,21 @@ class AIConversationContextTests(unittest.TestCase):
                 side_effect=AssertionError("材料事实查询不应调用联网模型"),
             ),
         ):
-            turn = ai_engine.ask_ai_turn("青岭今年的材料成本是多少")
+            turn = ai_engine.ask_ai_turn("示例化工今年的材料成本是多少")
 
         self.assertEqual(turn["answer_mode"], "local")
-        self.assertIn("“青岭”项目采购总额", turn["answer"])
+        self.assertIn("“示例化工”项目采购总额", turn["answer"])
         self.assertEqual(turn["context_updates"]["project_id"], 4)
         self.assertEqual(turn["sources"][0]["view_type"], "procurement")
-        self.assertEqual(turn["sources"][0]["scope_label"], "青岭")
+        self.assertEqual(turn["sources"][0]["scope_label"], "示例化工")
         self.assertEqual(turn["sources"][0]["record_count"], 1)
 
     def test_explicit_company_labor_question_overrides_project_scope(self):
         projects = [
             {
                 "id": 4,
-                "name": "青岭",
-                "project_code": "DEMO-PROJECT-0004",
+                "name": "示例化工",
+                "project_code": "LEGACY-0004",
                 "status": "进行中",
             }
         ]

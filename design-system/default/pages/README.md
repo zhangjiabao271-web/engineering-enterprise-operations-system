@@ -5,7 +5,6 @@
 | 页面模块 | 页面规范 |
 | --- | --- |
 | `ai_page.py` | `ai-assistant.md` |
-| `cash_budget_page.py` | `cash-budget.md` |
 | `compare_page.py` | `quote-comparison.md` |
 | `construction_page.py` | `construction-management.md` |
 | `contract_page.py` | `contracts-settlements.md` |
@@ -13,7 +12,6 @@
 | `customer_page.py` / `supplier_page.py` | `business-partners.md` |
 | `data_governance_page.py` | `data-governance.md` |
 | `finance_page.py` | `finance-dashboard.md` |
-| `funds_page.py` | `funds-management.md` |
 | `historical_receivable_page.py` | `historical-receivables.md` |
 | `home_page.py` | `operations-dashboard.md` |
 | `import_export_page.py` | `import-export.md` |

@@ -7,6 +7,7 @@
 - Primary CTA is `新增项目`; editing and closing are visually subordinate.
 - Project creation/editing uses a centered modal with visible labels, grouped dates and inline validation.
 - Preserve list context after save by reselecting the saved project.
+- 网页长列表在可视区底部提供同步横向悬浮滚动条，无需滚到表尾；详情或跨页业务返回时恢复原筛选、分页及横向位置。
 - Closing a project and deactivating a site require confirmation and retain historical records.
 - Tables use the global DPI-scaled 38px row height and avoid adding optional columns that force horizontal overflow.
 - At 1200px width, project and site tables remain vertically stacked.
@@ -22,3 +23,15 @@
 - 零星现金工程可填写“约定总额”；留空表示允许按实际完工分次持续确认，填写后累计有效完工确认不得超过该金额。
 - 项目从正式合同工程转为零星现金工程且未手填约定总额时，优先带入原固定合同项目边界或现有收入确认合计。
 - 编辑零星现金项目时显示当前已确认金额；约定总额不得调低到有效完工确认合计以下。
+
+## 新版工作台项目台账
+
+- 主列表直接显示每个项目的已确认收入、已回款、已开票、未回款，金额取共享财务事实，不用合同金额或施工产值替代收入。
+- 项目名称、客户与状态合并为可换行的身份列；金额使用等宽数字并保持完整可见，不把计划日期放在财务主列之前。
+- 每个金额均为可聚焦按钮，零金额也可打开对应空态。收入、回款、发票与待收明细在同一个只读弹窗内切换。
+- 回款一笔只列一次，同时说明整笔到账和本项目归属金额；合计按本项目有效分配计算，排除作废回款与作废分配。
+- 明细按日期倒序列出全周期记录，显示来源编号、金额与业务依据，并提供原记录及附件入口；原记录有返回上一级明细入口。
+- 点击金额不更改顶栏项目范围、主列表筛选、分页和滚动位置；返回台账关闭弹窗即可。
+- 项目台账表头滚出视野时吸附在顶部工具栏下方，列宽和横向位置与原表严格同步；页面滚过表格末尾、切页及明细弹窗打开时退出，不覆盖其他内容。
+- 默认在建项目，历史项目与全部项目一键切换；指定顶栏项目范围时直接展示所选项目，不因其完工状态隐藏。
+- 台账导出保留财务金额和完整项目字段。界面调整不写正式账本，也不新增收入、回款或发票。

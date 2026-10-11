@@ -276,7 +276,23 @@ def configure_design_system(root):
         thickness=6,
     )
 
-    # AI operating workspace: white rows separated by structure, not chat bubbles.
+    # AI workspace: calm conversation, with evidence secondary to the answer.
+    style.configure("ChatTitle.TLabel", background=COLORS["surface"],
+                    foreground=COLORS["text"], font=("Microsoft YaHei UI", 16, "bold"))
+    style.configure("ChatBubble.TFrame", background=COLORS["surface_muted"])
+    style.configure("ChatComposer.TFrame", background=COLORS["surface_muted"])
+    style.configure("ChatComposer.TLabel", background=COLORS["surface_muted"],
+                    foreground=COLORS["text_muted"], font=("Microsoft YaHei UI", 8))
+    style.configure("ChatQuestion.TLabel", background=COLORS["surface_muted"],
+                    foreground=COLORS["text"], font=FONT_BODY)
+    style.layout("ChatAction.TButton", [("Button.padding", {"sticky": "nsew", "children": [
+        ("Button.label", {"sticky": "nsew"}),
+    ]})])
+    style.configure("ChatAction.TButton", background=COLORS["surface"],
+                    foreground=COLORS["text_muted"], font=("Microsoft YaHei UI", 9), padding=(6, 4))
+    style.map("ChatAction.TButton", foreground=[("disabled", COLORS["text_muted"]),
+                                               ("focus", COLORS["primary"]),
+                                               ("active", COLORS["primary"])])
     style.configure("ChatPane.TFrame", background=COLORS["surface"])
     style.configure("ChatThread.TFrame", background=COLORS["surface"])
     style.configure(

@@ -87,6 +87,10 @@ def _project_scope(question, project_id=None, conversation_context=None):
                 if residual in _normalized(row.get("name"))
             ]
     if len(mentioned) > 1:
+        selected_id = project_id or (conversation_context or {}).get('project_id')
+        selected = next((row for row in mentioned if selected_id and int(row['id']) == int(selected_id)), None)
+        if selected and all(row['name'] == selected['name'] for row in mentioned):
+            return selected, []
         return None, mentioned
     if mentioned:
         return mentioned[0], []
@@ -139,6 +143,10 @@ def _context_updates(project=None, modules=None, year=None):
 
 
 def _matched(intent, answer, sources, *, project=None, modules=None, year=None):
+    if project:
+        for source in sources:
+            source['project_id'] = int(project['id'])
+            source['scope_label'] += f"（项目编号{project['id']}）"
     return {
         "status": "matched",
         "intent": intent,
@@ -207,7 +215,7 @@ def _project_profit(project):
         f"总成本 {_money(summary['total_cost_minor'])}，毛利 {_money(summary['gross_profit_minor'])}，"
         f"毛利率 {_percent(summary['gross_margin_percent'])}。"
         f"已回款 {_money(summary['receipt_minor'])}，回款减已付采购标记金额 "
-        f"{_money(summary['cash_balance_minor'])}。此项未扣工资和费用，也不含期初，并非账户余额；真实资金见资金管理。"
+        f"{_money(summary['cash_balance_minor'])}。此项未扣工资和费用，也不含期初，并非账户余额；实际资金请核对银行流水或现金盘点。"
     )
     detail = {
         "project_name": project["name"],
@@ -271,6 +279,7 @@ def _invoice_balance(project=None):
         answer = f"{scope}当前没有尚未结清的有效发票，发票余额为 ¥0.00。"
     details = [
         {
+            "project_id": row.get('project_id'),
             "invoice_date": row.get("invoice_date"),
             "invoice_no": row.get("invoice_no"),
             "project_name": row.get("project_name"),
@@ -294,6 +303,7 @@ def _invoice_balance(project=None):
             ("剩余余额", _money(total)),
         ],
         columns=_detail_columns(
+            ('project_id', '项目编号', 'integer'),
             ("invoice_date", "开票日期", "text"),
             ("invoice_no", "发票号码", "text"),
             ("project_name", "项目", "text"),
@@ -324,6 +334,7 @@ def _receipt_matching(project=None):
     )
     details = [
         {
+            "project_id": row.get('project_id'),
             "receipt_date": row.get("receipt_date"),
             "receipt_no": row.get("receipt_no"),
             "project_name": row.get("project_name"),
@@ -347,6 +358,7 @@ def _receipt_matching(project=None):
             ("待抵发票", _money(total)),
         ],
         columns=_detail_columns(
+            ('project_id', '项目编号', 'integer'),
             ("receipt_date", "回款日期", "text"),
             ("receipt_no", "回款单号", "text"),
             ("project_name", "项目", "text"),
@@ -728,12 +740,12 @@ def _purchase_year_comparison():
 def _funds_overview():
     overview = funds_service.get_overview()
     if not overview['accounts']:
-        answer = '资金账尚未启用，请先在资金管理中建立真实账户和期初余额。不能用回款减采购推算实际账户余额。'
+        answer = '尚无已登记资金账户。资金预算功能已移除，不能用回款减采购推算实际账户余额；请核对银行余额或现金盘点。'
     else:
         answer = (f"已登记账户账面余额 {_money(overview['balance_minor'])}；"
                   f"本月实际到账 {_money(overview['income_minor'])}，实际付出 {_money(overview['expense_minor'])}。"
                   '内部转账不计收支；到账含老板投入和借款，不等于工程收入。余额取决于录入完整性，请与银行或现金盘点核对。')
-    source = _source('资金管理','funds','账户资金账','全部已登记账户',overview['accounts'],
+    source = _source('历史资金记录','','账户资金账','全部已登记账户',overview['accounts'],
                      columns=_detail_columns(('name','账户','text'),('opening_date','启用日','text'),
                                              ('balance_minor','账面余额','money')))
     return _matched('funds_overview',answer,[source],modules=['资金管理'])
@@ -776,10 +788,10 @@ def retrieve_operating_query(question, project_id=None, conversation_context=Non
         text, project_id=project_id, conversation_context=conversation_context
     )
     if ambiguous_projects:
-        names = "、".join(f"“{row['name']}”" for row in ambiguous_projects)
+        names = "、".join(f"“{row['name']}”（项目编号{row['id']}）" for row in ambiguous_projects)
         return _matched(
             "project_ambiguous",
-            f"我找到了多个同名或相近项目：{names}。请说一下完整项目名称。",
+            f"我找到了多个同名或相近项目：{names}。请选择项目编号或唯一的完整名称。",
             [],
             modules=[],
         )

@@ -70,7 +70,9 @@ def main():
         try:
             root.update_idletasks()
             root.update()
-            assert len(app.page_commands) >= 18
+            assert len(app.page_commands) >= 17
+            assert "funds" not in app.page_commands
+            assert "funds" not in app.nav_buttons
             for key in app.page_commands:
                 app.navigate_to(key)
                 root.update_idletasks()

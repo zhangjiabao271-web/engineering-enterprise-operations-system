@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -10,6 +12,7 @@ from db.backup import backup_database
 from db.migration_runner import run_migrations
 from services import (
     cost_service,
+    master_data_service,
     procurement_service,
     project_cost_detail_service,
     project_profit_service,
@@ -145,6 +148,90 @@ class ProjectCostDetailTests(unittest.TestCase):
     def test_unknown_project(self):
         with self.assertRaisesRegex(ValueError, "项目不存在"):
             project_cost_detail_service.get_project_cost_details(-1)
+
+    def test_original_prices_and_line_amounts_are_not_project_shares(self):
+        order_id = procurement_service.add_purchase_order({
+            "purchase_type": "零星采购", "project_ids": self.projects,
+            "merchant_name_snapshot": "测试材料店",
+            "allocation_method": "equal", "purchase_date": "2026-10-10",
+            "payment_status": "已付款", "freight_amount_cents": 7711,
+        }, [
+            {"material_name_snapshot": "彩钢瓦", "quantity": 996,
+             "unit_snapshot": "米", "price_basis": "inclusive",
+             "tax_inclusive_unit_price_cents": 189, "tax_rate_bps": 900,
+             "cost_category": "工具和设备"},
+            {"material_name_snapshot": "螺杆", "quantity": 24,
+             "unit_snapshot": "支", "price_basis": "exclusive",
+             "material_unit_price_cents": 970, "tax_rate_bps": 1000,
+             "cost_category": "工具和设备"},
+        ])
+        snapshots = procurement_service.get_purchase_order(order_id)
+        shares = []
+        for project_id in self.projects:
+            detail = project_cost_detail_service.get_project_cost_details(project_id)
+            rows = detail["purchase"]
+            self.assertEqual([row["unit_price_cents"] for row in rows[:2]], [189, 970])
+            self.assertEqual([row["price_basis"] for row in rows[:2]], ["inclusive", "exclusive"])
+            self.assertEqual([row["line_amount_minor"] for row in rows], [188244, 25608, 7711])
+            self.assertTrue(all(row["purchase_order_id"] == order_id for row in rows))
+            self.assertTrue(all(row["allocation_method"] == "equal" for row in rows))
+            self.assertTrue(all(row["amount_minor"] < row["line_amount_minor"] for row in rows))
+            self.assertEqual(rows[-1]["settlement_mode"], "freight")
+            self.assertIsNone(rows[-1]["quantity"])
+            shares.append(detail["totals"]["purchase"])
+        self.assertEqual(sum(shares), 188244 + 25608 + 7711)
+        self.assertEqual(procurement_service.get_purchase_order(order_id), snapshots)
+
+    def test_weight_and_total_prices_keep_original_precision_and_basis(self):
+        order_id = procurement_service.add_purchase_order({
+            "purchase_type": "零星采购", "project_id": self.projects[0],
+            "merchant_name_snapshot": "测试材料店",
+            "purchase_date": "2026-10-10", "payment_status": "未付款",
+        }, [
+            {"material_name_snapshot": "H型钢", "settlement_mode": "weight",
+             "net_weight": "1.257", "weight_unit": "吨", "weight_unit_price": "3568.1234",
+             "price_basis": "exclusive", "tax_rate_bps": 1300, "weigh_ticket_no": "B-001"},
+            {"material_name_snapshot": "整批钢板", "settlement_mode": "total",
+             "settlement_total_cents": 988888, "price_basis": "inclusive", "tax_rate_bps": 1300},
+        ])
+        with connection.db_read() as conn:
+            conn.execute("PRAGMA query_only=ON")
+            rows = project_cost_detail_service._purchase_rows(conn, self.projects[0])
+            self.assertEqual(conn.total_changes, 0)
+        weight, total = rows
+        self.assertEqual(weight["quantity"], "1.257")
+        self.assertEqual(weight["unit"], "吨")
+        self.assertEqual(weight["unit_price_yuan"], "3568.1234")
+        self.assertIsNone(weight["unit_price_cents"])
+        self.assertEqual(weight["weigh_ticket_no"], "B-001")
+        self.assertIsNone(total["unit_price_cents"])
+        self.assertIsNone(total["unit_price_yuan"])
+        self.assertEqual(total["settlement_mode"], "total")
+        self.assertEqual(total["line_amount_minor"], 988888)
+        self.assertEqual([row["line_amount_minor"] for row in rows],
+                         [item["line_amount_cents"] for item in procurement_service.get_purchase_order(order_id)["items"]])
+        self.assertTrue(all(row["line_amount_minor"] == row["amount_minor"] for row in rows))
+
+    def test_linked_supplier_name_is_shown_without_merchant_snapshot(self):
+        name = f"成本明细供应商-{uuid4().hex[:8]}"
+        supplier = master_data_service.create_supplier({"name": name})
+        procurement_service.add_purchase_order({
+            "purchase_type": "正式采购", "project_id": self.projects[0],
+            "supplier_id": supplier, "merchant_name_snapshot": "",
+            "purchase_date": "2026-10-10", "payment_status": "未付款",
+        }, [{"material_name_snapshot": "螺栓", "quantity": 1, "unit_price_cents": 100}])
+        detail = project_cost_detail_service.get_project_cost_details(self.projects[0])
+        self.assertEqual(detail["purchase"][0]["counterparty"], name)
+
+
+class ProjectPurchaseRenderingTests(unittest.TestCase):
+    def test_purchasing_figures_render_without_database_or_network(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node runtime unavailable")
+        script = Path(__file__).resolve().parents[1] / "scripts/test_project_purchase_details.mjs"
+        result = subprocess.run([node, str(script)], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 @unittest.skipUnless(

@@ -609,7 +609,7 @@ class ReceivablePage(FinanceCollectionMixin, FinanceInvoiceDialogMixin, FinanceR
         self.refresh()
 
     def record_fund_receipt(self):
-        from pages.funds_page import open_source_payment
+        from pages.fund_payment_dialog import open_source_payment
         receipt_id = self.selected_id(self.receipt_tree)
         if not receipt_id:
             messagebox.showwarning("提示", "请先选择回款")

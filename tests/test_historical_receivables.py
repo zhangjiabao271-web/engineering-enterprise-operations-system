@@ -4,21 +4,10 @@ from pathlib import Path
 from unittest.mock import patch
 from db import connection, migration_runner
 from db.backup import backup_database
-
-if not connection.DB_PATH.exists():
-    # 开源环境无生产库：构建空库（基础表 + 全量迁移）作为测试基准
-    import db.migration_runner as _runner_module
-
-    _base_dir = tempfile.TemporaryDirectory(prefix="oss_base_")
-    connection.DB_PATH = Path(_base_dir.name) / "supplier_data.db"
-    _runner_module.DB_PATH = connection.DB_PATH
-    from db.schema import init_db as _init_db
-
-    _init_db()
 from services import historical_receivable_service as history
 
 
-@unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+@unittest.skip("Legacy production-data fixture is not published")
 class HistoricalReceivableTests(unittest.TestCase):
     def setUp(self):
         folder=tempfile.TemporaryDirectory()

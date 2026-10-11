@@ -1,3 +1,4 @@
+import os
 import shutil
 import tempfile
 import unittest
@@ -10,23 +11,9 @@ class FinanceDashboardTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="finance_dashboard_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
-        source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
+        source_db = Path(os.environ["SUPPLY_CHAIN_DB_PATH"])
         from db.backup import backup_database
-        _oss_source_db = source_db
-        if _oss_source_db.exists():
-            backup_database(_oss_source_db, cls.test_db)
-        else:
-            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
-            import db.connection as _conn_module
-            import db.migration_runner as _runner_module
-            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
-            _conn_module.DB_PATH = cls.test_db
-            _runner_module.DB_PATH = cls.test_db
-            try:
-                from db.schema import init_db as _init_db
-                _init_db()
-            finally:
-                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
+        backup_database(source_db, cls.test_db)
 
         import db.connection as connection
         from db.migration_runner import run_migrations
@@ -1304,6 +1291,50 @@ class FinanceDashboardTests(unittest.TestCase):
         }
         self.assertEqual(costs.get(project_a, 0), 5000)
         self.assertEqual(costs.get(project_b, 0), 5000)
+
+
+    def test_ai_native_queries_reuse_financial_matching_on_requested_snapshot(self):
+        from unittest.mock import patch
+        from services.ai_query_tools import execute_plan
+        from db import connection
+
+        suffix = uuid4().hex[:8]
+        project, contract = self._create_fifo_case(suffix, f'AI余额客户-{suffix}', amount='1000')
+        self._create_fifo_invoice(suffix, project, contract, '2026-08-01', '1000')
+        self._create_fifo_receipt(suffix, project, contract, '2026-08-02', '600')
+        # Even if the default DB points elsewhere, service adapters must reuse
+        # the explicitly requested snapshot rather than open another database.
+        with patch.object(connection, 'DB_PATH', Path(self.temp_dir.name) / 'must-not-open.db'):
+            result = execute_plan({'queries': [{'dataset': 'invoice_balance', 'project_id': project}]}, db_path=self.test_db)
+        self.assertIn('¥400.00', result['answer'])
+        self.assertEqual(result['sources'][0]['details'][0]['received_minor'], 60000)
+        self.assertEqual(result['sources'][0]['details'][0]['unreceived_minor'], 40000)
+        self.assertFalse((Path(self.temp_dir.name) / 'must-not-open.db').exists())
+
+        suffix = uuid4().hex[:8]
+        project, contract = self._create_fifo_case(suffix, f'AI待抵客户-{suffix}', amount='1000')
+        self._create_fifo_invoice(suffix, project, contract, '2026-08-01', '400')
+        self._create_fifo_receipt(suffix, project, contract, '2026-08-02', '600')
+        result = execute_plan({'queries': [{'dataset': 'receipt_matching', 'project_id': project}]}, db_path=self.test_db)
+        self.assertIn('¥200.00', result['answer'])
+        self.assertEqual(result['sources'][0]['details'][0]['invoice_unmatched_minor'], 20000)
+
+    def test_all_registered_ai_operating_tools_run_in_readonly_service_snapshot(self):
+        from services.ai_query_tools import execute_plan, validate_plan
+        from services.ai_query_capabilities import TOOLS
+        from db.connection import db_read
+
+        with db_read(self.test_db) as conn:
+            project = conn.execute('SELECT id FROM projects LIMIT 1').fetchone()[0]
+        for name, spec in TOOLS.items():
+            query = {'dataset': name}
+            if spec['scope'] == 'required_project':
+                query['project_id'] = project
+            with self.subTest(tool=name):
+                result = execute_plan({'queries': [query]}, db_path=self.test_db)
+                self.assertTrue(result['answer'])
+                self.assertIsInstance(result['sources'], list)
+                validate_plan({'queries': [query]})
 
 
 if __name__ == "__main__":

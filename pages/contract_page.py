@@ -116,6 +116,10 @@ class ContractManagementPage:
                 contract_tab, text="合同附件", bootstyle="secondary-outline",
                 command=self.open_contract_attachments,
             ),
+            ttk.Button(
+                contract_tab, text="资料现金流分析", bootstyle="primary-outline",
+                command=self.open_document_cashflow,
+            ),
         )
 
         self.allocation_tree = self._table(
@@ -1048,13 +1052,23 @@ class ContractManagementPage:
         contract_service.void_settlements([settlement_id])
         self.refresh()
 
+    def open_document_cashflow(self):
+        contract_id = self.selected_id(self.contract_tree)
+        if not contract_id:
+            messagebox.showwarning("资料分析", "请先选择合同")
+            return
+        from pages.document_cashflow_dialog import open_document_cashflow
+        return open_document_cashflow(
+            self.parent, contract_id=contract_id, project_id=self.selected_project_id()
+        )
+
     def open_contract_attachments(self):
         contract_id = self.selected_id(self.contract_tree)
         if not contract_id:
             messagebox.showwarning("提示", "请先选择合同")
             return
         open_attachment_manager(
-            self.parent, "contract", contract_id, "合同"
+            self.parent, "contract", contract_id, "合同", on_change=self.refresh
         )
 
     def open_settlement_attachments(self):

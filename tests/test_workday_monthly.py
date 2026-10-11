@@ -14,12 +14,12 @@ class WorkdayMonthlyServiceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="workday_monthly_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
-        source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
+        source_db = Path(os.environ["SUPPLY_CHAIN_DB_PATH"])
         from db.backup import backup_database
         from db.migration_runner import run_migrations
         import db.connection as connection
 
-        backup_database(connection.DB_PATH, cls.test_db)
+        backup_database(source_db, cls.test_db)
         cls.original_db_path = connection.DB_PATH
         run_migrations(cls.test_db)
         connection.DB_PATH = cls.test_db

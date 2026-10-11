@@ -12,6 +12,7 @@ from pathlib import Path
 from db import connection
 from db.business_facts import PROJECT_FINANCE_SQL, COST_FACTS_SQL
 from services.expense_categories import NON_COST
+from services import ai_query_capabilities
 
 
 class QueryValidationError(ValueError):
@@ -30,7 +31,7 @@ def _dataset(label, page, sql, dimensions, metrics, note, dated=True):
 
 DATASETS = {
     "labor": _dataset("人工工天", "labor", """
-        SELECT x.id, x.work_date AS date, p.name AS project,
+        SELECT x.id, x.work_date AS date, p.name AS project, x.project_id,
           w.name || '（编号' || w.id || '）' AS worker,
           x.construction_site AS site, x.work_days AS days,
           CASE WHEN x.is_overtime=1 THEN x.work_days ELSE 0 END AS overtime_days,
@@ -50,28 +51,67 @@ DATASETS = {
         "一张采购单只计一次，含整单运费；不是项目分摊成本。按项目采购成本请查costs。"),
     "income": _dataset("确认收入", "finance", f"""
         SELECT x.id, x.settlement_date AS date, x.settlement_no AS number,
-          p.name AS project, bp.legal_name AS customer, x.amount_minor
+          p.name AS project, x.project_id, bp.legal_name AS customer, x.amount_minor
         FROM settlements x {PROJECT_JOIN} {CUSTOMER_JOIN} WHERE x.status='active'
     """, ["project", "customer"], ["amount_minor"], "按收入确认日期统计，不用合同金额、开票或回款代替收入。"),
     "invoices": _dataset("销项发票", "finance", f"""
         SELECT x.id, x.invoice_date AS date, x.invoice_no AS number,
-          p.name AS project, bp.legal_name AS customer, x.amount_minor, x.tax_amount_minor
+          p.name AS project, x.project_id, bp.legal_name AS customer, x.amount_minor, x.tax_amount_minor
         FROM sales_invoices x {PROJECT_JOIN} {CUSTOMER_JOIN} WHERE x.status='active'
     """, ["project", "customer"], ["amount_minor", "tax_amount_minor"],
         "金额为价税合计；未知税额保留未知，只汇总已知税额。此工具不提供发票抵扣余额。"),
     "receipts": _dataset("回款分配", "finance", f"""
         SELECT x.id, r.receipt_date AS date, r.receipt_no AS number,
-          p.name AS project, bp.legal_name AS customer, x.allocated_amount_minor AS amount_minor
+          p.name AS project, x.project_id, bp.legal_name AS customer, x.allocated_amount_minor AS amount_minor
         FROM receipt_allocations x JOIN receipts r ON r.id=x.receipt_id
         {PROJECT_JOIN} {CUSTOMER_JOIN}
         WHERE r.status='active' AND x.status='active'
     """, ["project", "customer"], ["amount_minor"],
-        "按实际回款日期与有效项目分配统计；记录数是分配条数，包含预收款，不等于确认收入。"),
+        "仅统计现有项目的有效回款分配，不含独立历史旧账；记录数是分配条数，包含预收款，不等于确认收入或全公司实际到账。"),
+    "collections": _dataset("实际回款（含历史旧账）", "finance", """
+        SELECT 'receipt-'||r.id AS id, r.receipt_date AS date, r.receipt_no AS number,
+          bp.legal_name AS customer, '现有项目回款' AS origin, r.amount_minor
+        FROM receipts r
+        LEFT JOIN (
+          SELECT x.receipt_id,
+            CASE WHEN COUNT(DISTINCT COALESCE(p.customer_partner_id,c.customer_partner_id))=1
+              AND SUM(CASE WHEN COALESCE(p.customer_partner_id,c.customer_partner_id) IS NULL
+                           THEN 1 ELSE 0 END)=0
+              THEN MIN(COALESCE(p.customer_partner_id,c.customer_partner_id)) END AS customer_id
+          FROM receipt_allocations x
+          LEFT JOIN projects p ON p.id=x.project_id
+          LEFT JOIN contracts c ON c.id=x.contract_id
+          WHERE x.status='active' GROUP BY x.receipt_id
+        ) a ON a.receipt_id=r.id
+        LEFT JOIN business_partners bp ON bp.id=a.customer_id
+        WHERE r.status='active'
+        UNION ALL
+        SELECT 'historical-'||r.id, r.receipt_date, '历史回款-'||r.id,
+          bp.legal_name, '历史旧账回款', r.amount_minor
+        FROM historical_receipts r
+        JOIN historical_receivable_projects hp ON hp.id=r.project_id
+        LEFT JOIN business_partners bp ON bp.id=hp.customer_id
+        WHERE r.status='active'
+    """, ["customer", "origin"], ["amount_minor"],
+        "按实际回款日期统计现有回款及独立历史旧账，每笔到账只计一次，含未分配款与预收款；"
+        "多客户或归属不完整的回款单列待归属，不按付款人猜客户。不是确认收入或账户余额；"
+        "不支持现有项目筛选，项目回款请查receipts，历史旧账明细请查historical_receipts。"),
+    "historical_receipts": _dataset("历史旧账回款", "finance", """
+        SELECT r.id, r.receipt_date AS date, '历史回款-'||r.id AS number,
+          hp.id AS historical_project_id, hp.name AS historical_project,
+          bp.legal_name AS customer, r.amount_minor
+        FROM historical_receipts r
+        JOIN historical_receivable_projects hp ON hp.id=r.project_id
+        LEFT JOIN business_partners bp ON bp.id=hp.customer_id
+        WHERE r.status='active'
+    """, ["historical_project", "customer"], ["amount_minor"],
+        "仅统计独立历史旧账的实际回款，不计入今年工程确认收入、开票或利润。"
+        "historical_project_id是历史旧账项目编号，与现有项目project_id不是同一个编号空间。"),
     "costs": _dataset("项目成本台账", "cost", COST_FACTS_SQL,
         ["project", "category", "counterparty"], ["amount_minor"],
         "采购、人工与其他费用按项目分配归集，含待归集项；按业务日期，不代表实际付款或利润。含生活/还本等登记项，判断经营成本须明确分类。"),
     "receivables": _dataset("当前项目应收", "finance", f"""
-        SELECT p.project_id AS id,p.project_name AS project,bp.legal_name AS customer,
+        SELECT p.project_id AS id,p.project_id,p.project_name AS project,bp.legal_name AS customer,
           p.receivable_minor AS amount_minor
         FROM ({PROJECT_FINANCE_SQL}) p
         LEFT JOIN business_partners bp ON bp.id=p.customer_partner_id
@@ -106,12 +146,27 @@ DATASETS["profit"] = _dataset("已登记收支毛利分析", "profit", f"""
     "按项目分组且指定起止日期时，同时显示每个项目的期间月均毛利。")
 LABELS.update(income_minor="确认收入", cost_minor="已登记经营成本",
               gross_profit_minor="已登记毛利", income_records="收入记录数", cost_records="成本记录数",
-              project_id="项目编号")
+              project_id="项目编号", historical_project="历史旧账项目",
+              historical_project_id="历史旧账项目编号", origin="回款来源")
+
+PROJECT_IDENTITIES = {"project": "project_id", "historical_project": "historical_project_id"}
+NUMBERED_DATASETS = {"purchases", "income", "invoices", "receipts", "costs", "collections", "historical_receipts"}
+
+
+def _detail_fields(dataset, spec):
+    fields = ["id"] + (["date"] if spec["dated"] else []) + spec["dimensions"] + spec["metrics"]
+    for dimension, identity in PROJECT_IDENTITIES.items():
+        if dimension in spec["dimensions"]:
+            fields.insert(1, identity)
+    if dataset in NUMBERED_DATASETS:
+        fields.insert(1, "number")
+    return fields
 
 
 def catalog():
-    return {key: {k: v for k, v in spec.items() if k not in ("sql", "page")}
-            for key, spec in DATASETS.items()}
+    return {**{key: {**{k: v for k, v in spec.items() if k not in ("sql", "page")},
+                    "detail_order_by": _detail_fields(key, spec)}
+               for key, spec in DATASETS.items()}, **ai_query_capabilities.catalog()}
 
 
 def validate_plan(plan):
@@ -130,13 +185,22 @@ def validate_plan(plan):
     if plan.get("clarification") or plan.get("unsupported"):
         raise QueryValidationError("条件未明确时不能同时执行查询。")
     for query in queries:
-        allowed = {"dataset", "filters", "start_date", "end_date", "group_by", "metrics", "order_by", "descending", "limit"}
+        if isinstance(query, dict) and isinstance(query.get('dataset'), str) and query['dataset'] in ai_query_capabilities.TOOLS:
+            ai_query_capabilities.validate_query(query)
+            continue
+        allowed = {"dataset", "filters", "project_id", "historical_project_id", "start_date", "end_date", "group_by", "metrics", "order_by", "descending", "limit", "result_mode"}
         if not isinstance(query, dict) or set(query) - allowed:
             raise QueryValidationError("查询包含未知参数。")
         dataset = query.get("dataset")
         spec = DATASETS.get(dataset) if isinstance(dataset, str) else None
         if spec is None:
             raise QueryValidationError("没有这个查账工具。")
+        for dimension, identity in PROJECT_IDENTITIES.items():
+            if identity in query:
+                if dimension not in spec["dimensions"]:
+                    raise QueryValidationError(f"工具不支持{LABELS[dimension]}范围，不能忽略编号。")
+                if type(query[identity]) is not int or query[identity] <= 0:
+                    raise QueryValidationError(f"{LABELS[identity]}须为有效的正整数。")
         for key in ("group_by", "metrics"):
             values = query.get(key, [])
             if key == "group_by":
@@ -156,8 +220,22 @@ def validate_plan(plan):
             raise QueryValidationError("结果展示数量应为1至50。")
         if type(query.get("descending", True)) is not bool:
             raise QueryValidationError("排序方向无效。")
-        if query.get("order_by") and query["order_by"] not in query["metrics"] + query.get("group_by", []):
-            raise QueryValidationError("排序字段必须属于所选指标或分组。")
+        mode = query.get("result_mode")
+        if mode is not None and mode not in ("summary", "leader", "ranking", "details"):
+            raise QueryValidationError("回答形式无效，须为summary/leader/ranking/details。")
+        if mode in ("leader", "ranking") and not query.get("group_by"):
+            raise QueryValidationError("查最大/最小对象或排名须指定分组对象。")
+        if mode in ("summary", "details") and query.get("group_by"):
+            raise QueryValidationError("合计或逐条明细不能同时分组合并，分组比较请使用ranking。")
+        sortable = query["metrics"] + query.get("group_by", [])
+        if mode == "details":
+            sortable = [key for key in _detail_fields(dataset, spec)
+                        if key in query["metrics"] or key not in spec["metrics"]]
+        if "order_by" in query and query["order_by"] is not None:
+            if not isinstance(query["order_by"], str) or query["order_by"] not in sortable:
+                raise QueryValidationError("排序字段必须属于所选指标、分组或可展示的明细字段。")
+        if mode == "leader" and (query.get("order_by") or query["metrics"][0]) not in query["metrics"]:
+            raise QueryValidationError("最大/最小对象必须按数值指标比较，不能按名称排序。")
         start, end = query.get("start_date"), query.get("end_date")
         if any(value is not None and not isinstance(value, str) for value in (start, end)):
             raise QueryValidationError("日期须为YYYY-MM-DD文本或空值。")
@@ -193,7 +271,7 @@ def validate_plan(plan):
             if not isinstance(ref, dict) or set(ref) != {"query", "metric"}:
                 raise QueryValidationError("计算必须引用查询合计，不能编造数值。")
             index = ref["query"]
-            if type(index) is not int or not 0 <= index < len(queries) or ref["metric"] not in queries[index]["metrics"]:
+            if type(index) is not int or not 0 <= index < len(queries) or ref["metric"] not in queries[index].get("metrics", []):
                 raise QueryValidationError("计算引用的查询指标不存在。")
         if len(inputs) == 2 and inputs[0]["metric"].endswith("_minor") != inputs[1]["metric"].endswith("_minor"):
             raise QueryValidationError("不能把金额与工天等不同单位混算。")
@@ -266,11 +344,98 @@ def _columns(keys):
              "label": LABELS.get(key, key), "kind": "text"} for key in keys]
 
 
+def _markdown_table(headers, rows):
+    def line(values):
+        return "| " + " | ".join(str(value).replace("|", r"\|").replace("\n", " ") for value in values) + " |"
+    return "\n".join([line(headers), line(["---"] * len(headers))] + [line(row) for row in rows])
+
+
+def _group_name(row, query):
+    name = " / ".join(str(row[key]) if row.get(key) not in (None, "") else "待归集/未填"
+                      for key in query.get("group_by", []))
+    for dimension, identity in PROJECT_IDENTITIES.items():
+        if dimension in query.get("group_by", []) and row.get(identity) is not None:
+            name += f"（{LABELS[identity]}{row[identity]}）"
+    return name
+
+
+def _monthly_profit(row, query):
+    if not (query["dataset"] == "profit" and "project" in query.get("group_by", [])
+            and query.get("start_date") and "gross_profit_minor" in query["metrics"]):
+        return None
+    start = date.fromisoformat(query["start_date"])
+    end = date.fromisoformat(query["end_date"])
+    months = (end.year - start.year) * 12 + end.month - start.month + 1
+    if row["gross_profit_minor"] is None or row.get("unknown_gross_profit_minor"):
+        return "无法可靠计算（存在未知金额）"
+    return f"{_format('gross_profit_minor', Decimal(row['gross_profit_minor']) / months)}（{months}个自然月）"
+
+
+def _legacy_answer(query, spec, total, rows, scope, period, truncated):
+    """Keep stored-plan compatibility without constructing a discarded answer."""
+    metrics = query["metrics"]
+    answer = f"{spec['label']}｜{scope}｜{period}\n"
+    if not total["count"]:
+        return answer + "该范围没有有效记录，不能据此认定实际业务为零。"
+    answer += "；".join(f"{LABELS[key]}：{_format(key, total[key])}" for key in metrics)
+    for row in rows:
+        answer += "\n" + _group_name(row, query) + "：" + "；".join(
+            f"{LABELS[key]} {_format(key, row[key])}" for key in metrics)
+        monthly = _monthly_profit(row, query)
+        if monthly is not None:
+            answer += f"；月均毛利 {monthly}"
+        if row["share_percent"] is not None:
+            answer += f"（{LABELS[metrics[0]]}占比{row['share_percent']}%）"
+    if truncated:
+        answer += "\n分组仅展示前列，合计和占比分母包含全部匹配记录。"
+    return answer
+
+
+def resolve_project(conn, term=None, project_id=None):
+    """Resolve against the project registry, including projects with no facts."""
+    return _resolve_project_registry(conn, 'projects', '项目', term, project_id)
+
+
+def resolve_historical_project(conn, term=None, project_id=None):
+    return _resolve_project_registry(conn, 'historical_receivable_projects', '历史旧账项目', term, project_id)
+
+
+def _resolve_project_registry(conn, table, label, term, project_id):
+    # table is supplied only by the two fixed registry wrappers above.
+    if project_id is not None:
+        row = conn.execute(f'SELECT id,name FROM {table} WHERE id=?', (project_id,)).fetchone()
+        if not row or (term and term not in row['name']):
+            raise QueryValidationError(f"{label}编号不存在或与名称不一致，请重新选择。")
+        return dict(row)
+    if not term:
+        return None
+    rows = conn.execute(f'SELECT id,name FROM {table} WHERE name=? ORDER BY id', (term,)).fetchall()
+    if not rows:
+        rows = conn.execute(f'SELECT id,name FROM {table} WHERE instr(name,?)>0 ORDER BY id LIMIT 21', (term,)).fetchall()
+    if len(rows) != 1:
+        choices = '、'.join(f"{row['name']}（{label}编号{row['id']}）" for row in rows[:10])
+        raise QueryValidationError(f"{label}“{term}”" + (
+            f"匹配多项，请选择{label}编号：{choices}" if rows else "没有匹配项目，请核对名称；不能按零处理。"))
+    return dict(rows[0])
+
+
 def _execute(conn, query):
+    if query['dataset'] in ai_query_capabilities.TOOLS:
+        return ai_query_capabilities.execute(conn, query)
     spec = DATASETS[query["dataset"]]
     base = f"WITH facts AS ({spec['sql']})"
     params, conditions, resolved = [], [], {}
+    project_dimension = 'historical_project' if query['dataset'] == 'historical_receipts' else 'project'
+    project_identity = PROJECT_IDENTITIES[project_dimension]
+    resolver = resolve_historical_project if project_dimension == 'historical_project' else resolve_project
+    project = resolver(conn, query.get('filters', {}).get(project_dimension), query.get(project_identity))
+    if project:
+        conditions.append(f'{project_identity}=?')
+        params.append(project['id'])
+        resolved[project_dimension] = project['name']
     for field, term in query.get("filters", {}).items():
+        if field == project_dimension:
+            continue
         exact = conn.execute(f"{base} SELECT 1 FROM facts WHERE {field}=? LIMIT 1", (term,)).fetchone()
         candidates = [term] if exact else [r[0] for r in conn.execute(
             f"{base} SELECT DISTINCT {field} FROM facts WHERE instr({field},?)>0 ORDER BY {field} LIMIT 21", (term,))]
@@ -294,80 +459,156 @@ def _execute(conn, query):
         unknowns += ["COUNT(DISTINCT project_id) AS project_count",
                      "SUM(CASE WHEN project_id IS NULL THEN 1 ELSE 0 END) AS unassigned_records",
                      "SUM(income_records) AS income_record_count", "SUM(cost_records) AS cost_record_count"]
+    if query['dataset'] == 'collections':
+        unknowns.append("SUM(CASE WHEN customer IS NULL THEN 1 ELSE 0 END) AS unassigned_records")
     total = dict(conn.execute(f"{base} SELECT {','.join(expressions + unknowns)} FROM facts{where}", params).fetchone())
     groups = query.get("group_by", [])
     rows = []
     truncated = False
+    leader_count = 0
+    unassigned_count = 0
     if groups:
         fields = ["substr(date,1,7) AS month" if key == "month" else key for key in groups]
         sort = query.get("order_by") or metrics[0]
         direction = "DESC" if query.get("descending", True) else "ASC"
-        group_keys = ["project_id" if query["dataset"] == "profit" and key == "project" else key
+        group_keys = [PROJECT_IDENTITIES.get(key, key)
                       for key in groups]
-        if query["dataset"] == "profit" and "project" in groups:
-            fields.append("project_id")
-        rows = [dict(r) for r in conn.execute(
-            f"{base} SELECT {','.join(fields + expressions + unknowns)} FROM facts{where} GROUP BY {','.join(group_keys)} "
-            f"ORDER BY {sort} {direction}, {','.join(groups)} LIMIT ?", params + [query.get("limit", 20) + 1])]
-        truncated = len(rows) > query.get("limit", 20)
-        rows = rows[:query.get("limit", 20)]
+        fields += [identity for dimension, identity in PROJECT_IDENTITIES.items() if dimension in groups]
+        grouped = f"SELECT {','.join(fields + expressions + unknowns)} FROM facts{where} GROUP BY {','.join(group_keys)}"
+        if query.get("result_mode") == "leader":
+            # Determine extrema and ties over ALL groups, independent of the
+            # model's display limit. Unassigned names cannot become a customer.
+            named = " AND ".join(f"{key} IS NOT NULL AND trim(CAST({key} AS TEXT))<>''" for key in groups)
+            grouped_base = f"{base}, grouped AS ({grouped})"
+            extreme = "MAX" if query.get("descending", True) else "MIN"
+            leaders = f"{named} AND {sort}=(SELECT {extreme}({sort}) FROM grouped WHERE {named})"
+            leader_count = conn.execute(f"{grouped_base} SELECT COUNT(*) FROM grouped WHERE {leaders}", params).fetchone()[0]
+            unassigned_count = conn.execute(f"{grouped_base} SELECT COUNT(*) FROM grouped WHERE NOT ({named})", params).fetchone()[0]
+            rows = [dict(r) for r in conn.execute(
+                f"{grouped_base} SELECT * FROM grouped WHERE {leaders} ORDER BY {','.join(group_keys)} LIMIT 50", params)]
+            truncated = leader_count > len(rows)
+        else:
+            rows = [dict(r) for r in conn.execute(
+                f"{base} {grouped} ORDER BY {sort} {direction}, {','.join(group_keys)} LIMIT ?",
+                params + [query.get("limit", 20) + 1])]
+            truncated = len(rows) > query.get("limit", 20)
+            rows = rows[:query.get("limit", 20)]
         primary = metrics[0]
         for row in rows:
             row["share_percent"] = round(row[primary] / total[primary] * 100, 2) if row.get(primary) is not None and total.get(primary) else None
-    detail_fields = ["id"] + (["date"] if spec["dated"] else []) + spec["dimensions"] + spec["metrics"]
-    if query["dataset"] == "profit":
-        detail_fields.insert(1, "project_id")
-    if query["dataset"] in {"purchases", "income", "invoices", "receipts", "costs"}:
-        detail_fields.insert(1, "number")
+    detail_fields = _detail_fields(query['dataset'], spec)
+    detail_order = 'date DESC,id' if spec['dated'] else 'id'
+    if query.get('result_mode') == 'details' and (query.get('order_by') or 'descending' in query):
+        sort = query.get('order_by') or ('date' if spec['dated'] else 'id')
+        direction = 'DESC' if query.get('descending', True) else 'ASC'
+        # Known values first in both directions, with a stable source-ID tie break.
+        detail_order = f'{sort} IS NULL,{sort} {direction},id'
     details = [dict(r) for r in conn.execute(
         f"{base} SELECT {','.join(detail_fields)} FROM facts{where} ORDER BY "
-        + ("date DESC," if spec["dated"] else "") + "id LIMIT 201", params)]
+        + detail_order + " LIMIT 201", params)]
     details_truncated = len(details) > 200
     for row in details:
         for key in spec["metrics"]:
             if key.endswith("_minor"):
                 row[key + "_display"] = _format(key, row.get(key))
-    scope = "、".join(f"{LABELS[k]}={v}" for k, v in resolved.items()) or "全公司"
+    scope = "、".join(f"{LABELS[k]}={v}" + (f"（{LABELS[project_identity]}{project['id']}）" if k == project_dimension else '')
+                     for k, v in resolved.items()) or "全公司"
     period = f"{query.get('start_date') or '最早记录'}至{query.get('end_date')}" if spec["dated"] else f"当前快照（{date.today()}）"
-    answer = f"{spec['label']}｜{scope}｜{period}\n"
-    if not total["count"]:
-        answer += "该范围没有有效记录，不能据此认定实际业务为零。"
+    mode = query.get("result_mode")
+    if mode == "leader":
+        metric = query.get("order_by") or metrics[0]
+        dimension = " / ".join(LABELS[key] for key in groups)
+        highest = "最高" if query.get("descending", True) else "最低"
+        label = spec["label"] if metric == "amount_minor" else LABELS[metric]
+        if rows:
+            names = [_group_name(row, query) for row in rows]
+            amount = _format(metric, rows[0][metric])
+            tie = f"并列{highest}的{dimension}是" if leader_count > 1 else f"{highest}的{dimension}是"
+            value_label = '数值为'
+            if leader_count > 1:
+                value_label = '各为'
+            elif metric.endswith('_minor'):
+                value_label = '金额为'
+            answer = f"按已登记{label}，{tie} **{'、'.join(names)}**，{value_label} **{amount}**。"
+            if rows[0].get("share_percent") is not None and metric == metrics[0]:
+                share = rows[0]["share_percent"]
+                answer += f"\n\n占该范围已登记{label}合计的 **{share:.2f}%**{'（每个并列对象）' if leader_count > 1 else ''}。"
+            if truncated:
+                answer += f"\n\n共 {leader_count} 个对象并列，正文仅列前 50 个。"
+            if len(rows) == 1:
+                monthly = _monthly_profit(rows[0], query)
+                if monthly is not None:
+                    answer += f"\n\n月均毛利：{monthly}。"
+        else:
+            answer = f"该范围没有可比较、已明确归属的{dimension}记录，不能认定实际业务为零。"
+        if unassigned_count:
+            answer += f"\n\n注意：另有 {unassigned_count} 个待归属分组未参与对象排名，合计与占比分母仍包含这些记录。"
+    elif mode == "summary":
+        answer = f"{spec['label']}合计：" + "；".join(f"{LABELS[key]} **{_format(key, total[key])}**" for key in metrics)
+        if not total['count']:
+            answer = "该范围没有有效记录，不能据此认定实际业务为零。"
+    elif mode == "ranking" or (mode is None and groups and query['dataset'] != 'profit'):
+        headers = [LABELS[key] for key in groups + metrics] + ["占比"]
+        table_rows = [[str(row[key]) if row.get(key) not in (None, '') else "待归集/未填" for key in groups]
+                      + [_format(key, row[key]) for key in metrics]
+                      + [f"{row['share_percent']:.2f}%" if row['share_percent'] is not None else "—"] for row in rows]
+        if project_dimension in groups:
+            project_column = groups.index(project_dimension)
+            for values, row in zip(table_rows, rows):
+                if row[project_identity] is not None:
+                    values[project_column] += f"（{LABELS[project_identity]}{row[project_identity]}）"
+            if rows and _monthly_profit(rows[0], query) is not None:
+                headers.append('月均毛利')
+                for values, row in zip(table_rows, rows):
+                    values.append(_monthly_profit(row, query))
+        summary = "；".join(f"{LABELS[key]} **{_format(key, total[key])}**" for key in metrics)
+        answer = f"## {spec['label']}排名\n\n{summary}\n\n" + _markdown_table(headers, table_rows)
+        if not total['count']:
+            answer = "该范围没有有效记录，不能据此认定实际业务为零。"
+        if truncated:
+            answer += "\n\n分组仅展示前列，合计和占比分母包含全部匹配记录。"
+    elif mode == 'details':
+        displayed = details[:query.get('limit', 20)]
+        display_fields = [key for key in detail_fields if key not in spec['metrics'] or key in metrics]
+        table_rows = [[_format(key, row.get(key)) if key in metrics else
+                       ('未填写' if row.get(key) in (None, '') else row[key]) for key in display_fields] for row in displayed]
+        answer = f"## {spec['label']}明细\n\n该范围共 {total['count']} 条有效记录。\n\n" + _markdown_table(
+            [LABELS.get(key, key) for key in display_fields], table_rows)
+        if not total['count']:
+            answer = '该范围没有有效记录，不能据此认定实际业务为零。'
+        elif total['count'] > len(displayed):
+            answer += f"\n\n正文展示前 {len(displayed)} 条，原始明细入口最多展示 200 条；统计合计仍包含全部匹配记录。"
     else:
-        answer += "；".join(f"{LABELS[k]}：{_format(k, total[k])}" for k in metrics)
-        for key in metrics:
-            if total.get(f"unknown_{key}"):
-                answer += f"；{LABELS[key]}有{total[f'unknown_{key}']}条未知，合计仅含已知值"
-    for row in rows:
-        name = " / ".join(str(row.get(k) or "待归集/未填") for k in groups)
-        if query["dataset"] == "profit" and "project" in groups and row.get("project_id") is not None:
-            name += f"（项目编号{row['project_id']}）"
-        answer += "\n" + name + "：" + "；".join(f"{LABELS[k]} {_format(k,row[k])}" for k in metrics)
-        if (query["dataset"] == "profit" and "project" in groups
-                and query.get("start_date") and "gross_profit_minor" in metrics):
-            start_day = date.fromisoformat(query["start_date"])
-            end_day = date.fromisoformat(query["end_date"])
-            months = (end_day.year - start_day.year) * 12 + end_day.month - start_day.month + 1
-            if row["gross_profit_minor"] is not None and not row.get("unknown_gross_profit_minor"):
-                monthly = Decimal(row["gross_profit_minor"]) / months
-                answer += f"；月均毛利 {_format('gross_profit_minor', monthly)}（{months}个自然月）"
-            else:
-                answer += "；月均毛利无法可靠计算（存在未知金额）"
-        if row["share_percent"] is not None:
-            answer += f"（{LABELS[metrics[0]]}占比{row['share_percent']}%）"
-    if truncated:
-        answer += "\n分组仅展示前列，合计和占比分母包含全部匹配记录。"
-    answer += "\n口径：" + spec["note"]
-    if query["dataset"] == "profit":
-        if not total.get("income_record_count") or not total.get("cost_record_count"):
+        answer = _legacy_answer(query, spec, total, rows, scope, period, truncated)
+    answer += f"\n\n范围：{scope} · {period}\n口径：{spec['note']}"
+    # Every presentation mode retains the same data-completeness warnings.
+    for key in metrics:
+        if total.get(f"unknown_{key}"):
+            answer += f"\n注意：{LABELS[key]}有{total[f'unknown_{key}']}条未知，合计仅含已知值。"
+            if mode == 'leader' and key == (query.get('order_by') or metrics[0]):
+                answer += "以上仅比较已知值，不能认定完整排名。"
+    if query['dataset'] == 'profit':
+        if not total.get('income_record_count') or not total.get('cost_record_count'):
             answer += "\n注意：该范围缺少收入或成本记录；数字仅为已登记差额，不能认定收入成本已经完整。"
-        if total.get("unassigned_records"):
+        if total.get('unassigned_records'):
             answer += f"\n注意：包含{total['unassigned_records']}条待归集记录，不能分摊到具体项目。"
+    if query['dataset'] == 'collections' and total.get('unassigned_records'):
+        answer += f"\n注意：{total['unassigned_records']}笔回款客户归属待确认，仍计入总额，不能猜测或全部归给其中一个客户。"
     source = {"module": spec["label"], "page_key": spec["page"], "view_type": "operating",
               "label": f"{spec['label']}原始明细", "scope_label": f"{scope} · {period}" + (" · 明细仅展示前200条，汇总未截断" if details_truncated else ""),
               "record_count": total["count"], "details": details[:200], "columns": _columns(detail_fields),
               "kpis": [(LABELS[k], _format(k, total[k])) for k in metrics]}
+    if groups:
+        group_columns = groups + [identity for dimension, identity in PROJECT_IDENTITIES.items()
+                                 if dimension in groups] + metrics + ['share_percent']
+        source['grouped_result'] = {
+            'columns': _columns(group_columns),
+            'details': [{**row, **{key + '_display': _format(key, row.get(key)) for key in metrics if key.endswith('_minor')}} for row in rows],
+            'truncated': truncated,
+        }
     return {"answer": answer, "source": source, "totals": total, "groups": rows,
-            "resolved_filters": resolved, "groups_truncated": truncated}
+            "resolved_filters": resolved, project_identity: project['id'] if project else None,
+            "groups_truncated": truncated}
 
 
 def execute_plan(plan, *, db_path=None, cancel_event=None):
@@ -389,4 +630,5 @@ def execute_plan(plan, *, db_path=None, cancel_event=None):
         conn.close()
     calculations = [_calculate(item, plan["queries"], results) for item in plan.get("calculations", [])]
     return {"answer": "\n\n".join(calculations + [r["answer"] for r in results]),
-            "sources": [r["source"] for r in results], "results": results}
+            "sources": [source for result in results for source in
+                        (result['sources'] if 'sources' in result else [result['source']])], "results": results}

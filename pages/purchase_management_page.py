@@ -182,7 +182,7 @@ class PurchaseManagementPage(PurchaseOrderDialogMixin):
         return tools
 
     def record_fund_payment(self, tree):
-        from pages.funds_page import open_source_payment
+        from pages.fund_payment_dialog import open_source_payment
         ids = self.selected_order_ids(tree)
         if len(ids) != 1:
             messagebox.showwarning("提示", "请先选择一笔采购记录")

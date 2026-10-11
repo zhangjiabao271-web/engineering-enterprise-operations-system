@@ -23,6 +23,8 @@ class ConstraintTranslationTests(unittest.TestCase):
             ("CHECK constraint failed: amount_minor>0", "输入不符合规则"),
             ("NOT NULL constraint failed: workers.name", "输入不符合规则"),
             ("该月已有工资付款，不能删除工天", "该月已有工资付款，不能删除工天"),
+            ('已有资金流水关联，请先在资金管理中作废错误流水，再修改原单据', '真实到账和付款须保留'),
+            ('已关联资金历史，不能删除原单据', '资金流水历史'),
         )
         for detail, expected in cases:
             with self.subTest(detail=detail), self.assertRaisesRegex(ValueError, expected):

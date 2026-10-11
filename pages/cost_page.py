@@ -955,10 +955,10 @@ class CostLedgerPage:
         )
 
     def record_fund_payment(self):
-        from pages.funds_page import open_source_payment
+        from pages.fund_payment_dialog import open_source_payment
         ids = self._selected_manual_cost_ids()
         if len(ids) != 1:
-            messagebox.showwarning("提示", "请选择一条手工成本；采购和工资请到资金管理中登记付款")
+            messagebox.showwarning("提示", "请选择一条手工成本；采购付款请从采购管理登记，工资不在此登记")
             return
         open_source_payment(self.parent, "cost", ids[0], on_saved=self.refresh)
 

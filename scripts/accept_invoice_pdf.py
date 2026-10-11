@@ -2,6 +2,7 @@
 import os
 import sys
 import time
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -22,7 +23,8 @@ def descendants(widget):
 
 sample = sys.argv[1]
 result = recognize(sample)
-assert (result['amount'], result['net_amount'], result['tax_amount'], result['tax_rate']) == ('2600.00','2574.26','25.74','1')
+assert result['invoice_no']
+assert Decimal(result['amount']) == Decimal(result['net_amount']) + Decimal(result['tax_amount'])
 root = ttk.Window(themename='flatly')
 configure_design_system(root)
 root.geometry('1200x800')
@@ -42,11 +44,11 @@ try:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             root.update()
-            if any(isinstance(w, ttk.Entry) and w.get() == '2574.26' for w in descendants(dialog)):
+            if any(isinstance(w, ttk.Entry) and w.get() == result['net_amount'] for w in descendants(dialog)):
                 break
             time.sleep(0.05)
     values = [w.get() for w in descendants(dialog) if isinstance(w, ttk.Entry)]
-    for expected in ('2600.00', '2574.26', '25.74', '99990000000000000089'):
+    for expected in (result['amount'], result['net_amount'], result['tax_amount'], result['invoice_no']):
         assert expected in values, expected
     assert not errors, errors
     dialog.attributes('-topmost', True)

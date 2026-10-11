@@ -354,7 +354,7 @@ class ProjectProfitPage:
             ("已验收产值", data["accepted_minor"], "尚不等同确认收入"),
             ("已确认收入", data["settlement_minor"], "利润计算的收入"),
             ("已开票", data["invoice_minor"], "销项开票记录"),
-            ("已回款", data["receipt_minor"], "业务回款记录；账户到账见资金管理"),
+            ("已回款", data["receipt_minor"], "业务回款记录；不等于银行账户余额"),
             ("应收未收", data["receivable_minor"], "已确认收入减已抵扣回款，预收款不冲减其他应收"),
         ]
         self.stage_tree.refresh(

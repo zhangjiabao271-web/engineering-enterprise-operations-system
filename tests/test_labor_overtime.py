@@ -1,3 +1,4 @@
+import os
 import shutil
 import tempfile
 import unittest
@@ -10,23 +11,9 @@ class LaborOvertimeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="labor_overtime_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
-        source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
+        source_db = Path(os.environ["SUPPLY_CHAIN_DB_PATH"])
         from db.backup import backup_database
-        _oss_source_db = source_db
-        if _oss_source_db.exists():
-            backup_database(_oss_source_db, cls.test_db)
-        else:
-            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
-            import db.connection as _conn_module
-            import db.migration_runner as _runner_module
-            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
-            _conn_module.DB_PATH = cls.test_db
-            _runner_module.DB_PATH = cls.test_db
-            try:
-                from db.schema import init_db as _init_db
-                _init_db()
-            finally:
-                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
+        backup_database(source_db, cls.test_db)
 
         import db.connection as connection
         from db.migration_runner import run_migrations

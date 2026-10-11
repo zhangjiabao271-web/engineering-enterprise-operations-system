@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+
+const scope=vm.createContext({});
+vm.runInContext(readFileSync(new URL('../web_workbench/static/cockpit.js',import.meta.url),'utf8'),scope);
+const columns=[['project','项目'],['amount_minor','金额']];
+const rows=Array.from({length:205},(_,index)=>({project:index<101?'甲项目':'乙项目',amount_minor:String(index+1)}));
+const first=scope.cockpitDetailPage(rows,columns,'',0);
+assert.equal(first.rows.length,100);
+assert.equal(first.count,205);
+assert.equal(first.total,21115n);
+assert.equal(first.pages,3);
+const last=scope.cockpitDetailPage(rows,columns,'',2);
+assert.equal(last.rows.length,5);
+assert.equal(last.total,first.total);
+assert.equal(last.rows[0].amount_minor,'201');
+const filtered=scope.cockpitDetailPage(rows,columns,'甲项目',2);
+assert.equal(filtered.page,1);
+assert.equal(filtered.count,101);
+assert.equal(filtered.rows.length,1);
+assert.equal(filtered.total,5151n);
+assert.equal(scope.cockpitDetailPage(rows,columns,'不存在',0).total,0n);
+assert.equal(scope.cockpitDetailPage([],columns,'',0).pages,1);
+assert.equal(scope.cockpitDetailPage([{project:'精确金额',amount_minor:'9007199254740993123'}],columns,'',0).total,9007199254740993123n);
+assert.equal(readFileSync(new URL('../web_workbench/static/cockpit.js',import.meta.url),'utf8').includes('style="'),false);
+console.log('驾驶舱分页、全量搜索、总额守恒及严格样式策略：通过');

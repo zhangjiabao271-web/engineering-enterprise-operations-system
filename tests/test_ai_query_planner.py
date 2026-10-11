@@ -66,6 +66,56 @@ class QueryPlannerTests(unittest.TestCase):
         self.executor.assert_not_called()
         self.assertIn('未正确限定项目', result['answer'])
 
+    def test_collection_catalog_distinguishes_actual_receipts_and_project_allocations(self):
+        plan = {'queries': [{'dataset': 'collections', 'metrics': ['amount_minor'],
+                             'end_date': '2025-12-31', 'group_by': ['customer'], 'result_mode': 'leader'}]}
+        self.client.business_query_plan.return_value = plan
+        planner.query_turn('回款最多的客户是谁', self.client)
+        payload = json.loads(self.client.business_query_plan.call_args.args[0][1]['content'])
+        self.assertIn('historical_receipts', payload['tools'])
+        self.assertIn('每笔到账只计一次', payload['tools']['collections']['note'])
+        self.assertIn('不含独立历史旧账', payload['tools']['receipts']['note'])
+        self.assertIn('date', payload['tools']['collections']['detail_order_by'])
+        self.executor.assert_called_once()
+
+    def test_historical_number_cannot_inherit_current_project_number(self):
+        plan = {'queries': [{'dataset': 'historical_receipts', 'metrics': ['amount_minor'],
+                             'end_date': '2025-12-31', 'historical_project_id': 3}]}
+        self.client.business_query_plan.return_value = plan
+        with patch.object(planner.project_service, 'list_projects', return_value=[{'id': 3, 'name': '项目甲'}]):
+            result = planner.query_turn('查历史旧账回款', self.client, project_id=3)
+        self.assertIn('切换到全公司', result['answer'])
+        self.executor.assert_not_called()
+        result = planner.query_turn('查历史旧账回款', self.client)
+        self.assertIn('未经确认', result['answer'])
+        self.executor.assert_not_called()
+
+    def test_historical_project_number_is_retained_without_becoming_current_project(self):
+        plan = {'queries': [{'dataset': 'historical_receipts', 'metrics': ['amount_minor'],
+                             'filters': {'historical_project': '独立旧账'}, 'end_date': '2025-12-31',
+                             'historical_project_id': 3}]}
+        self.client.business_query_plan.return_value = plan
+        self.result['results'] = [{'resolved_filters': {'historical_project': '独立旧账'}, 'historical_project_id': 3}]
+        result = planner.query_turn('历史旧账项目编号3收到多少', self.client)
+        self.assertEqual(result['context_updates']['query_plan']['queries'][0]['historical_project_id'], 3)
+        self.assertIsNone(result['context_updates']['project_id'])
+        previous = result['context_updates']['query_plan']
+        self.client.business_query_plan.return_value = {'queries': [{**previous['queries'][0]}]}
+        self.client.business_query_plan.return_value['queries'][0].pop('historical_project_id', None)
+        planner.query_turn('那去年呢', self.client, conversation_context={'query_plan': previous})
+        self.assertEqual(self.executor.call_args.args[0]['queries'][0]['historical_project_id'], 3)
+
+    def test_company_scope_clears_previous_historical_identity(self):
+        previous = {'queries': [{'dataset': 'historical_receipts', 'metrics': ['amount_minor'],
+                                 'historical_project_id': 3, 'filters': {'historical_project': '旧账'},
+                                 'end_date': '2025-12-31'}]}
+        self.client.business_query_plan.return_value = {'queries': [{'dataset': 'collections',
+                                                     'metrics': ['amount_minor'], 'end_date': '2025-12-31'}]}
+        planner.query_turn('全公司共收了多少', self.client, conversation_context={'query_plan': previous})
+        prior_query = json.loads(self.client.business_query_plan.call_args.args[0][1]['content'])['previous_plan']['queries'][0]
+        self.assertNotIn('historical_project_id', prior_query)
+        self.assertNotIn('historical_project', prior_query['filters'])
+
     def test_whole_company_cannot_retain_project_filter(self):
         plan = income_plan()
         plan['queries'][0]['filters'] = {'project': '项目甲'}
@@ -74,14 +124,47 @@ class QueryPlannerTests(unittest.TestCase):
         self.executor.assert_not_called()
         self.assertIn('仍限定了项目', result['answer'])
 
+    def test_selected_project_identity_is_bound_before_execution(self):
+        plan = income_plan()
+        plan['queries'][0]['filters'] = {'project': '工程甲'}
+        self.client.business_query_plan.return_value = plan
+        with patch.object(planner.project_service, 'list_projects', return_value=[
+            {'id': 1, 'name': '工程甲'}, {'id': 2, 'name': '工程甲'}
+        ]):
+            result = planner.query_turn('今年收入', self.client, project_id=1)
+        executed = self.executor.call_args.args[0]['queries'][0]
+        self.assertEqual(executed['project_id'], 1)
+        payload = json.loads(self.client.business_query_plan.call_args.args[0][1]['content'])
+        self.assertEqual(payload['selected_project'], {'id': 1, 'name': '工程甲'})
+        self.assertEqual(result['context_updates']['query_plan']['queries'][0]['project_id'], 1)
+
+    def test_model_cannot_change_selected_project_identity(self):
+        plan = income_plan()
+        plan['queries'][0].update(project_id=2, filters={'project': '工程甲'})
+        self.client.business_query_plan.return_value = plan
+        with patch.object(planner.project_service, 'list_projects', return_value=[{'id': 1, 'name': '工程甲'}]):
+            result = planner.query_turn('今年收入', self.client, project_id=1)
+        self.executor.assert_not_called()
+        self.assertIn('编号', result['answer'])
+
+    def test_user_can_explicitly_switch_to_another_project_number(self):
+        plan = income_plan()
+        plan['queries'][0].update(project_id=2, filters={'project': '工程甲'})
+        self.client.business_query_plan.return_value = plan
+        with patch.object(planner.project_service, 'list_projects', return_value=[{'id': 1, 'name': '工程甲'}]):
+            result = planner.query_turn('改查项目编号2的收入', self.client, project_id=1)
+        self.assertEqual(self.executor.call_args.args[0]['queries'][0]['project_id'], 2)
+        self.assertEqual(result['context_updates']['project_id'], 2)
+
     def test_all_projects_clears_old_project_scope_and_keeps_prior_question(self):
         prior = income_plan()
-        prior['queries'][0]['filters'] = {'project': '青岭台风'}
+        prior['queries'][0]['filters'] = {'project': '示例化工台风'}
+        prior['queries'][0]['project_id'] = 3
         plan = {'queries': [{'dataset': 'profit', 'metrics': ['gross_profit_minor'],
                             'group_by': ['project'], 'start_date': '2025-01-01',
                             'end_date': '2025-12-31'}]}
         self.client.business_query_plan.return_value = plan
-        with patch.object(planner.project_service, 'list_projects', return_value=[{'id': 3, 'name': '青岭台风'}]):
+        with patch.object(planner.project_service, 'list_projects', return_value=[{'id': 3, 'name': '示例化工台风'}]):
             answer = planner.query_turn('所有的项目，每个项目的平均毛利金额', self.client, project_id=3,
                                         conversation_context={'query_plan': prior, 'query_question': '今年这个项目的平均毛利'})
         payload = json.loads(self.client.business_query_plan.call_args.args[0][1]['content'])
@@ -89,13 +172,14 @@ class QueryPlannerTests(unittest.TestCase):
         self.assertIsNone(payload['selected_project'])
         self.assertEqual(payload['previous_question'], '今年这个项目的平均毛利')
         self.assertNotIn('project', payload['previous_plan']['queries'][0]['filters'])
+        self.assertNotIn('project_id', payload['previous_plan']['queries'][0])
         self.assertIn('project', prior['queries'][0]['filters'])
         self.assertIsNone(answer['context_updates']['project_id'])
         self.executor.assert_called_once()
 
     def test_invalid_scope_repaired_once_before_query(self):
         first = income_plan()
-        first['queries'][0]['filters'] = {'project': '青岭台风'}
+        first['queries'][0]['filters'] = {'project': '示例化工台风'}
         corrected = income_plan()
         self.client.business_query_plan.side_effect = [first, corrected]
         result = planner.query_turn('所有项目今年收入', self.client)
@@ -149,7 +233,7 @@ class QueryPlannerTests(unittest.TestCase):
 
     def test_failed_all_projects_plan_still_clears_old_scope(self):
         invalid = income_plan()
-        invalid['queries'][0]['filters'] = {'project': '青岭台风'}
+        invalid['queries'][0]['filters'] = {'project': '示例化工台风'}
         self.client.business_query_plan.return_value = invalid
         result = planner.query_turn('所有项目今年收入', self.client, project_id=999)
         self.assertEqual(result['intent'], 'query_needs_clarification')
@@ -173,9 +257,35 @@ class QueryPlannerTests(unittest.TestCase):
         self.executor.assert_not_called()
 
     def test_scope_and_complex_questions_use_planner(self):
-        for question in ('8月客户回款', '今年谁做工最多', '今年客户收入以及未回款占比', '青岭今年人工和材料成本是多少'):
+        for question in ('8月客户回款', '今年谁做工最多', '今年客户收入以及未回款占比', '示例化工今年人工和材料成本是多少'):
             self.assertFalse(planner.use_fast_path(question))
         self.assertTrue(planner.use_fast_path('示例工人甲今年做了几工'))
+
+    def test_which_customer_is_largest_repairs_presentation_not_a_special_query(self):
+        first = income_plan()
+        corrected = income_plan()
+        corrected['queries'][0]['result_mode'] = 'leader'
+        self.client.business_query_plan.side_effect = [first, corrected]
+        planner.query_turn('今年业务做得最多的是哪个客户', self.client)
+        self.assertEqual(self.client.business_query_plan.call_count, 2)
+        self.assertIn('result_mode=leader', self.client.business_query_plan.call_args.args[0][-1]['content'])
+        self.assertEqual(self.executor.call_args.args[0]['queries'][0]['result_mode'], 'leader')
+
+    def test_extreme_answer_direction_must_match_the_question(self):
+        plan = income_plan()
+        plan['queries'][0]['result_mode'] = 'leader'
+        plan['queries'][0]['descending'] = True
+        self.client.business_query_plan.return_value = plan
+        result = planner.query_turn('哪个客户收入最少', self.client)
+        self.executor.assert_not_called()
+        self.assertIn('方向', result['answer'])
+
+    def test_explicit_ranking_does_not_require_a_single_leader(self):
+        plan = income_plan()
+        plan['queries'][0]['result_mode'] = 'ranking'
+        self.client.business_query_plan.return_value = plan
+        planner.query_turn('今年客户收入排名，谁最多', self.client)
+        self.executor.assert_called_once()
 
     def test_engine_routes_and_never_sends_ledger(self):
         import ai_engine

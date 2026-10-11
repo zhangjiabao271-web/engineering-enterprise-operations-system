@@ -1,5 +1,6 @@
 from services._common import now as _now, organization_id as _organization_id, minor as _minor
 import sqlite3
+import re
 from contextlib import nullcontext
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -9,6 +10,24 @@ from db.connection import db_read, db_transaction
 from services.project_service import validate_cash_income_capacity
 from services.attachment_service import invoice_attachment_statuses
 from services import invoice_income_service
+from services._constraint_errors import translate_constraints
+
+
+def _save_operating_entity(conn, kind, record_id, data):
+    if 'entity_id' not in data:
+        return
+    from services.operating_entity_service import _assign, entity_for
+    current = entity_for(conn, kind, record_id)
+    value = data['entity_id']
+    if value in ('', None):
+        if current is not None:
+            raise ValueError('已确认的经营主体不能直接清空，请在经营主体页面核对归属')
+        return
+    if not re.fullmatch(r'[1-9][0-9]*', str(value).strip()):
+        raise ValueError('请选择有效的经营主体')
+    entity_id = int(value)
+    if entity_id != current:
+        _assign(conn, kind, record_id, entity_id, '在原业务表单中人工确认经营主体')
 
 
 def _date(value, label):
@@ -716,6 +735,7 @@ def create_invoice(data, *, _conn=None):
                 allocations,
                 now,
             )
+            _save_operating_entity(conn, 'sales_invoices', cursor.lastrowid, data)
             _reconcile_customer_invoice_receipts(
                 conn, _invoice_customer_id(conn, cursor.lastrowid), now
             )
@@ -809,6 +829,7 @@ def update_invoice(invoice_id, data, *, _conn=None):
                 allocations,
                 now,
             )
+            _save_operating_entity(conn, 'sales_invoices', invoice_id, data)
             _reconcile_customer_ids(
                 conn,
                 {previous_customer_id, _invoice_customer_id(conn, invoice_id)},
@@ -1528,6 +1549,7 @@ def create_receipt(data):
                                           receipt_date, amount_minor)
             from services.advance_receipt_service import reconcile
             reconcile(conn, project_id, contract_id)
+            _save_operating_entity(conn, 'receipts', receipt_id, data)
             _reconcile_customer_invoice_receipts(
                 conn, _receipt_customer_id(conn, receipt_id), now
             )
@@ -1538,6 +1560,11 @@ def create_receipt(data):
             raise
 
 
+@translate_constraints(
+    duplicate='回款编号已存在，请核对原记录',
+    related='回款关联的项目或收入记录已变化，请重新核对',
+    invalid='回款内容不符合记录规则，请核对日期、金额和归属',
+)
 def update_receipt(receipt_id, data):
     receipt_id = int(receipt_id)
     amount_minor = _minor(data.get("amount"))
@@ -1631,6 +1658,7 @@ def update_receipt(receipt_id, data):
                                           receipt['contract_id'], receipt_date, amount_minor)
             from services.advance_receipt_service import reconcile
             reconcile(conn, receipt['project_id'], receipt['contract_id'])
+            _save_operating_entity(conn, 'receipts', receipt_id, data)
             _reconcile_customer_ids(
                 conn,
                 {previous_customer_id, _receipt_customer_id(conn, receipt_id)},
@@ -1642,6 +1670,11 @@ def update_receipt(receipt_id, data):
             raise
 
 
+@translate_constraints(
+    duplicate='回款调整记录已存在，请刷新核对',
+    related='回款关联记录已变化，请刷新核对',
+    invalid='回款当前状态不允许作废，请核对相关业务',
+)
 def void_receipts(receipt_ids):
     if not receipt_ids:
         return

@@ -235,6 +235,27 @@ class AIClient:
                           code="invalid_query_plan", retryable=True)
         return plan
 
+    def document_understanding(self, messages):
+        """One complete, structured document interpretation; never use reasoning as data."""
+        data = self._request_json("POST", "chat/completions", {
+            "model": self.model, "messages": messages, "max_tokens": 12000,
+            "stream": False, "response_format": {"type": "json_object"},
+        })
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise AIError("模型没有返回资料理解结果，未保存资料。", code="empty_document")
+        choice = choices[0]
+        if choice.get("finish_reason") != "stop":
+            raise AIError("模型未完整读完资料或输出被截断，未保存资料；请核对文件大小及模型能力。",
+                          code="incomplete_document")
+        try:
+            result = json.loads(choice["message"]["content"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise AIError("模型没有返回完整的资料 JSON，未保存资料。", code="invalid_document") from error
+        if not isinstance(result, dict):
+            raise AIError("模型的资料理解格式不正确，未保存资料。", code="invalid_document")
+        return result
+
     def chat_completion_stream(
         self,
         messages,

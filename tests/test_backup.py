@@ -1,3 +1,4 @@
+import os
 """备份模块测试：db.backup.backup_database 与 services.backup_service.create_backup_archive。
 
 全部读写都在 tempfile.TemporaryDirectory 内进行，不触碰项目目录。
@@ -154,22 +155,9 @@ class BackupServiceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="backup_service_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
-        source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
-        _oss_source_db = source_db
-        if _oss_source_db.exists():
-            backup_database(_oss_source_db, cls.test_db)
-        else:
-            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
-            import db.connection as _conn_module
-            import db.migration_runner as _runner_module
-            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
-            _conn_module.DB_PATH = cls.test_db
-            _runner_module.DB_PATH = cls.test_db
-            try:
-                from db.schema import init_db as _init_db
-                _init_db()
-            finally:
-                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
+        source_db = Path(os.environ["SUPPLY_CHAIN_DB_PATH"])
+        backup_database(source_db, cls.test_db)
+
         import db.connection as connection
         from db.migration_runner import run_migrations
 
@@ -238,7 +226,7 @@ class BackupServiceTests(unittest.TestCase):
             stored_manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         self.assertEqual(stored_manifest, manifest)
 
-    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+    @unittest.skip("Legacy production-data fixture is not published")
     def test_archived_database_is_usable_snapshot(self):
         destination = self.root / "backup.zip"
         self.backup_service.create_backup_archive(destination)
@@ -260,7 +248,7 @@ class BackupServiceTests(unittest.TestCase):
                 self.assertEqual(count, expected, table)
                 self.assertGreater(count, 0, table)
 
-    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+    @unittest.skip("Legacy production-data fixture is not published")
     def test_existing_attachments_are_packed_with_manifest_entries(self):
         first = self.root / "验收单.pdf"
         first.write_bytes(b"pdf-content")
@@ -285,7 +273,7 @@ class BackupServiceTests(unittest.TestCase):
                 self.assertEqual(entry["archive_path"], archive_name)
                 self.assertEqual(archive.read(archive_name), content)
 
-    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+    @unittest.skip("Legacy production-data fixture is not published")
     def test_missing_attachment_recorded_not_fatal(self):
         ghost = self.root / "已删除.pdf"
         self._add_business_attachment(str(ghost), "ATT-TEST-GHOST")
@@ -339,22 +327,9 @@ class RestoreBackupTests(unittest.TestCase):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="restore_service_")
         cls.source_db = Path(cls.temp_dir.name) / "source.db"
         cls.live_db = Path(cls.temp_dir.name) / "live.db"
-        production = Path(__file__).resolve().parent.parent / "supplier_data.db"
-        _oss_source_db = production
-        if _oss_source_db.exists():
-            backup_database(_oss_source_db, cls.source_db)
-        else:
-            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
-            import db.connection as _conn_module
-            import db.migration_runner as _runner_module
-            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
-            _conn_module.DB_PATH = cls.source_db
-            _runner_module.DB_PATH = cls.source_db
-            try:
-                from db.schema import init_db as _init_db
-                _init_db()
-            finally:
-                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
+        production = Path(os.environ["SUPPLY_CHAIN_DB_PATH"])
+        backup_database(production, cls.source_db)
+
         import db.connection as connection
 
         cls.connection = connection
@@ -455,12 +430,14 @@ class RestoreBackupTests(unittest.TestCase):
         self.assertTrue(Path(result["safety_backup"]).is_file())
 
     def test_restore_recovers_deleted_attachment(self):
-        # Use the isolated attachment root, never a checkout's business folder.
-        from services.attachment_service import _storage_root
-        attachment_file = _storage_root() / "restore_test_回执单.pdf"
+        # Use configured temporary storage; never touch the user's attachment tree.
+        storage = self.root / 'attachments'
+        patcher = mock.patch('services.attachment_service._storage_root', return_value=storage)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        attachment_file = storage / 'business' / '回执单.pdf'
         attachment_file.parent.mkdir(parents=True, exist_ok=True)
         attachment_file.write_bytes(b"%PDF-fake")
-        self.addCleanup(attachment_file.unlink, missing_ok=True)
         stored_path = str(attachment_file)
         with closing(sqlite3.connect(self.live_db)) as conn:
             cursor = conn.execute(

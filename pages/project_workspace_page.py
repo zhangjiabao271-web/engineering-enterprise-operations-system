@@ -25,7 +25,7 @@ class ProjectWorkspacePage:
         self.project_var = ttk.StringVar()
         self.stage_var = ttk.StringVar(value="--")
         self.gap_var = ttk.StringVar(value="")
-        self.cash_basis_var = ttk.StringVar(value="非账户余额；真实资金见资金管理")
+        self.cash_basis_var = ttk.StringVar(value="非账户余额；实际资金请核对银行流水或现金盘点")
         self.kpi_vars = {
             key: ttk.StringVar(value="--")
             for key in ("settlement", "cost", "profit", "cash")

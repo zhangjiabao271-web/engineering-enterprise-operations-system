@@ -1,7 +1,8 @@
+import logging
 import queue
 import threading
 from datetime import datetime
-from tkinter import messagebox
+from tkinter import Menu, messagebox
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
@@ -16,10 +17,28 @@ from services import (
 from ui.dialogs import safe_init_loaders
 from ui.theme import COLORS, FONT_BODY
 from ui.scaling import scale_px
+from ui.assistant_content import answer_as_markdown, render_answer_content
 
 from pages.ai_layout_mixin import AILayoutMixin
 from pages.ai_source_mixin import AISourceMixin
 from pages.ai_config_mixin import AIConfigMixin
+
+
+def _message_page_ranges(messages):
+    """Partition backwards so entry always includes the latest exchange."""
+    ranges = []
+    end = len(messages)
+    while end:
+        start, characters = end, 0
+        while start and end - start < 12:
+            length = len(messages[start - 1].get("content") or "")
+            if start < end and characters + length > 10000:
+                break
+            start -= 1
+            characters += length
+        ranges.append((start, end))
+        end = start
+    return list(reversed(ranges))
 
 
 class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
@@ -47,6 +66,9 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
         self._loading_sessions = False
         self._loading_context = False
         self._wrap_labels = []
+        self._answer_tables = []
+        self._user_bubbles = []
+        self._chat_resize_after = None
         self._context_labels = []
         self._turn_results = queue.Queue()
         self._turn_poll_scheduled = False
@@ -66,22 +88,18 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
         )
 
     def build_ui(self):
-        style = ttk.Style()
-        style.configure("AssistantBubble.TFrame", background=COLORS["surface_muted"])
-        style.configure("AssistantBubble.TLabel", background=COLORS["surface_muted"],
-                        foreground=COLORS["text"], font=FONT_BODY, padding=0)
         header = ttk.Frame(self.parent)
         header.pack(fill=X, pady=(0, 12))
         title_box = ttk.Frame(header)
         title_box.pack(side=LEFT, fill=X, expand=True)
         ttk.Label(
             title_box,
-            text="AI 经营助手",
-            style="PageTitle.TLabel",
+            text="经营助手",
+            style="ChatTitle.TLabel",
         ).pack(anchor=W)
         ttk.Label(
             title_box,
-            text="聊经营、查台账，每个数字都有据可查",
+            text="问一句，查清一笔生意",
             style="PageSub.TLabel",
         ).pack(anchor=W, pady=(3, 0))
         header_actions = ttk.Frame(header)
@@ -230,6 +248,8 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
         self.load_conversation(select_id)
 
     def load_conversation(self, conversation_id):
+        if self.busy and conversation_id != self.current_conversation_id:
+            self._invalidate_turn()
         conversation = ai_conversation_service.get_conversation(conversation_id)
         self.current_conversation_id = conversation["id"]
         self.current_context = dict(conversation.get("context") or {})
@@ -249,14 +269,42 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
             self.turn_status_var.set("准备就绪 · 可以继续追问")
 
     def render_messages(self, messages):
+        self._history_messages = list(messages)
+        if self._history_messages:
+            self.suggestions.grid_remove()
+        else:
+            self.suggestions.grid()
+        self._history_pages = _message_page_ranges(self._history_messages)
+        self._render_history_page(max(0, len(self._history_pages) - 1))
+
+    def _render_history_page(self, page_index):
         for child in self.thread.winfo_children():
             child.destroy()
         self._wrap_labels = []
-        if not messages:
+        self._answer_tables = []
+        self._user_bubbles = []
+        self._history_page_index = page_index
+        if not self._history_pages:
             self._render_welcome()
         else:
-            for message in messages:
+            start, end = self._history_pages[page_index]
+            if len(self._history_pages) > 1:
+                navigation = ttk.Frame(self.thread, style="ChatThread.TFrame")
+                navigation.pack(fill=X, pady=(0, 8))
+                if page_index:
+                    ttk.Button(navigation, text="较早消息", bootstyle="secondary-outline",
+                               command=lambda: self._render_history_page(page_index - 1)).pack(side=LEFT)
+                ttk.Label(navigation, text=f"第 {start + 1}–{end} 条 / 共 {len(self._history_messages)} 条",
+                          style="CardText.TLabel").pack(side=LEFT, padx=8)
+                if page_index + 1 < len(self._history_pages):
+                    ttk.Button(navigation, text="较新消息", bootstyle="secondary-outline",
+                               command=lambda: self._render_history_page(page_index + 1)).pack(side=LEFT)
+                if page_index + 1 < len(self._history_pages) - 1:
+                    ttk.Button(navigation, text="返回最新", bootstyle="link",
+                               command=lambda: self._render_history_page(len(self._history_pages) - 1)).pack(side=RIGHT)
+            for message in self._history_messages[start:end]:
                 self._render_message(message)
+        self._layout_chat_width(self.chat_panel.winfo_width())
         self.thread.after_idle(self.thread.enable_scrolling)
         self.thread.after_idle(lambda: self.thread.yview_moveto(1.0))
 
@@ -283,40 +331,33 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
             padding=(0, 7),
         )
         outer.pack(fill=X)
-        outer.columnconfigure(0, weight=1)
-
         mode = metadata.get("answer_mode")
         if role == "user":
-            sender = "你"
-            frame_style = "AssistantBubble.TFrame"
-            label_style = "AssistantBubble.TLabel"
+            content = ttk.Frame(outer, style="ChatBubble.TFrame", padding=(14, 10))
+            content.pack(fill=X, padx=(scale_px(self.parent, 90), scale_px(self.parent, 8)))
+            label = ttk.Label(content, text=message.get("content") or "",
+                              style="ChatQuestion.TLabel", justify=LEFT, width=1)
+            label.pack(fill=X)
+            label.bind("<Configure>", lambda event, widget=label: self._wrap_question(event, widget))
+            self._user_bubbles.append(content)
+            return
         else:
             sender = "AI 经营助手"
             if mode == "local":
-                sender += "\n本地台账计算"
+                sender += " · 本地台账计算"
             elif mode == "deepseek":
-                sender += "\nDeepSeek 分析"
+                sender += " · DeepSeek 分析"
             frame_style = "ChatAssistant.TFrame"
-            label_style = "ChatAssistant.TLabel"
 
         ttk.Label(
             outer,
             text=sender,
             style="ChatMeta.TLabel",
             justify=LEFT,
-        ).grid(row=0, column=0, sticky=E if role == "user" else W, pady=(0, 6))
-        content = ttk.Frame(outer, style=frame_style, padding=(16, 12))
-        content.grid(row=1, column=0, sticky=E if role == "user" else EW,
-                     padx=(80, 0) if role == "user" else (0, 30))
-        label = ttk.Label(
-            content,
-            text=message.get("content") or "",
-            style=label_style,
-            justify=LEFT,
-            wraplength=getattr(self, "_message_wrap_width", 510),
-        )
-        label.pack(anchor=W, fill=X)
-        self._wrap_labels.append((label, 180 if role == "user" else 100))
+        ).pack(anchor=W, pady=(6, 8))
+        content = ttk.Frame(outer, style=frame_style, padding=(0, 0))
+        content.pack(fill=X, padx=(0, scale_px(self.parent, 8)))
+        self._answer_tables.extend(render_answer_content(content, message.get("content") or ""))
 
         if message.get("message_type") == "confirmation":
             self._render_confirmation_actions(content, message, metadata)
@@ -391,24 +432,31 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
 
     def _render_answer_actions(self, parent, message, metadata):
         sources = metadata.get("sources") or []
-        if sources:
-            source_row = ttk.Frame(parent, style="ChatAssistant.TFrame")
-            source_row.pack(fill=X, pady=(10, 0))
-            for source in sources[:3]:
-                ttk.Button(
-                    source_row,
-                    text=source.get("label") or source.get("module") or "查看数据来源",
-                    bootstyle="secondary-outline",
-                    command=lambda value=source: self.open_source_records(value),
-                ).pack(anchor=W, pady=(0, 4))
         feedback = ttk.Frame(parent, style="ChatAssistant.TFrame")
-        feedback.pack(anchor=W, pady=(8, 0))
+        feedback.pack(fill=X, pady=(6, 12))
+        if sources:
+            evidence = ttk.Menubutton(feedback, text="查看依据", bootstyle="secondary-outline")
+            evidence.pack(side=LEFT, padx=(0, 8))
+            menu = Menu(evidence, tearoff=False)
+            evidence.configure(menu=menu)
+            for source in sources:
+                menu.add_command(label=source.get('label') or source.get('module') or '原始明细',
+                                 command=lambda value=source: self.open_source_records(value))
+                grouped = source.get('grouped_result')
+                if grouped:
+                    group_source = {**source, 'columns': grouped['columns'], 'details': grouped['details'],
+                                    'label': source['module'] + '分组结果',
+                                    'scope_label': source.get('scope_label', '') + (' · 分组展示已截断' if grouped['truncated'] else '')}
+                    menu.add_command(label=group_source['label'], command=lambda value=group_source: self.open_source_records(value))
+        copy_button = ttk.Button(feedback, text="复制", style="ChatAction.TButton")
+        copy_button.configure(command=lambda: self.copy_answer(message.get("content") or "", copy_button))
+        copy_button.pack(side=LEFT, padx=(0, 10))
         question = metadata.get("question")
         if question:
             ttk.Button(
                 feedback,
-                text="重新生成",
-                bootstyle="link",
+                text="重试",
+                style="ChatAction.TButton",
                 command=lambda value=question: self.retry_question(value),
             ).pack(side=LEFT, padx=(0, 10))
         selected = message.get("feedback")
@@ -416,11 +464,16 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
             ttk.Button(
                 feedback,
                 text=("✓ " if selected == rating else "") + text,
-                bootstyle="link",
+                style="ChatAction.TButton",
                 command=lambda value=rating, message_id=message.get("id"): self.set_feedback(
                     message_id, value
                 ),
             ).pack(side=LEFT, padx=(5, 0))
+
+    def copy_answer(self, text, button):
+        self.parent.clipboard_clear()
+        self.parent.clipboard_append(answer_as_markdown(text))
+        button.configure(text="已复制")
 
     def set_feedback(self, message_id, rating):
         if not message_id:
@@ -496,6 +549,8 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
                 )
 
         def task():
+            event = {"type": "done", "token": generation_token,
+                     "conversation_id": conversation_id, "question": question}
             try:
                 result = ai_engine.ask_ai_turn(
                     question,
@@ -505,39 +560,11 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
                     on_chunk=on_chunk,
                     cancel_event=cancel_event,
                 )
-                if cancel_event.is_set():
-                    return
-                updated = ai_conversation_service.update_context(
-                    conversation_id,
-                    result.get("context_updates") or {},
-                )
-                metadata = {
-                    "question": question,
-                    "answer_mode": result.get("answer_mode"),
-                    "sources": result.get("sources") or [],
-                    "candidates": result.get("candidates") or [],
-                }
-                assistant_message = ai_conversation_service.add_message(
-                    conversation_id,
-                    "assistant",
-                    result["answer"],
-                    message_type=result.get("message_type") or "answer",
-                    metadata=metadata,
-                )
-                if result.get("response_type") == "confirmation":
-                    pending = dict(
-                        (updated.get("context") or {}).get(
-                            "pending_confirmation"
-                        )
-                        or {}
-                    )
-                    pending["message_id"] = assistant_message["id"]
-                    ai_conversation_service.update_context(
-                        conversation_id,
-                        {"pending_confirmation": pending},
-                    )
+                event["result"] = result
             except AIError as error:
-                if error.code == "cancelled" or cancel_event.is_set():
+                if error.code == "cancelled":
+                    cancel_event.set()
+                if cancel_event.is_set():
                     return
                 error_text = str(error or "未知 AI 错误")
                 next_step = (
@@ -545,40 +572,28 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
                     if error.code in {"missing_key", "authentication", "not_found", "invalid_request"}
                     else "请重试这次问题；若持续失败，可更换模型或检查连接。"
                 )
-                ai_conversation_service.add_message(
-                    conversation_id,
-                    "assistant",
-                    f"这次分析没有完成。\n\n原因：{error_text}\n\n{next_step}本地台账没有被修改。",
-                    message_type="error",
-                    metadata={
+                event["error"] = {
+                    "content": f"这次分析没有完成。\n\n原因：{error_text}\n\n{next_step}本地台账没有被修改。",
+                    "metadata": {
                         "question": question,
                         "error_code": error.code,
                         "retryable": error.retryable,
                     },
-                )
+                }
             except Exception as error:
                 if cancel_event.is_set():
                     return
-                ai_conversation_service.add_message(
-                    conversation_id,
-                    "assistant",
-                    (
+                event["error"] = {
+                    "content": (
                         "这次分析没有完成。\n\n"
                         f"本地处理异常：{type(error).__name__}：{error}\n\n"
                         "业务台账没有被修改。"
                     ),
-                    message_type="error",
-                    metadata={"question": question},
-                )
+                    "metadata": {"question": question},
+                }
             finally:
-                self._turn_results.put(
-                    {
-                        "type": "done",
-                        "token": generation_token,
-                        "conversation_id": conversation_id,
-                        "cancelled": cancel_event.is_set(),
-                    }
-                )
+                event["cancelled"] = cancel_event.is_set()
+                self._turn_results.put(event)
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -596,17 +611,60 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
             if self.busy and self.parent.winfo_exists():
                 self._schedule_turn_poll()
             return
-        if event.get("token") != self._generation_token:
+        if event.get("token") != self._generation_token or not self.busy:
             if self.busy:
                 self._schedule_turn_poll()
             return
+        cancelled = event.get("cancelled", False) or bool(self._cancel_event and self._cancel_event.is_set())
         if event.get("type") == "stream":
-            self._update_stream(event.get("text") or "")
+            if not cancelled:
+                self._update_stream(event.get("text") or "")
             self._schedule_turn_poll()
             return
-        self._finish_turn(
-            event.get("conversation_id"), cancelled=event.get("cancelled", False)
+        try:
+            if not cancelled and event.get("conversation_id") == self.current_conversation_id:
+                self._save_turn_result(event)
+        except Exception:
+            logging.exception("AI answer persistence failed")
+            messagebox.showerror("回答保存失败", "本次回答未能完整保存，请核对当前对话后再继续。业务台账没有被修改。")
+        finally:
+            self._finish_turn(event.get("conversation_id"), cancelled=cancelled)
+
+    def _save_turn_result(self, event):
+        """Only the Tk thread may commit a still-current result to its conversation."""
+        conversation_id = event["conversation_id"]
+        if event.get("error"):
+            error = event["error"]
+            ai_conversation_service.add_message(
+                conversation_id, "assistant", error["content"],
+                message_type="error", metadata=error["metadata"],
+            )
+            return
+        result = event["result"]
+        updated = ai_conversation_service.update_context(
+            conversation_id, result.get("context_updates") or {},
         )
+        message = ai_conversation_service.add_message(
+            conversation_id, "assistant", result["answer"],
+            message_type=result.get("message_type") or "answer",
+            metadata={"question": event["question"], "answer_mode": result.get("answer_mode"),
+                      "sources": result.get("sources") or [], "candidates": result.get("candidates") or []},
+        )
+        if result.get("response_type") == "confirmation":
+            pending = dict((updated.get("context") or {}).get("pending_confirmation") or {})
+            pending["message_id"] = message["id"]
+            ai_conversation_service.update_context(conversation_id, {"pending_confirmation": pending})
+
+    def _invalidate_turn(self):
+        if not self.busy:
+            return
+        if self._cancel_event:
+            self._cancel_event.set()
+        self._generation_token += 1
+        self._set_busy(False)
+        self.stop_btn.config(state="normal")
+        self._cancel_event = None
+        self.turn_status_var.set("条件已改变，上一查询已取消；可以按新条件提问")
 
     def _set_busy(self, busy):
         self.busy = busy
@@ -700,6 +758,7 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
     def cancel_confirmation(self):
         if not self.current_conversation_id:
             return
+        self._invalidate_turn()
         ai_conversation_service.update_context(
             self.current_conversation_id,
             {"pending_confirmation": None},
@@ -743,6 +802,7 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
     def clear_context(self):
         if not self.current_conversation_id:
             return
+        self._invalidate_turn()
         project_id = self.scope_map.get(self.scope_var.get())
         ai_conversation_service.replace_context(
             self.current_conversation_id,
@@ -762,12 +822,13 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
         if self._loading_sessions:
             return
         selected = self.conversation_tree.selection()
-        if selected:
+        if selected and int(selected[0]) != self.current_conversation_id:
             self.load_conversation(int(selected[0]))
 
     def on_scope_changed(self, _event=None):
         if self._loading_context or not self.current_conversation_id:
             return
+        self._invalidate_turn()
         project_id = self.scope_map.get(self.scope_var.get())
         ai_conversation_service.update_context(
             self.current_conversation_id,
@@ -822,20 +883,60 @@ class AIAssistantPage(AILayoutMixin, AISourceMixin, AIConfigMixin):
         return "break"
 
     def _on_chat_resize(self, event):
-        gutter = max(0, (int(event.width) - scale_px(self.parent, 760)) // 2)
-        self.thread.grid_configure(padx=gutter)
-        self.composer.grid_configure(padx=gutter)
-        wrap = max(220, int(event.width) - 2*gutter - 120)
+        if event.width == getattr(self, '_last_chat_width', None):
+            return
+        self._last_chat_width = event.width
+        if self._chat_resize_after is not None:
+            self.chat_panel.after_cancel(self._chat_resize_after)
+        self._chat_resize_after = self.chat_panel.after(25, self._settle_chat_width)
+
+    def _settle_chat_width(self):
+        self._chat_resize_after = None
+        if self.chat_panel.winfo_exists():
+            self._layout_chat_width(self.chat_panel.winfo_width())
+
+    def _cancel_chat_resize(self, event):
+        if event.widget is self.chat_panel and self._chat_resize_after is not None:
+            self.chat_panel.after_cancel(self._chat_resize_after)
+            self._chat_resize_after = None
+
+    @staticmethod
+    def _wrap_question(event, label):
+        if event.width < 40:
+            return
+        wraplength = max(40, event.width - 2)
+        if int(label.cget('wraplength') or 0) != wraplength:
+            label.configure(wraplength=wraplength)
+
+    def _layout_chat_width(self, width):
+        if width <= 1:
+            return
+        reading_width = 780
+        gutter = max(0, (width - scale_px(self.parent, reading_width)) // 2)
+        if getattr(self, "_chat_gutter", None) != gutter:
+            self.thread.grid_configure(padx=gutter)
+            self.composer.grid_configure(padx=gutter)
+            self._chat_gutter = gutter
+        wrap = max(220, width - 2*gutter - 120)
         self._message_wrap_width = wrap
+        for bubble in self._user_bubbles:
+            if bubble.winfo_exists():
+                inset = max(scale_px(self.parent, 32), int((width - 2*gutter) * 0.22))
+                if getattr(bubble, '_chat_inset', None) != inset:
+                    bubble.pack_configure(padx=(inset, scale_px(self.parent, 8)))
+                    bubble._chat_inset = inset
         for label, offset in list(self._wrap_labels):
             if label.winfo_exists():
-                label.configure(wraplength=max(220, wrap - max(0, offset - 100)))
+                wraplength = max(220, wrap - max(0, offset - 100))
+                if int(label.cget("wraplength") or 0) != wraplength:
+                    label.configure(wraplength=wraplength)
 
     def _on_context_resize(self, event):
         wrap = max(150, int(event.width) - 34)
         for label in self._context_labels:
             if label.winfo_exists():
-                label.configure(wraplength=wrap)
+                if int(label.cget('wraplength') or 0) != wrap:
+                    label.configure(wraplength=wrap)
 
     def _scope_label(self, project_id):
         for label, value in self.scope_map.items():

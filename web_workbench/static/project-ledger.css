@@ -1,0 +1,45 @@
+/* A readable financial spine: amounts are controls, not clipped table text. */
+.project-ledger-table table { min-width: 860px; table-layout: auto; }
+.project-ledger-table th, .project-ledger-table td { padding: 15px 12px; }
+.project-ledger-table td { overflow: visible; text-overflow: clip; max-width: none; }
+.project-ledger-table .ledger-project { min-width: 220px; width: 30%; white-space: normal; }
+.ledger-project-name { display: block; padding: 0; border: 0; background: transparent; color: var(--ink); text-align: left; white-space: normal; overflow-wrap: anywhere; font-size: 14px; font-weight: 600; }
+.ledger-project-name:hover { color: var(--blue); background: transparent; }
+.ledger-project small, .ledger-project-state { display: block; margin-top: 5px; font-size: 11px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+.ledger-project-state { margin-top: 3px; }
+.ledger-amount { border: 1px solid transparent; padding: 7px 9px; min-width: 122px; text-align: right; background: transparent; }
+.ledger-amount strong { display: block; font: 600 17px/1.5 "Segoe UI",sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.015em; }
+.ledger-amount.receipts strong { color: var(--green); }
+.ledger-amount small { display: block; font: 11px/1.6 "Microsoft YaHei UI",sans-serif; margin-top: 2px; }
+.ledger-amount:hover { border-color: var(--line); background: var(--soft-blue); }
+.project-ledger-table .table-actions { min-width: 130px; white-space: normal; }
+.project-ledger-table .operation-menu { display: block; margin-top: 6px; }
+.project-ledger-floating-header {
+  position: fixed; z-index: 9; overflow: hidden; background: #f8f9fb;
+  border-bottom: 1px solid var(--line); box-shadow: 0 3px 8px #21355212;
+}
+.project-ledger-floating-header table {
+  border-collapse: collapse; table-layout: fixed; margin: 0;
+  font-size: 13px; white-space: nowrap; transform-origin: top left;
+}
+.project-ledger-floating-header th { padding: 15px 12px; }
+.ledger-status-tabs span { margin-left: 9px; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .75; }
+.ledger-detail-meta { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 20px; }
+.ledger-detail-meta > span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.ledger-detail-meta button { flex-shrink: 0; font-size: 12px; }
+.ledger-detail-metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,180px),1fr)); gap: 8px; margin-bottom: 24px; }
+.ledger-detail-metrics button { min-width: 0; white-space: normal; background: var(--surface); text-align: left; padding: 12px; }
+.ledger-detail-metrics span { display: block; color: var(--muted); font-size: 12px; }
+.ledger-detail-metrics strong { display: block; font: 600 20px/1.6 "Segoe UI",sans-serif; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ledger-detail-metrics .selected { border-color: var(--blue); background: var(--soft-blue); }
+.ledger-detail-title { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 12px; }
+.ledger-detail-title > span { font-size: 12px; color: var(--muted); }
+.ledger-detail-title strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.project-ledger-detail-table th, .project-ledger-detail-table td { overflow: visible; text-overflow: clip; }
+.project-ledger-detail-table [data-column="basis"], .project-ledger-detail-table [data-column="notes"] { min-width: 160px; max-width: 300px; white-space: normal; overflow-wrap: anywhere; }
+.project-ledger-detail-table .amount { min-width: 115px; }
+#record-detail-back { margin-bottom: 16px; }
+@media (max-width: 760px) {
+  .ledger-detail-meta { align-items: flex-start; flex-direction: column; }
+  .ledger-detail-title { align-items: flex-start; flex-direction: column; gap: 5px; }
+}

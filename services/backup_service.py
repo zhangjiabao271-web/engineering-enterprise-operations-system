@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import shutil
 import sqlite3
 import tempfile
 import zipfile
@@ -19,7 +21,10 @@ def _restore_targets(manifest):
     """Validate every destination before any live database or file is changed."""
     from services.attachment_service import _storage_root
 
-    roots = [(PROJECT_ROOT / "attachments").resolve(), _storage_root().resolve()]
+    # An explicitly isolated attachment store must never restore into the live one.
+    roots = [_storage_root().resolve()]
+    if not os.environ.get('SUPPLY_CHAIN_ATTACHMENTS_PATH'):
+        roots.append((PROJECT_ROOT / "attachments").resolve())
     targets = []
     seen = set()
     for entry in manifest["files"]:
@@ -37,23 +42,28 @@ def _restore_targets(manifest):
 
 
 def _sha256(path):
-    digest = hashlib.sha256()
     with Path(path).open('rb') as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
-def create_backup_archive(destination):
+def referenced_files(conn):
+    """Include retained evidence and cashflow source files, not just active rows."""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    paths = set()
+    for table, column in (('business_attachments', 'file_path'), ('construction_photos', 'file_path'),
+                          ('input_invoices', 'file_path'), ('cashflow_documents', 'source_path')):
+        if table in tables:
+            paths.update(row[0] for row in conn.execute(
+                f'SELECT {column} FROM {table} WHERE {column} IS NOT NULL AND trim({column})<>\'\''))
+    return paths
+
+
+def create_backup_archive(destination, *, database=None):
     destination = Path(destination)
     with tempfile.TemporaryDirectory(prefix="operations_backup_") as folder:
-        snapshot = backup_database(connection.DB_PATH, Path(folder)/"supplier_data.db")
+        snapshot = backup_database(database or connection.DB_PATH, Path(folder)/"supplier_data.db")
         with closing(sqlite3.connect(snapshot)) as conn:
-            paths = {row[0] for row in conn.execute("SELECT file_path FROM business_attachments")}
-            paths.update(row[0] for row in conn.execute("SELECT file_path FROM construction_photos"))
-            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='input_invoices'").fetchone():
-                paths.update(row[0] for row in conn.execute(
-                    "SELECT file_path FROM input_invoices WHERE file_path IS NOT NULL"))
+            paths = referenced_files(conn)
         manifest = {"version": 2, "database": "supplier_data.db", "database_sha256": _sha256(snapshot),
                     "files": [], "missing_files": []}
         # Exclusive creation protects earlier backups even when a caller bypasses the dialog.
@@ -83,11 +93,18 @@ def _extract_archive(source, folder):
     """只解出备份包约定成员；拒绝异常路径与结构。"""
     folder = Path(folder)
     with zipfile.ZipFile(source) as archive:
+        members = archive.infolist()
+        if len(members) > 100000 or sum(item.file_size for item in members) > 8 * 1024**3:
+            raise ValueError('备份包解压规模超过安全限制')
+        if any(item.file_size > 2 * 1024**3 or item.flag_bits & 1 for item in members):
+            raise ValueError('备份包含过大或加密成员')
         names = set(archive.namelist())
         if len(names) != len(archive.namelist()):
             raise ValueError("备份包含重复文件")
         if "supplier_data.db" not in names or "manifest.json" not in names:
             raise ValueError("备份包缺少数据库或清单文件")
+        if archive.getinfo('manifest.json').file_size > 20 * 1024**2:
+            raise ValueError('备份清单过大')
         for name in names:
             pure = PurePosixPath(name)
             if pure.is_absolute() or ".." in pure.parts or "\\" in name or ":" in name:
@@ -101,11 +118,13 @@ def _extract_archive(source, folder):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(archive.read(name))
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("database") != "supplier_data.db" or not isinstance(manifest.get("files"), list):
+    if not isinstance(manifest, dict) or manifest.get("database") != "supplier_data.db" or not isinstance(manifest.get("files"), list):
         raise ValueError("备份包清单格式无效")
     if manifest.get('database_sha256') and _sha256(folder / 'supplier_data.db') != manifest['database_sha256']:
         raise ValueError('备份数据库校验码不匹配')
     for entry in manifest['files']:
+        if not isinstance(entry, dict):
+            raise ValueError('附件清单格式无效')
         member = PurePosixPath(entry.get('archive_path', ''))
         if (len(member.parts) != 2 or member.parts[0] != 'files' or '..' in member.parts
                 or '\\' in str(member) or ':' in str(member)):
@@ -145,11 +164,49 @@ def inspect_backup_archive(source):
         }
 
 
+def _restore_database(snapshot):
+    with closing(sqlite3.connect(Path(snapshot).resolve().as_uri() + '?mode=ro', uri=True)) as src:
+        with closing(sqlite3.connect(connection.DB_PATH, timeout=30)) as dst:
+            src.backup(dst)
+            if dst.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                raise RuntimeError('恢复后完整性检查失败')
+            if dst.execute('PRAGMA foreign_key_check').fetchone():
+                raise RuntimeError('恢复后外键检查失败')
+
+
+def _replace_attachment(source, target):
+    """Stage beside the destination so failure cannot truncate its old contents."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(prefix='.restore_', dir=target.parent, delete=False) as handle:
+        staged = Path(handle.name)
+    try:
+        shutil.copyfile(source, staged)
+        staged.replace(target)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _preserve_restore_state(targets, safety_dir):
+    files_dir = safety_dir / 'files'
+    files_dir.mkdir()
+    entries = []
+    for index, target in enumerate(targets):
+        saved = files_dir / str(index) if target.exists() else None
+        if saved:
+            shutil.copy2(target, saved)
+        entries.append({'target': str(target), 'before': str(saved) if saved else None})
+    (safety_dir / 'rollback_manifest.json').write_text(
+        json.dumps({'database': str(connection.DB_PATH), 'files': entries}, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+    return entries
+
+
 def restore_backup_archive(source, *, safety_backup_dir=None):
     """把备份包恢复到当前数据库与附件目录。
 
-    顺序：解包到隔离目录并校验 → 在线备份当前库到 backups/restore_safety_<时间戳>/ →
-    用 SQLite 备份接口把快照写回当前库 → 按清单还原附件。
+    校验完整包 → 保全当前库及目标附件 → 在线恢复库及原子替换附件。
+    中途失败则回滚两类资源；回滚失败时保留安全副本和逐文件恢复清单。
     不删除备份包之外已存在的附件。
     """
     source = Path(source)
@@ -167,33 +224,45 @@ def restore_backup_archive(source, *, safety_backup_dir=None):
 
         # 覆盖前先给当前库留安全副本
         safety_root = Path(safety_backup_dir) if safety_backup_dir else PROJECT_ROOT / "backups"
-        safety_dir = safety_root / f"restore_safety_{datetime.now():%Y%m%d_%H%M%S}"
+        safety_root.mkdir(parents=True, exist_ok=True)
+        safety_dir = Path(tempfile.mkdtemp(prefix=f'restore_safety_{datetime.now():%Y%m%d_%H%M%S}_', dir=safety_root))
         safety_copy = backup_database(connection.DB_PATH, safety_dir / "before.db")
+        previous_files = _preserve_restore_state(targets, safety_dir)
 
-        # 用备份接口把快照内容写回当前库，避免直接替换正在使用的文件
-        with closing(sqlite3.connect(snapshot.as_uri() + "?mode=ro", uri=True)) as src:
-            dst = sqlite3.connect(connection.DB_PATH, timeout=30)
+        restored_files, touched = [], []
+        try:
+            _restore_database(snapshot)
+            for entry, resolved, prior in zip(manifest['files'], targets, previous_files):
+                packed = Path(folder) / 'files' / PurePosixPath(entry['archive_path']).name
+                touched.append(prior)
+                _replace_attachment(packed, resolved)
+                restored_files.append(entry['original_path'])
+        except Exception as error:
+            rollback_errors = []
+            for prior in reversed(touched):
+                target = Path(prior['target'])
+                try:
+                    if prior['before']:
+                        _replace_attachment(Path(prior['before']), target)
+                    else:
+                        target.unlink(missing_ok=True)
+                except Exception as rollback_error:
+                    rollback_errors.append(f'附件 {target}: {rollback_error}')
             try:
-                src.backup(dst)
-                if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                    raise RuntimeError("恢复后完整性检查失败")
-            finally:
-                dst.close()
-
-        restored_files, skipped_files = [], []
-        for entry, resolved in zip(manifest["files"], targets):
-            original = entry.get("original_path", "")
-            packed = Path(folder) / "files" / PurePosixPath(entry.get("archive_path", "")).name
-            if not packed.is_file():
-                skipped_files.append(original)
-                continue
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_bytes(packed.read_bytes())
-            restored_files.append(original)
+                _restore_database(safety_copy)
+            except Exception as rollback_error:
+                rollback_errors.append(f'数据库: {rollback_error}')
+            if rollback_errors:
+                raise RuntimeError(
+                    f'恢复失败，自动回滚未完成，请停止录入并核对数据。安全材料保留于 {safety_dir}；'
+                    'before.db 是恢复前数据库，rollback_manifest.json 标明各附件原件及原本不存在的路径。'
+                    '请关闭应用后使用这些材料恢复，勿重复提交恢复。未完成项：' + '；'.join(rollback_errors)
+                ) from error
+            raise RuntimeError(f'恢复失败，已回滚数据库和本次涉及的附件。安全副本：{safety_dir}。原因：{error}') from error
 
         return {
             "safety_backup": str(safety_copy),
             "restored_files": restored_files,
-            "skipped_files": skipped_files,
+            "skipped_files": [],
             "missing_files": list(manifest.get("missing_files", [])),
         }

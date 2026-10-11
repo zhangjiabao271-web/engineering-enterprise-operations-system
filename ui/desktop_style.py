@@ -41,6 +41,8 @@ def install_desktop_style(root):
     surface("Kpi.TFrame", COLORS["surface_muted"], outside=COLORS["surface"])
     surface("Toolbar.TFrame", COLORS["surface"], outline=COLORS["border"])
     surface("LedgerSpine.TFrame", COLORS["surface"], outline=COLORS["border"])
+    surface("ChatBubble.TFrame", COLORS["surface_muted"], outside=COLORS["surface"], radius=14)
+    surface("ChatComposer.TFrame", COLORS["surface_muted"], outside=COLORS["surface"], radius=14)
 
     def button(name, fill, hover, pressed, foreground, *, outline=None):
         element = f"Desktop.{name}.button"
@@ -163,9 +165,6 @@ def navigation_icon(root, key, color):
     elif key in ("finance", "import_export"):
         line([(3, 8), (21, 8), (17, 4)])
         line([(21, 16), (3, 16), (7, 20)])
-    elif key == "funds":
-        box((3, 5, 21, 20))
-        box((14, 10, 22, 16), 1)
     elif key == "cost":
         oval((3, 3, 21, 21))
         line([(12, 3), (12, 12), (21, 12)])

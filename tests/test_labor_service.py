@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -11,23 +12,9 @@ class LaborServiceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="labor_service_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
-        source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
+        source_db = Path(os.environ["SUPPLY_CHAIN_DB_PATH"])
         from db.backup import backup_database
-        _oss_source_db = source_db
-        if _oss_source_db.exists():
-            backup_database(_oss_source_db, cls.test_db)
-        else:
-            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
-            import db.connection as _conn_module
-            import db.migration_runner as _runner_module
-            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
-            _conn_module.DB_PATH = cls.test_db
-            _runner_module.DB_PATH = cls.test_db
-            try:
-                from db.schema import init_db as _init_db
-                _init_db()
-            finally:
-                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
+        backup_database(source_db, cls.test_db)
 
         import db.connection as connection
         from db.migration_runner import run_migrations
@@ -300,7 +287,7 @@ class LaborServiceTests(unittest.TestCase):
 
     # ---------- 工地别名与项目建议 ----------
 
-    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+    @unittest.skip("Legacy production-data fixture is not published")
     def test_03_site_alias_resolution_and_suggestion(self):
         suffix = uuid4().hex[:8]
         worker_id = self._make_worker(suffix)

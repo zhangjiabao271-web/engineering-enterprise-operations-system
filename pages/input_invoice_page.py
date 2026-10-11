@@ -31,7 +31,7 @@ class EntityPage:
         self.entities={r['name']:r for r in entities.list_entities()}
         self.names={r['id']:r['name'] for r in self.entities.values()}
         ttk.Label(parent,text='先确认项目归属建议，再按类别批量确认单据。只改归属标签，不改金额和历史回款匹配；新单据也需人工确认。',wraplength=900).pack(anchor='w')
-        ttk.Label(parent,text='示例一般纳税人主体：一般纳税人；示例小规模主体：小规模纳税人。未确认的记录不会归给任何一家。',style='PageSub.TLabel').pack(anchor='w',pady=(4,8))
+        ttk.Label(parent,text='示例钢构：一般纳税人；示例安装：小规模纳税人。未确认的记录不会归给任何一家。',style='PageSub.TLabel').pack(anchor='w',pady=(4,8))
         bar=ttk.Frame(parent)
         bar.pack(fill='x')
         self.kind=ttk.StringVar(value='项目归属建议')

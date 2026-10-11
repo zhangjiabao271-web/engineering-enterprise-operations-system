@@ -1,3 +1,4 @@
+import os
 """固化关键业务冒烟断言为可重复运行的测试。
 
 覆盖：V4 迁移校验、项目利润口径、采购税费运费、数据库完整性。
@@ -17,23 +18,9 @@ class _IsolatedDatabaseTestCase(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory(prefix="smoke_test_")
         cls.test_db = Path(cls.temp_dir.name) / "supplier_data.db"
-        source_db = Path(__file__).resolve().parent.parent / "supplier_data.db"
+        source_db = Path(os.environ["SUPPLY_CHAIN_DB_PATH"])
         from db.backup import backup_database
-        _oss_source_db = source_db
-        if _oss_source_db.exists():
-            backup_database(_oss_source_db, cls.test_db)
-        else:
-            # 开源环境无生产库：从空库初始化基础表并跑全量迁移构建测试库
-            import db.connection as _conn_module
-            import db.migration_runner as _runner_module
-            _saved_paths = (_conn_module.DB_PATH, _runner_module.DB_PATH)
-            _conn_module.DB_PATH = cls.test_db
-            _runner_module.DB_PATH = cls.test_db
-            try:
-                from db.schema import init_db as _init_db
-                _init_db()
-            finally:
-                _conn_module.DB_PATH, _runner_module.DB_PATH = _saved_paths
+        backup_database(source_db, cls.test_db)
 
         import db.connection as connection
         from db.migration_runner import run_migrations
@@ -246,7 +233,7 @@ class ProjectProfitFormulaTests(_IsolatedDatabaseTestCase):
 class ProcurementTaxFreightTests(_IsolatedDatabaseTestCase):
     """采购税额与运费口径（对应 scripts/smoke_procurement_tax_freight.py）。"""
 
-    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+    @unittest.skip("Legacy production-data fixture is not published")
     def test_tax_and_freight_calculation(self):
         from services import master_data_service, procurement_service, project_service
 
@@ -535,7 +522,7 @@ class CostDashboardTests(_IsolatedDatabaseTestCase):
         for _label, amount in data["by_source"]:
             self.assertGreaterEqual(amount, 0)
 
-    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "supplier_data.db").exists(), "依赖本地生产库数据，开源环境跳过")
+    @unittest.skip("Legacy production-data fixture is not published")
     def test_dashboard_all_projects_total(self):
         from services import cost_service
 

@@ -26,12 +26,16 @@ class _FakeStyle:
     def __init__(self):
         self.configurations = {}
         self.maps = {}
+        self.layouts = {}
 
     def configure(self, name, **options):
         self.configurations[name] = options
 
     def map(self, name, **options):
         self.maps[name] = options
+
+    def layout(self, name, layout):
+        self.layouts[name] = layout
 
 
 class _FakeRoot:

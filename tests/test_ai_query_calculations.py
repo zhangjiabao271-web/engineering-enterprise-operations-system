@@ -64,6 +64,29 @@ class QueryCalculationTests(QueryToolsTests):
         result = execute_plan(plan, db_path=self.path)
         self.assertIn('无法可靠计算', result['answer'])
 
+    def test_profit_completeness_warnings_survive_every_answer_mode(self):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute("DELETE FROM work_logs")
+            conn.execute("DELETE FROM cost_entries")
+            conn.execute("INSERT INTO settlements VALUES(3,'2025-01-04','S3',NULL,NULL,10000,'active')")
+        for mode in ('leader', 'summary', 'ranking', 'details'):
+            query = {'dataset': 'profit', 'metrics': ['gross_profit_minor'],
+                     'start_date': '2025-01-01', 'end_date': '2025-02-28', 'result_mode': mode}
+            if mode in ('leader', 'ranking'):
+                query['group_by'] = ['project']
+            with self.subTest(mode=mode):
+                answer = execute_plan({'queries': [query]}, db_path=self.path)['answer']
+                self.assertIn('缺少收入或成本记录', answer)
+                self.assertIn('1条待归集记录', answer)
+
+    def test_profit_ranking_keeps_project_ids_and_monthly_profit(self):
+        query = self.profit_plan()['queries'][0]
+        query.update(group_by=['project'], result_mode='ranking')
+        answer = execute_plan({'queries': [query]}, db_path=self.path)['answer']
+        self.assertIn('工程甲（项目编号1）', answer)
+        self.assertIn('| 月均毛利 |', answer)
+        self.assertIn('¥275.00（2个自然月）', answer)
+
     def test_growth_uses_whole_totals_not_display_limit(self):
         plan = {'queries': [self.query('income', filters={'project': name}, limit=1)
                             for name in ('工程甲', '工程乙')],

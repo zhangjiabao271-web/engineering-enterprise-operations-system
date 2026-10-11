@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import date
 
 from ai_client import AIError
+from db.connection import db_read
 from services import ai_query_tools, labor_service, project_service
 
 
@@ -16,10 +17,32 @@ PLAN_INSTRUCTIONS = """你是工程企业经营系统的只读查账规划器。
 "start_date":"2025-01-01","end_date":"2025-12-31","group_by":["month"],
 "metrics":["amount_minor"],"order_by":"amount_minor","descending":true,"limit":20}]}
 queries最多6项，group_by最多2项，limit为1至50。字段必须来自工具目录。
+目录还包括已有经营能力，如invoice_balance（当前发票余额）、receipt_matching（回款待抵发票）、
+project_finance、project_profit、funds_overview、collection_actions、business_action_plan等。
+这些工具直接复用本地业务服务；格式为{"dataset":"invoice_balance","filters":{"project":"项目名称"}}，
+只传目录parameters列出的参数，不传metrics/result_mode/group_by/日期。全公司工具不能加项目条件。
+用户问“哪些发票还有余额”“哪些回款还在等后续开票”，须选择相应工具，不能因上一问使用了income就说不支持。
+这类余额是当前累计快照；用户明确指定期间时，先澄清是查询期间开出的发票的当前余额还是历史时点余额，不能忽略日期。
+每项查询还可指定result_mode：summary（合计）、leader（找最大/最小对象）、ranking（排名或比较表）、details（逐条记录）。
+details的order_by可选目录detail_order_by中的可展示字段（数值指标须同时选择），例如date或amount_minor；
+descending=false为从早到晚/从小到大，true为从晚到早/从大到小。未知值排最后，排序在明细截断之前完成。
+必须理解用户要的回答形式，不要把“找谁”变成“列出所有”。“收入最多的客户是谁”“哪个项目成本最高”“谁工天最少”
+应选leader、按对应对象分组、按所问指标排序；最多/最高降序，最少/最低升序。程序会在全部分组中找极值并报告并列。
+“今年业务做得最多的客户”默认比较已确认收入金额，明确问次数时才比较count；回答会明示口径。
+“前五名”“各客户占比”“列出排名”选ranking；“总共多少”选summary；“有哪些明细/逐条看看”选details。
+同一指标的问法变了，只改变result_mode和必要的排序，不改变收入/回款等事实口径；追问也需要重新判定回答形式。
 filters是字段到名称的关键词匹配。不得编造ID、条件或丢弃用户指定条件。
+selected_project含id和name。项目查询可用project_id，但只能复用选中项目或历史已确认的编号；
+不要根据名称猜测编号。项目同名时由本地校验要求确认编号，不合并不同项目。
 有日期的工具必须指定end_date，默认为今天；未指定起始时间时start_date可为空。
 今年=今年1月1日至今天，本月=本月1日至今天；历史完整月份/年份按自然边界。
 收入贡献看income；当前欠款看receivables（累计快照，禁止套用年份日期）。
+全公司或客户的“总共收到多少回款/哪个客户回款最多”查collections：现有回款与独立历史旧账一起统计，每笔到账只算一次。
+receipts仅查现有项目的回款分配，不代表全公司实际到账；按现有项目筛选或分组才用receipts。
+明确问历史旧账回款用historical_receipts，可按customer或historical_project查询、分组。
+historical_project_id是独立旧账编号，不是project_id；不能继承现有项目编号或将旧账加入工程收入、开票、利润。
+历史同名项目由本地要求澄清，可使用已确认的历史编号或用户明确提供的“历史旧账项目编号N”，不得猜测。
+collections不支持项目筛选；当前选中现有项目却要查独立旧账时，先请用户切到全公司范围，不能默默丢弃范围。
 比较今年各客户收入贡献和当前欠款时，用两项查询，各按customer分组。
 比较多个期间或模块时生成多项查询，计算、分组、排序、占比由本地程序执行。
 不要继承无关的历史条件；“那上个月呢”等追问仅修改上一查询的时间，保留其他条件。
@@ -52,13 +75,20 @@ average_project（profit合计除期间有收入或成本的独立项目数）�
 def use_fast_path(question, context=None):
     """Preserve proven offline shortcuts; use the planner for composition."""
     context = context or {}
-    if context.get("query_plan") or context.get("query_pending"):
-        return False
     text = re.sub(r"[\s？?。]", "", str(question))
     if any(word in text for word in (
         "同时", "以及", "分别", "对比", "比较", "占比", "排名", "最多", "最少",
         "并且", "但是", "；", ";", "，", ",", "和", "与",
     )):
+        return False
+    # A standalone current-state request stays available offline after a planned
+    # query. Elliptical follow-ups still need the planner to retain conditions.
+    if text in {'哪些发票未结清', '哪些发票还有余额', '哪些回款还在等后续开票',
+                '今天该催谁', '今天做什么', '账户余额', '资金余额'}:
+        return True
+    if re.fullmatch(r'(?:.+?项目)?(?:当前|目前)?发票(?:余额|未结清余额)(?:是多少|多少)', text):
+        return True
+    if context.get('query_plan') or context.get('query_pending'):
         return False
     if re.fullmatch(r".+?(?:20\d{2}年)?\d{1,2}月(?:做了)?几工", text):
         return True
@@ -121,23 +151,67 @@ def _whole_company_request(question):
     return bool(_scope_terms(question))
 
 
-def _validate_scope(plan, question, selected_project, all_projects):
+def _validate_scope(plan, question, selected_project, all_projects, previous=None):
     queries = plan.get("queries", [])
-    if all_projects and any(query.get("filters", {}).get("project") for query in queries):
+    if all_projects and any(query.get("filters", {}).get(dimension) or query.get(identity)
+                            for query in queries for dimension, identity in ai_query_tools.PROJECT_IDENTITIES.items()):
         raise ai_query_tools.QueryValidationError("你要求查询所有项目，但计划仍限定了项目，不能执行。")
-    if selected_project and not all_projects:
-        for query in queries:
-            project_filter = query.get("filters", {}).get("project")
-            if not project_filter or (project_filter != selected_project and project_filter not in question):
+    prior_ids = {}
+    for query in (previous or {}).get('queries', []):
+        if query.get('project_id'):
+            prior_ids.setdefault(query.get('filters', {}).get('project'), set()).add(query['project_id'])
+    for query in queries:
+        if query['dataset'] == 'historical_receipts':
+            if selected_project and not all_projects:
+                raise ai_query_tools.QueryValidationError('历史旧账与当前工程项目独立，请先切换到全公司范围。')
+            historical_id = query.get('historical_project_id')
+            historical_name = query.get('filters', {}).get('historical_project')
+            confirmed_ids = {prior['historical_project_id'] for prior in (previous or {}).get('queries', [])
+                             if prior.get('dataset') == 'historical_receipts'
+                             and prior.get('historical_project_id')
+                             and prior.get('filters', {}).get('historical_project') == historical_name}
+            explicit = bool(historical_id and re.search(
+                rf'历史(?:旧账)?项目编号\s*{historical_id}(?!\d)', question))
+            if historical_id is not None and historical_id not in confirmed_ids and not explicit:
+                raise ai_query_tools.QueryValidationError('历史旧账项目编号未经确认，不能继承或猜测工程项目编号。')
+            if historical_id is None and len(confirmed_ids) == 1:
+                query['historical_project_id'] = next(iter(confirmed_ids))
+            continue
+        project_filter = query.get('filters', {}).get('project')
+        identity = query.get('project_id')
+        explicit_id = bool(identity and re.search(rf'(?:项目编号|项目ID)\s*{identity}(?!\d)', question, re.I))
+        if selected_project and not all_projects:
+            if not explicit_id and (project_filter == selected_project['name'] or identity == selected_project['id']):
+                if identity is not None and identity != selected_project['id']:
+                    raise ai_query_tools.QueryValidationError('计划项目编号与当前选中项目不一致。')
+                query['project_id'] = selected_project['id']
+                continue
+            if not explicit_id and (not project_filter or project_filter not in question):
                 raise ai_query_tools.QueryValidationError("当前选中了项目，但计划未正确限定项目。请确认要查此项目还是全公司。")
+        confirmed_ids = prior_ids.get(project_filter, set())
+        prior_id = next(iter(confirmed_ids)) if len(confirmed_ids) == 1 else None
+        if identity is not None and identity not in confirmed_ids and not explicit_id:
+            raise ai_query_tools.QueryValidationError('项目编号未经选择或确认，不能按模型猜测的编号查询。')
+        if prior_id and identity is None:
+            query['project_id'] = prior_id
     per_project = any(term.startswith(("每", "各")) for term in _scope_terms(question))
     if per_project and queries:
         if any("project" not in query.get("group_by", []) for query in queries):
             raise ai_query_tools.QueryValidationError("你要求逐项目结果，但计划没有按项目分组。")
     if "毛利" in question and queries:
-        if not any(query["dataset"] == "profit" and "gross_profit_minor" in query["metrics"]
+        if not any(query["dataset"] in ('project_profit', 'profit_risks') or
+                   (query["dataset"] == "profit" and "gross_profit_minor" in query.get("metrics", []))
                    for query in queries):
             raise ai_query_tools.QueryValidationError("你询问毛利，但计划没有查询按项目归集的毛利指标。")
+    if queries and len(queries) == 1 and re.search(r"谁|哪(?:个|家|位)", question):
+        maximum = re.search(r"最多|最高|最大|第一名", question)
+        minimum = re.search(r"最少|最低|最小", question)
+        if (maximum or minimum) and not re.search(r"排名|榜单|前\s*[一二三四五六七八九十\d]+|对比|比较", question):
+            query = queries[0]
+            if query.get("result_mode") != "leader":
+                raise ai_query_tools.QueryValidationError("用户要找最大或最小的对象，查询须用result_mode=leader直接给结论，不能只列降序榜单。")
+            if bool(query.get("descending", True)) != bool(maximum):
+                raise ai_query_tools.QueryValidationError("查询排序方向与最多/最少的要求不一致。")
 
 
 def _turn(question, answer, *, sources=None, updates=None, intent="planned_business_query"):
@@ -161,8 +235,13 @@ def query_turn(question, client, *, project_id=None, conversation_context=None,
     all_projects = _whole_company_request(question)
     selected_project = None
     if project_id and not all_projects:
-        projects = project_service.list_projects(active_only=False)
-        selected_project = next((p["name"] for p in projects if p["id"] == int(project_id)), None)
+        if db_path is not None:
+            with db_read(db_path) as conn:
+                projects = [dict(row) for row in conn.execute('SELECT id,name FROM projects WHERE id=?', (int(project_id),))]
+        else:
+            projects = project_service.list_projects(active_only=False)
+        selected_project = next(({'id': int(p['id']), 'name': p['name']}
+                                 for p in projects if p["id"] == int(project_id)), None)
         if selected_project is None:
             raise AIError("选中的项目不存在，请重新选择范围。", code="invalid_query_scope")
     if len(question) > 4000:
@@ -170,7 +249,9 @@ def query_turn(question, client, *, project_id=None, conversation_context=None,
     previous = deepcopy(_previous_plan(context))
     if all_projects and previous:
         for prior_query in previous.get("queries", []):
-            prior_query.get("filters", {}).pop("project", None)
+            for dimension, identity in ai_query_tools.PROJECT_IDENTITIES.items():
+                prior_query.get("filters", {}).pop(dimension, None)
+                prior_query.pop(identity, None)
     # Only authorized questions, query conditions and tool descriptions leave the
     # device. No ledger rows, entire history, contacts or attachments are sent.
     prompt = {
@@ -199,7 +280,8 @@ def query_turn(question, client, *, project_id=None, conversation_context=None,
         check_cancelled()
         try:
             valid_plan = ai_query_tools.validate_plan(plan)
-            _validate_scope(plan, question, selected_project, all_projects)
+            _validate_scope(plan, question, selected_project, all_projects, previous)
+            ai_query_tools.validate_plan(plan)
             break
         except ai_query_tools.QueryValidationError as error:
             if attempt == 0:
@@ -219,12 +301,23 @@ def query_turn(question, client, *, project_id=None, conversation_context=None,
             # the next turn after the user has already resolved the entity.
             for query, facts in zip(plan["queries"], result["results"]):
                 query["filters"] = facts["resolved_filters"]
+                for identity in ai_query_tools.PROJECT_IDENTITIES.values():
+                    if facts.get(identity) is not None:
+                        query[identity] = facts[identity]
         updates = {
             "query_plan": plan if completed else None, "query_pending": None if completed else plan,
             "query_question": question, "data_modules": [s["module"] for s in result["sources"]],
         }
         if all_projects:
             updates["project_id"] = None
+        elif completed:
+            project_ids = {query['project_id'] for query in plan['queries'] if query.get('project_id')}
+            if len(project_ids) == 1:
+                updates['project_id'] = next(iter(project_ids))
+            elif len(project_ids) > 1:
+                updates['project_id'] = None
+            elif any(query['dataset'] == 'historical_receipts' for query in plan['queries']):
+                updates['project_id'] = None
         return _turn(question, result["answer"], sources=result["sources"], updates=updates)
     except ai_query_tools.QueryValidationError as error:
         check_cancelled()

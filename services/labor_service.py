@@ -419,21 +419,59 @@ def add_work_log(data):
         return cursor.lastrowid
 
 
-def add_work_logs_batch(entries):
+def _validate_active_work_log_workers(conn, worker_ids):
+    for worker_id in set(int(value) for value in worker_ids):
+        worker = conn.execute(
+            "SELECT name, status FROM workers WHERE id=?", (worker_id,)
+        ).fetchone()
+        if not worker:
+            raise ValueError("所选工人档案不存在，请刷新后重选")
+        if worker["status"] != "在职":
+            raise ValueError(f"{worker['name']} 已离职，请刷新后选择在职工人")
+
+
+def validate_active_work_log_workers(worker_ids):
+    """Check new-entry candidates without changing historical attendance."""
+    with db_read() as conn:
+        _validate_active_work_log_workers(conn, worker_ids)
+
+
+def _prepare_work_logs_batch(conn, entries, active_only):
+    entries = [_normalize_work_log_data(data) for data in entries]
+    if active_only:
+        _validate_active_work_log_workers(conn, [data["worker_id"] for data in entries])
+    prepared = []
+    for data in entries:
+        project_id, site_id = _resolve_attribution(conn, data)
+        amounts = _work_log_amounts(conn, data)
+        prepared.append((data, amounts, project_id, site_id))
+    _validate_daily_work_limit(
+        conn, [(data, amounts) for data, amounts, _project, _site in prepared]
+    )
+    return prepared
+
+
+def preview_work_logs_batch(entries, *, active_only=False):
+    """Use exactly the save-time wage, attribution and daily-limit rules."""
+    with db_read() as conn:
+        rows = []
+        for data, amounts, project_id, site_id in _prepare_work_logs_batch(conn, entries, active_only):
+            worker = conn.execute("SELECT name FROM workers WHERE id=?", (data["worker_id"],)).fetchone()
+            project = conn.execute("SELECT name FROM projects WHERE id=?", (project_id,)).fetchone()
+            rows.append({
+                **data, **amounts, "project_id": project_id, "project_site_id": site_id,
+                "worker_name": worker["name"], "project_name": project["name"] if project else "待归集",
+            })
+        return rows
+
+
+def add_work_logs_batch(entries, *, active_only=False):
     if not entries:
         return 0
-    entries = [_normalize_work_log_data(data) for data in entries]
     with db_transaction(immediate=True) as conn:
         now = _now()
         organization_id = _organization_id(conn)
-        prepared = []
-        for data in entries:
-            project_id, site_id = _resolve_attribution(conn, data)
-            amounts = _work_log_amounts(conn, data)
-            prepared.append((data, amounts, project_id, site_id))
-        _validate_daily_work_limit(
-            conn, [(data, amounts) for data, amounts, _project, _site in prepared]
-        )
+        prepared = _prepare_work_logs_batch(conn, entries, active_only)
         for data, amounts, project_id, site_id in prepared:
             conn.execute(
                 """INSERT INTO work_logs (

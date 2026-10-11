@@ -118,7 +118,7 @@ def main():
                 Path(screenshot_dir) / "ai-assistant-page.png"
             )
 
-        page.set_input("康飞那里今年买了多少东西？")
+        page.set_input("演示紧固件商店那里今年买了多少东西？")
         page.send()
         wait_for_turn(root, page)
         conversation = ai_conversation_service.get_conversation(
@@ -178,7 +178,7 @@ def main():
         )
 
         page.new_conversation()
-        page.set_input("青岭今年的人工成本是多少")
+        page.set_input("示例化工今年的人工成本是多少")
         page.send()
         wait_for_turn(root, page)
         labor_messages = ai_conversation_service.list_messages(

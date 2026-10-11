@@ -2,8 +2,12 @@
 config.ini
 ai_credentials.dat
 .env
+.env.*
+!.env.example
 *.key
 .db_key
+.local/
+*.log
 
 # ===== 数据库与备份 =====
 backups/
@@ -12,6 +16,12 @@ qa/
 *.db-journal
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
+*.zip
+*.pdf
+*.xlsx
+*.docx
 supplier_data.backup_*.db
 supplier_data.rescue_*.db
 
@@ -21,6 +31,7 @@ attachments/
 # ===== Python 环境 =====
 venv/
 .venv/
+node_modules/
 __pycache__/
 *.py[cod]
 *.egg-info/

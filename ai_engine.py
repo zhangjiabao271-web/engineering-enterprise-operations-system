@@ -9,6 +9,7 @@ from ai_client import AIClient, AIError, DEFAULT_API_BASE, DEFAULT_MODEL
 from services import (
     ai_labor_query_service,
     ai_query_planner,
+    ai_query_capabilities,
     ai_operating_query_service,
     ai_secret_store,
     business_knowledge_service,
@@ -489,6 +490,7 @@ SYSTEM_PROMPT = """你是工程企业老板的 AI 经营助手。你的职责是
 9. “业务知识检索结果”由本地程序从台账计算，优先用于回答本次问题。用户可以使用材料简称、口语或不完整名称。唯一近似命中时，要说明“按近似名称匹配到某标准品名”；若 requires_confirmation 为 true，只列候选并请用户确认，不得把不同候选强行合计。
 10. 数量只能在单位完全相同时相加；吨、张、平方米、米以及未注明单位必须分别表达。不得自行换算单位。
 11. 先识别用户查询的业务对象。提到“某供应商那里/那边买了多少东西或材料”是在问该供应商名下全部采购汇总，不得把供应商简称当成材料名；若同时明确说出某种材料，则只查询该供应商范围内的该材料。
+12. 长回答使用清晰的 Markdown 标题、短段落和必要的加粗。比较多个项目、客户或月份的同类数据时用表格，金额列写清单位；不要把多项金额和说明塞进连续长段落。汇总先呈现，明细后呈现，口径和数据缺口单独列出。简单事实仍保持简短，不为一句话套复杂模板。
 """
 
 
@@ -847,6 +849,7 @@ def ask_ai_turn(
     history=None,
     on_chunk=None,
     cancel_event=None,
+    allow_model=True,
 ):
     question = (user_input or "").strip()
     if not question:
@@ -856,11 +859,15 @@ def ask_ai_turn(
         project_id = conversation_context.get("project_id")
     if cancel_event is not None and cancel_event.is_set():
         raise AIError("本次查询已停止。", code="cancelled")
-    if not ai_query_planner.use_fast_path(question, conversation_context):
+    def planned_turn():
+        if not allow_model:
+            raise AIError("这个问题需要模型理解查询意图。请先勾选允许模型理解问题；只发送问题、已确认条件和工具目录，不发送原始账目。", code="model_consent_required")
         return ai_query_planner.query_turn(
             question, make_ai_client(), project_id=project_id,
             conversation_context=conversation_context, cancel_event=cancel_event,
         )
+    if not ai_query_planner.use_fast_path(question, conversation_context):
+        return planned_turn()
     try:
         labor_query = ai_labor_query_service.retrieve_labor_query(
             question, project_id=project_id, conversation_context=conversation_context,
@@ -904,7 +911,9 @@ def ask_ai_turn(
             "message_type": "answer",
             "answer": operating_query["answer"],
             "question": question,
-            "context_updates": {**(operating_query.get("context_updates") or {}), "labor_query": None},
+            "context_updates": {**(operating_query.get("context_updates") or {}), "labor_query": None,
+                                'query_plan': ai_query_capabilities.plan_for_local_result(operating_query),
+                                'query_pending': None, 'query_question': question},
             "sources": operating_query.get("sources") or [],
             "answer_mode": "local",
             "intent": operating_query.get("intent"),
@@ -924,10 +933,7 @@ def ask_ai_turn(
             "sources": _sources_from_knowledge(knowledge),
             "answer_mode": "local",
         }
-    return ai_query_planner.query_turn(
-        question, make_ai_client(), project_id=project_id,
-        conversation_context=conversation_context, cancel_event=cancel_event,
-    )
+    return planned_turn()
 
 
 def ask_ai(user_input, project_id=None):

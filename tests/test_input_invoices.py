@@ -32,6 +32,7 @@ class InputInvoiceTests(unittest.TestCase):
                     purchase_date TEXT,status TEXT);
                 CREATE TABLE cost_entries(id INTEGER PRIMARY KEY,cost_no TEXT,project_id INTEGER,
                     counterparty_name_snapshot TEXT,amount_minor INTEGER,cost_date TEXT,status TEXT,source_type TEXT);
+                CREATE TABLE fund_transactions(id INTEGER PRIMARY KEY,source_kind TEXT,source_id INTEGER,status TEXT);
                 CREATE TABLE business_attachments(file_path TEXT);
                 CREATE TABLE construction_photos(file_path TEXT);
                 INSERT INTO business_partners VALUES(1,'测试供应商','active',''),(2,'其他供应商','active','');

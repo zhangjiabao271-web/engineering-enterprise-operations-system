@@ -25,19 +25,27 @@ def _distribute(total, weights):
 def _purchase_rows(conn, project_id):
     orders = conn.execute(
         """SELECT ppc.*, po.purchase_date, po.order_no,
-                  po.merchant_name_snapshot, po.payment_status
+                  COALESCE(bp.legal_name, NULLIF(po.merchant_name_snapshot, ''), '')
+                      AS merchant_name_snapshot,
+                  po.payment_status,
+                  po.freight_amount_cents
            FROM purchase_project_costs ppc
            JOIN purchase_orders po ON po.id=ppc.purchase_order_id
+           LEFT JOIN business_partners bp ON bp.id=po.supplier_partner_id
            WHERE ppc.project_id=? AND po.status='active'
            ORDER BY po.purchase_date DESC, po.id DESC""",
         (project_id,),
     ).fetchall()
     items_by_order = {}
     for item in conn.execute(
-        """SELECT ppc.purchase_order_id, poi.material_name_snapshot,
+        """SELECT ppc.purchase_order_id, poi.id AS purchase_item_id,
+                  poi.material_name_snapshot,
                   poi.specification_snapshot, poi.cost_category, poi.quantity,
                   poi.unit_snapshot, poi.purpose, poi.material_amount_cents,
-                  poi.tax_amount_cents
+                  poi.tax_amount_cents, poi.line_amount_cents, poi.price_basis,
+                  poi.material_unit_price_cents, poi.tax_inclusive_unit_price_cents,
+                  poi.tax_rate_bps, poi.settlement_mode, poi.net_weight,
+                  poi.weight_unit, poi.weight_unit_price, poi.weigh_ticket_no
            FROM purchase_project_costs ppc
            JOIN purchase_orders po ON po.id=ppc.purchase_order_id
            JOIN purchase_order_items poi ON poi.purchase_order_id=po.id
@@ -56,15 +64,30 @@ def _purchase_rows(conn, project_id):
             order["tax_minor"], [item["tax_amount_cents"] for item in items]
         )
         for item, material, tax in zip(items, material_shares, tax_shares):
+            mode = item["settlement_mode"]
+            price_key = "material_unit_price_cents"
+            if item["price_basis"] == "inclusive":
+                price_key = "tax_inclusive_unit_price_cents"
             result.append({
+                "purchase_order_id": order["purchase_order_id"],
+                "purchase_item_id": item["purchase_item_id"],
                 "date": order["purchase_date"],
                 "source_no": order["order_no"],
                 "counterparty": order["merchant_name_snapshot"],
                 "category": item["cost_category"] or "材料费",
                 "description": item["material_name_snapshot"],
                 "specification": item["specification_snapshot"] or "",
-                "quantity": item["quantity"],
-                "unit": item["unit_snapshot"] or "",
+                "quantity": item["net_weight"] if mode == "weight" else item["quantity"],
+                "unit": (item["weight_unit"] if mode == "weight" else item["unit_snapshot"]) or "",
+                "settlement_mode": mode,
+                "price_basis": item["price_basis"],
+                "unit_price_cents": item[price_key] if mode == "quantity" else None,
+                "unit_price_yuan": item["weight_unit_price"] if mode == "weight" else None,
+                "tax_rate_bps": item["tax_rate_bps"],
+                "line_amount_minor": item["line_amount_cents"],
+                "line_material_minor": item["material_amount_cents"],
+                "line_tax_minor": item["tax_amount_cents"],
+                "weigh_ticket_no": item["weigh_ticket_no"] or "",
                 "purpose": item["purpose"] or "",
                 "material_minor": material,
                 "tax_minor": tax,
@@ -75,6 +98,7 @@ def _purchase_rows(conn, project_id):
             })
         if order["freight_minor"]:
             result.append({
+                "purchase_order_id": order["purchase_order_id"],
                 "date": order["purchase_date"],
                 "source_no": order["order_no"],
                 "counterparty": order["merchant_name_snapshot"],
@@ -83,6 +107,8 @@ def _purchase_rows(conn, project_id):
                 "specification": "",
                 "quantity": None,
                 "unit": "",
+                "settlement_mode": "freight",
+                "line_amount_minor": order["freight_amount_cents"],
                 "purpose": "",
                 "material_minor": 0,
                 "tax_minor": 0,
