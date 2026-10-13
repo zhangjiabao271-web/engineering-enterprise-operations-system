@@ -129,15 +129,22 @@ function optionList(items, selected = '') {
   return '<option value="">请选择 / 可留空</option>' + items.map(item => `<option value="${esc(item.value)}" ${String(item.value) === String(selected) ? 'selected' : ''}>${esc(item.label)}</option>`).join('');
 }
 
+function businessToday() {
+  return new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Shanghai'});
+}
+
 function fieldHTML(field, value, options = state.boot.options, prefix = '') {
-  value = value ?? field.default ?? '';
+  value = value ?? (field.default_today ? businessToday() : field.default) ?? '';
   const name = prefix + field.name;
   const required = field.required ? 'required' : '';
   const label = `${esc(field.label)}${field.required ? '<span class="required">*</span>' : ''}`;
   if (field.kind === 'checkbox') return `<label class="form-field check"><input type="checkbox" name="${esc(name)}" ${value ? 'checked' : ''}>${label}</label>`;
   let input;
   if (field.kind === 'select') {
-    const items = field.source ? (options[field.source] || []) : Object.entries(Array.isArray(field.choices) ? Object.fromEntries(field.choices.map(item => [item,item])) : field.choices || {}).map(([val,text]) => ({value:val,label:text}));
+    const items = field.source ? [...(options[field.source] || [])] : Object.entries(Array.isArray(field.choices) ? Object.fromEntries(field.choices.map(item => [item,item])) : field.choices || {}).map(([val,text]) => ({value:val,label:text}));
+    if (value !== '' && (!field.source || field.preserve_current) && !items.some(item=>String(item.value)===String(value))) {
+      items.push({value,label:field.source ? `原记录 · 编号${value}（当前不在可选名单）` : `${value}（原记录）`});
+    }
     const searchable = ['projects','active_projects','offers','suppliers','customers','workers','active_workers','contracts'].includes(field.source);
     input = `<select name="${esc(name)}" ${searchable ? 'data-search' : ''} ${required}>${optionList(items,value)}</select>`;
   } else if (field.kind === 'textarea') {
@@ -251,7 +258,7 @@ function formValues(fields) {
   return values;
 }
 
-function purchaseItem(item = {}) {
+function purchaseItem(item = {}, options = state.boot.options) {
   const price = item.unit_price ?? (item.price_basis === 'inclusive' ? minorInput(item.tax_inclusive_unit_price_cents) : minorInput(item.material_unit_price_cents));
   const values = {...item, product_id:item.supplier_offer_id || item.product_id || '', unit_price:price,
     tax_percent:item.tax_percent ?? Number(item.tax_rate_bps || 0)/100, settlement_total:item.settlement_total ?? minorInput(item.settlement_total_cents)};
@@ -269,8 +276,8 @@ function purchaseItem(item = {}) {
     {name:'settlement_total',label:'整批结算总额（元）',kind:'money'}, {name:'purpose',label:'用途'}];
   const section = document.createElement('section');
   section.className = 'purchase-item';
-  section.dataset.itemId = item.id || item.item_id || '';
-  section.innerHTML = `<h3>材料明细<button type="button" class="quiet remove-item">移除此行</button></h3><div class="form-grid">${fields.map(field => fieldHTML(field,values[field.name],state.boot.options,'item-')).join('')}</div><output class="item-preview" aria-live="polite">填写后显示本条材料金额</output>`;
+  section.dataset.itemId = item.item_id || item.id || '';
+  section.innerHTML = `<h3>材料明细<button type="button" class="quiet remove-item">移除此行</button></h3><div class="form-grid">${fields.map(field => fieldHTML({...field,preserve_current:Boolean(item.id || item.item_id)},values[field.name],options,'item-')).join('')}</div><output class="item-preview" aria-live="polite">填写后显示本条材料金额</output>`;
   const mode = section.querySelector('[name="item-settlement_mode"]');
   const updateMode = () => {
     for (const name of ['quantity','unit_snapshot','unit_price','net_weight','weight_unit','weight_unit_price','weigh_ticket_no','settlement_total']) {
@@ -284,26 +291,60 @@ function purchaseItem(item = {}) {
   updateMode();
   enhanceForms(section);
   const quoteLookup = createEditorLookup();
+  const quote = section.querySelector('[name="item-product_id"]');
+  const quoteHelp = document.createElement('small');
+  quoteHelp.className = 'form-help';
+  quote.closest('.form-field').append(quoteHelp);
+  const supplierId = () => form.elements.namedItem('supplier_id')?.value || '';
+  const originalQuoteLabel = quote.selectedOptions?.[0]?.textContent || '原记录报价（仅保留历史关联）';
+  const updateOffers = (preserveHistorical = false) => {
+    quoteLookup.cancel();
+    const selected = quote.value;
+    const owner = supplierId();
+    const candidates = (options.offers || []).filter(offer => owner && String(offer.supplier_id) === owner);
+    const knownOffer = (options.offers || []).find(offer => String(offer.value) === selected);
+    const keepHistorical = preserveHistorical && Boolean(item.item_id || item.id) && selected && !knownOffer && owner;
+    if (keepHistorical) candidates.push({value:selected,label:originalQuoteLabel});
+    const retained = candidates.some(offer => String(offer.value) === selected);
+    quote.innerHTML = optionList(candidates, retained ? selected : '');
+    quote.value = retained ? selected : '';
+    quote.disabled = !owner || !candidates.length;
+    if (!owner) quoteHelp.textContent = '请先选择上方供应商；零星采购也可以直接填写材料。';
+    else if (selected && !retained) quoteHelp.textContent = '原报价关联已清除，材料和成交价保留；请按当前供应商核对。';
+    else if (!candidates.length) quoteHelp.textContent = '该供应商暂无材料报价，可直接填写材料、数量和单价。';
+    else quoteHelp.textContent = '仅显示当前供应商的材料报价；也可直接填写材料。';
+    quote.dispatchEvent(new Event('choice-sync'));
+  };
+  section.updateSupplierOffers = () => updateOffers();
+  updateOffers(true);
   section.querySelector('.remove-item').onclick = () => {quoteLookup.cancel();section.remove();};
-  section.querySelector('[name="item-product_id"]').onchange = event => {
+  quote.onchange = event => {
     const offerId = event.target.value;
     return quoteLookup.run(() => offerId ? api('record?' + query({module:'offers',id:offerId})) : null,offer => {
-      if (!section.isConnected || !offer) return;
+      if (!section.isConnected || !offer || quote.value !== offerId) return;
+      if (String(offer.supplier_id) !== supplierId()) throw new Error('报价不属于当前供应商，请重新选择材料。');
       const assignments = {material_name_snapshot:offer.name,specification_snapshot:offer.specification,unit_snapshot:offer.unit,
         unit_price:offer.price,tax_percent:offer.tax_rate_percent,price_basis:offer.price_basis};
       for (const [key,value] of Object.entries(assignments)) section.querySelector(`[name="item-${key}"]`).value = value ?? '';
+      quoteHelp.textContent = '已选择当前供应商报价；保存时记录本次成交快照。';
       section.dispatchEvent(new Event('change', {bubbles:true}));
     });
   };
   return section;
 }
 
-async function editRecord(module, id) {
+async function editRecord(module, id, defaults={}) {
   const request = beginEditorRequest();
   const spec = state.boot.schema[module];
   const requestKey=crypto.randomUUID();
-  const record = id ? await request.read('record?' + query({module,id})) : {};
+  const record = id ? await request.read('record?' + query({module,id})) : {...defaults};
   const options = await request.read('options?' + query({project_id:module==='allocations'?null:record.project_id || state.project}));
+  // Support an already-running backend while its page scripts have been refreshed.
+  if (module === 'purchases' && options.offers.some(offer => offer.supplier_id === undefined)) {
+    const catalog = await request.read('rows?module=offers');
+    const suppliers = new Map(catalog.rows.map(offer => [String(offer.id),offer.supplier_id]));
+    options.offers = options.offers.map(offer => ({...offer,supplier_id:suppliers.get(String(offer.value))}));
+  }
   const ticket=await request.read('write_ticket?'+query({kind:'save',module,id,expected:record._version}));
   let fields = spec.fields;
   if (id && module === 'costs') fields = fields.map(field => {
@@ -319,6 +360,7 @@ async function editRecord(module, id) {
     }
   }
   if (module === 'contracts') fields = fields.map(field => field.name === 'amount' ? {...field,required:false} : field);
+  if (id) fields = fields.map(field=>({...field,preserve_current:true}));
   const body = (module==='receipts'?notice('经营主体在此确认，不必另去其他页面维护。收入、发票抵扣和真实资金仍分别核算；已关联到账流水的回款，不能单独改金额、日期或收款方式。'):'') +
     `<div class="form-grid">${fields.map(field => fieldHTML(field,record[field.name] ?? (field.name === 'project_id' ? state.project : undefined),options)).join('')}</div>` +
     (module === 'purchases' ? '<div id="purchase-items"></div><button type="button" id="add-item">添加材料明细</button><output id="purchase-preview" class="purchase-preview" aria-live="polite"></output>' : '') +
@@ -351,8 +393,13 @@ async function editRecord(module, id) {
   },{cancel:()=>api('write_discard',{token:ticket.token})});
   if (module === 'purchases') {
     const host = document.querySelector('#purchase-items');
-    (record.items?.length ? record.items : [{}]).forEach(item => host.append(purchaseItem(item)));
-    document.querySelector('#add-item').onclick = () => host.append(purchaseItem());
+    (record.items?.length ? record.items : [{}]).forEach(item => host.append(purchaseItem(item,options)));
+    document.querySelector('#add-item').onclick = () => host.append(purchaseItem({},options));
+    const supplier = form.elements.namedItem('supplier_id');
+    const updateOffers = () => host.querySelectorAll('.purchase-item').forEach(section => section.updateSupplierOffers());
+    supplier.addEventListener('change',updateOffers);
+    supplier.addEventListener('choice-sync',updateOffers);
+    supplier.closest('.search-choice').querySelector('input').addEventListener('input',updateOffers);
     initializePurchasePreview();
   }
   const project = form.elements.namedItem('project_id');
@@ -360,7 +407,18 @@ async function editRecord(module, id) {
   const linkedChoices = [['contract_id','contracts'],['settlement_id','settlements'],['invoice_id','invoices'],['project_site_id','sites']]
     .filter(([name]) => !(module==='allocations' && name==='contract_id'))
     .map(([name,source]) => [form.elements.namedItem(name),source]).filter(([select]) => select);
-  if (project) bindEditorChoices([project],linkedChoices,() => api('options?' + query({project_id:project.value})));
+  if(['settlements','invoices','receipts'].includes(module))bindFinancialChoices(options,record);
+  else if(module==='worklogs')bindWorkdaySite();
+  else if(project)bindEditorChoices([project],linkedChoices,() => api('options?' + query({project_id:project.value})));
+  if(module==='contracts')bindContractPricing(Boolean(id));
+  if(module==='receipts' && id){
+    for(const name of ['project_id','contract_id']){
+      const choice=form.elements.namedItem(name);
+      choice.disabled=true;
+      choice.dispatchEvent(new Event('choice-sync'));
+      choice.closest('label').insertAdjacentHTML('beforeend','<small>原回款归属，编辑时不可更换；对应收入可通过“重新分配”调整。</small>');
+    }
+  }
   if (module === 'receipts') {
     const payer = form.elements.payer_name;
     const contract = form.elements.contract_id;
@@ -413,6 +471,7 @@ async function renderCollection(module, parent) {
   const response = await api('rows?' + query({module,project_id:scoped ? state.project : '',keyword:state.keyword || ''}));
   const rows = response.rows;
   state.currentRows = rows;
+  state.page = Math.max(0,Math.min(state.page,Math.max(0,Math.ceil(rows.length/40)-1)));
   const title = parent ? ({contracts:'合同与结算',finance:'开票与回款',funds:'资金与计划',cost:'成本台账',labor:'人工与工天'}[parent] || spec.title) : spec.title;
   main.innerHTML = header(title, scoped ? '按项目范围查看，金额与状态取自现有业务事实。' : '全公司基础档案；项目筛选不改变本页档案范围。',
     `${module==='worklogs' && !state.boot.read_only ? '<button class="primary" id="batch-worklogs">批量登记工天</button>' : ''}${spec.can_create && !state.boot.read_only ? `<button class="${module==='worklogs'?'':'primary'}" id="new-record">${module==='worklogs'?'单人登记':'新增'+esc(spec.title)}</button>` : ''}<button id="export-csv">导出台账</button>`) +
@@ -529,8 +588,9 @@ async function renderDashboard(view) {
 
 async function actionForm(title, action, id, fields, transform = value => value) {
   const request = beginEditorRequest();
+  const options=await request.read('options?'+query({project_id:state.project}));
   const ticket=await request.read('write_ticket?'+query({kind:'action',action,id}));
-  openEditor(title,`<div class="form-grid">${fields.map(field => fieldHTML(field)).join('')}</div><label class="confirm-check"><input name="confirmed" type="checkbox" required>我已核对并确认此业务操作。</label>`,async () => {
+  openEditor(title,`<div class="form-grid">${fields.map(field => fieldHTML(field,undefined,options)).join('')}</div><label class="confirm-check"><input name="confirmed" type="checkbox" required>我已核对并确认此业务操作。</label>`,async () => {
     await api('action',{action,record:transform({id,...formValues(fields)}),form_ticket:ticket.token,confirmed:form.elements.confirmed.checked});
     cancelEditor=null;editor.close();toast('操作已保存。');await renderRoute(false);
   },{cancel:()=>api('write_discard',{token:ticket.token})});

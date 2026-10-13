@@ -49,8 +49,8 @@ SPECS = {
                    choice('invoice_policy','开票要求', {'required':'需要开票','not_required':'不要求开票','pending':'待确认'},'pending'), field('cash_agreed_amount','现金工程约定总额（可留空）','money'),
                    field('planned_start_date','计划开工','date'),field('planned_end_date','计划完工','date'),field('address','项目地址'),NOTES]},
     'contracts': {'title':'合同台账','list':contracts.list_contracts,'get':contracts.get_contract,'create':contracts.create_contract,'update':contracts.update_contract,
-        'scope':True,'attachment':'contract','columns':[('contract_no','合同编号'),('name','合同名称'),('customer_name_snapshot','客户'),('pricing_mode','计价方式'),('tax_inclusive_amount_minor','约定金额'),('settled_minor','已确认收入'),('status','合同状态')],
-        'fields':[field('name','合同名称',required=True),field('contract_no','合同编号'),select('customer_partner_id','客户档案','customers'),
+        'scope':True,'attachment':'contract','columns':[('contract_no','合同编号'),('name','合同名称'),('customer_name_snapshot','客户'),('entity_name','经营主体'),('ownership_source','归属依据'),('pricing_mode','计价方式'),('tax_inclusive_amount_minor','约定金额'),('settled_minor','已确认收入'),('status','合同状态')],
+        'fields':[field('name','合同名称',required=True),field('contract_no','合同编号'),select('customer_partner_id','客户档案','customers'),select('entity_id','经营主体（项目自动沿用）','entities'),
                   choice('contract_type','合同类型',contracts.CONTRACT_TYPES,'project'),choice('pricing_mode','计价方式',contracts.PRICING_MODES,'fixed'),AMOUNT,
                   field('control_limit','控制上限（可留空）','money'),field('sign_date','签约日期','date',required=True,default=TODAY),field('start_date','合同开始','date'),field('end_date','合同结束','date'),
                   select('parent_contract_id','补充协议所属合同','contracts'),choice('status','合同状态',{'draft':'草稿','active':'履约中','completed':'已完成'},'draft'),NOTES]},
@@ -73,11 +73,11 @@ SPECS = {
         'fields':[select('supplier_id','供应商','suppliers',True),field('name','材料名称',required=True),field('specification','规格型号'),field('unit','计量单位',required=True),field('price','报价（元）','money',required=True),
                   choice('price_basis','报价口径',{'exclusive':'未税价','inclusive':'含税价'},'exclusive'),field('tax_rate_percent','税率（%）','number',default='0'),NOTES]},
     'purchases': {'title':'采购管理','list':procurement.list_purchase_orders,'get':procurement.get_purchase_order,'scope':True,'attachment':'purchase','special':'purchase',
-        'columns':[('order_no','采购单号'),('purchase_date','采购日期'),('project_name','项目'),('supplier_name','供应商'),('total_amount_cents','含税总额'),('payment_status','付款状态'),('invoice_status','发票状态')],
+        'columns':[('purchase_date','采购日期'),('material_details','材料名称 / 规格'),('project_name','项目'),('supplier_name','供应商'),('total_amount_cents','含税总额'),('payment_status','付款状态'),('invoice_status','发票状态'),('order_no','采购单号')],
         'fields':[PROJECT,select('supplier_id','供应商','suppliers'),field('merchant_name_snapshot','零星商户名称'),field('purchase_date','采购日期','date',required=True,default=TODAY),
                   choice('purchase_type','采购类型',['正式采购','零星采购'],'正式采购'),field('purchaser','经办人'),field('freight_amount','运费（元）','money',default='0'),
-                  choice('payment_method','付款方式',['银行转账','现金','微信','支付宝','待确认'],'待确认'),choice('payment_status','付款状态',['未付款','部分付款','已付款'],'未付款'),
-                  choice('invoice_status','发票状态',['未开票','已开票','无需发票'],'未开票'),NOTES]},
+                  choice('payment_method','付款方式',['银行转账','对公转账','现金','微信','支付宝','员工垫付','未记录','待确认'],'待确认'),choice('payment_status','付款状态',['未确认','未付款','部分付款','已付款'],'未确认'),
+                  choice('invoice_status','票据状态',['未确认','有发票','收据','无发票','未开票','已开票','无需发票'],'未确认'),NOTES]},
     'costs': {'title':'费用登记','list':costs.list_cost_entries,'get':costs.get_cost_entry,'create':costs.create_cost,'update':costs.update_cost_details,'scope':True,'attachment':'cost',
         'columns':[('cost_no','费用编号'),('cost_date','发生日期'),('project_name','项目'),('category','类别'),('counterparty_name_snapshot','对方'),('amount_minor','费用金额'),('status','状态')],
         'fields':[select('project_id','项目（待归集可空）','projects'),choice('category','费用类别',costs.COST_CATEGORIES,'工程施工 / 材料辅料'),AMOUNT,field('cost_date','发生日期','date',required=True,default=TODAY),field('counterparty_name','对方名称'),field('vehicle_no','车牌（燃油费）'),NOTES]},
@@ -150,10 +150,16 @@ NAVIGATION = [
 
 def schema():
     result = {}
+    today = date.today().isoformat()
     special_create = {'purchases','accounts','plans','transactions','historical','input_invoices'}
     special_update = {'purchases','accounts','plans','historical','input_invoices'}
     for key, spec in SPECS.items():
         result[key] = {name:value for name,value in spec.items() if not callable(value)}
+        result[key]['fields'] = [
+            {**item, 'default': today, 'default_today': True}
+            if item['kind'] == 'date' and item['default'] == TODAY else dict(item)
+            for item in spec['fields']
+        ]
         result[key]['can_create'] = 'create' in spec or key in special_create
         result[key]['can_update'] = 'update' in spec or key in special_update
     return result
@@ -174,23 +180,51 @@ def money_form_value(value):
     return f'{cents // 100}.{cents % 100:02d}'
 
 
+def offer_quoted_minor(row):
+    # Older exclusive offers predate the explicit quoted-price column.
+    if row['quoted_price_minor'] is not None:
+        return row['quoted_price_minor']
+    return row['price_minor']
+
+
+def offer_option_label(row):
+    basis = '含税' if row['price_basis'] == 'inclusive' else '未税'
+    price = f'{basis} ¥{money_form_value(offer_quoted_minor(row))}/{row["unit"] or "单位未填"}'
+    return ' · '.join([row['name'], row['specification'] or '规格未填',
+                       row['supplier_name'], price, f'报价#{row["id"]}'])
+
+
 def options(project_id=None):
     def items(rows, label, id_key='id'):
         return [{'value':row[id_key], 'label':label(row)} for row in rows]
     project_rows = projects.list_projects()
     contract_rows = contracts.list_contracts(project_id=project_id)
     worker_rows = labor.get_workers()
+    settlement_rows = contracts.list_settlements(project_id=project_id)
+    invoice_rows = finance.list_invoices(project_id=project_id)
+    invoice_settlements = {}
+    with db_read() as conn:
+        for row in conn.execute('''SELECT a.invoice_id,a.settlement_id FROM invoice_settlement_allocations a
+            JOIN settlements s ON s.id=a.settlement_id WHERE s.status='active' '''):
+            invoice_settlements.setdefault(row['invoice_id'], []).append(row['settlement_id'])
     return {
-        'projects':items(project_rows, lambda r:f'{r["name"]} · {r["project_code"]}'),
+        'projects':[{'value':row['id'],'label':f'{row["name"]} · {row["project_code"]}',
+                     'business_mode':row['business_mode']} for row in project_rows],
         'active_projects':items([r for r in project_rows if r['status'] in ('进行中','筹备中')], lambda r:f'{r["name"]} · {r["project_code"]}'),
-        'contracts':items(contract_rows, lambda r:f'{r["contract_no"]} · {r["name"]}'),
+        'contracts':[{'value':row['id'],'label':f'{row["contract_no"]} · {row["name"]}',
+                      'income_mode':row['income_mode']} for row in contract_rows],
         'customers':items(partners.list_customers(), lambda r:r.get('legal_name') or r.get('name','')),
         'suppliers':items(partners.list_suppliers(), lambda r:r['name']),
-        'offers':items(partners.list_supplier_offers(), lambda r:f'{r["name"]} · {r["supplier_name"]}'),
+        'offers':[{'value':row['id'], 'label':offer_option_label(row), 'supplier_id':row['supplier_id']}
+                  for row in partners.list_supplier_offers()],
         'workers':items(worker_rows, lambda r:r['name']),
         'active_workers':items([r for r in worker_rows if r['status']=='在职'], lambda r:r['name']),
-        'settlements':items(contracts.list_settlements(project_id=project_id), lambda r:r['settlement_no']),
-        'invoices':items(finance.list_invoices(project_id=project_id), lambda r:r['invoice_no']),
+        'settlements':[{'value':row['id'],'label':row['settlement_no'],
+                        'project_id':row['project_id'],'contract_id':row['contract_id']}
+                       for row in settlement_rows],
+        'invoices':[{'value':row['id'],'label':row['invoice_no'],
+                     'project_id':row['project_id'],'contract_id':row['contract_id'],
+                     'settlement_ids':invoice_settlements.get(row['id'],[])} for row in invoice_rows],
         'accounts':items(funds.list_accounts(), lambda r:r['name']),
         'plans':items(funds.list_plans(), lambda r:r['title']),
         'entities':items(entities.list_entities(), lambda r:r['name']),
@@ -206,7 +240,15 @@ def prepare_purchase_items(items):
         if not isinstance(item, dict):
             raise ValueError('材料明细格式无效')
         item = dict(item)
-        item['product_id'] = int(item['product_id']) if item.get('product_id') else None
+        for key in ('product_id', 'item_id'):
+            value = item.get(key)
+            if value in ('', None):
+                item[key] = None
+                continue
+            identity = str(value).strip()
+            if not identity.isascii() or not identity.isdigit() or int(identity) <= 0:
+                raise ValueError('材料报价或明细编号无效，请重新打开采购单核对')
+            item[key] = int(identity)
         item['material_unit_price_cents'] = money_input(item.pop('unit_price', '0'))
         item['tax_inclusive_unit_price_cents'] = item['material_unit_price_cents']
         item['tax_rate_bps'] = money_input(item.pop('tax_percent', '0'))
@@ -234,6 +276,13 @@ def rows(module, project_id=None, keyword=''):
         result = project_ledger.list_projects(project_id, keyword)
     elif module == 'purchases':
         result = procurement.list_purchase_orders(project_id=project_id, keyword=keyword)
+        for row in result:
+            row['material_details'] = '\n'.join(
+                ' · '.join(value for value in (
+                    item.get('material_name_snapshot'), item.get('specification_snapshot'),
+                ) if value) or '材料名称未记录'
+                for item in row.get('items') or [row]
+            )
     elif spec.get('scope'):
         result = spec['list'](project_id=project_id)
     else:
@@ -242,14 +291,14 @@ def rows(module, project_id=None, keyword=''):
         for row in result:
             partner = partners.get_business_partner(row['id'])
             row['contact_phone'] = partner['contact_phone']
-    if module in ('invoices', 'receipts'):
-        kind = 'sales_invoices' if module == 'invoices' else 'receipts'
+    if module in ('projects','contracts','settlements','invoices','receipts'):
+        kind = 'sales_invoices' if module == 'invoices' else module
         with db_read() as conn:
-            ownership = {r['record_id']: dict(r) for r in conn.execute(
-                'SELECT r.record_id,r.entity_id,e.name AS entity_name FROM record_entities r '
-                'JOIN operating_entities e ON e.id=r.entity_id WHERE r.record_type=?', (kind,))}
-        for row in result:
-            row.update(ownership.get(row['id'], {'entity_id': None, 'entity_name': '待确认'}))
+            from services.entity_ownership import OwnershipResolver
+            resolver = OwnershipResolver(conn)
+            originals = {r['id']: r for r in conn.execute(f'SELECT * FROM {kind}')}
+            for row in result:
+                row.update(resolver.record(kind, originals[row['id']]))
     if project_id and module == 'worklogs':
         result = [r for r in result if r.get('project_id') == project_id]
     if keyword and module != 'purchases':
@@ -269,10 +318,10 @@ def get_record(module, record_id):
         raise ValueError('记录不存在，请刷新后核对')
     if module == 'suppliers':
         row = {**partners.get_business_partner(record_id), **row}
-    if module in ('invoices', 'receipts'):
+    if module in ('contracts','invoices', 'receipts'):
         with db_read() as conn:
             row = {**row, 'entity_id': entities.entity_for(
-                conn, 'sales_invoices' if module == 'invoices' else 'receipts', record_id)}
+                conn, 'sales_invoices' if module == 'invoices' else module, record_id)}
     result = dict(row)
     result['_version'] = digest(json.loads(json.dumps(row, ensure_ascii=False, default=lambda value: sorted(value) if isinstance(value,set) else str(value))))
     aliases = {'allocated_amount_minor':'amount','amount_minor':'amount','tax_inclusive_amount_minor':'amount','control_limit_minor':'control_limit',
@@ -285,7 +334,7 @@ def get_record(module, record_id):
         if key in row:
             result[target] = row[key]
     if module == 'offers':
-        result['price'] = money_form_value(row['quoted_price_minor'])
+        result['price'] = money_form_value(offer_quoted_minor(row))
         result['tax_rate_percent'] = str(row['tax_rate_bps']/100)
     if module == 'invoices':
         result['tax_rate_percent'] = str(row.get('tax_rate_bps',0)/100)
@@ -313,12 +362,15 @@ def save_record(module, data, record_id=None, expected=None):
     values = {**previous, **data}
     if module=='costs' and record_id and 'project_id' in data and (int(data['project_id']) if data['project_id'] else None) != previous.get('project_id'):
         raise ValueError('费用项目分摊请通过成本归集操作调整；本次未改变费用或项目关联')
-    for item in spec['fields']:
+    for item in schema()[module]['fields']:
         key = item['name']
         if key not in values:
             values[key] = item['default']
         if item['required'] and values[key] in ('', None):
             raise ValueError('请填写' + item['label'])
+        if module == 'purchases' and item['choices'] is not None and values[key] not in ('', None) and values[key] not in item['choices']:
+            if not record_id or values[key] != previous.get(key):
+                raise ValueError(item['label'] + '选项无效，请重新选择')
         if (item['kind'] == 'select' and item.get('source')) or item['kind'] == 'integer':
             if key == 'entity_id' and values[key] not in ('', None):
                 if not str(values[key]).strip().isascii() or not str(values[key]).strip().isdigit():
@@ -416,7 +468,7 @@ def action(name, data):
         return funds.cancel_plan(record_id, reason)
     if name == 'inspection':
         values = dict(data)
-        values['inspection_date'] = values.get('inspection_date') or TODAY
+        values['inspection_date'] = values.get('inspection_date') or date.today().isoformat()
         return construction.update_construction_inspection(record_id, values)
     if name == 'assign_labor':
         return governance.assign_labor_records(data['ids'], int(data['project_id']))

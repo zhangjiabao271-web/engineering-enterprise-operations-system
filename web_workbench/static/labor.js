@@ -44,7 +44,7 @@ async function openWorkdayBatch(context={}) {
   const unavailable = [...previous.keys()].filter(id=>!activeIds.has(id));
   const requestedProject = context.project_id || state.project;
   const projectId = options.active_projects.some(project=>String(project.value)===String(requestedProject)) ? requestedProject : '';
-  const today = state.boot.schema.worklogs.fields.find(field=>field.name==='work_date').default;
+  const today = businessToday();
   const fields = [
     {name:'project_id',label:'独立核算项目',kind:'select',source:'active_projects',required:true},
     {name:'work_date',label:'日期',kind:'date',required:true,default:today},
@@ -108,11 +108,6 @@ async function openWorkdayBatch(context={}) {
   document.querySelector('#batch-clear').onclick=()=>{
     workers.forEach(row=>row.querySelector('[name=batch-worker]').checked=false);updateSummary();
   };
-  const project=form.elements.project_id;
-  bindEditorChoices([project],[[form.elements.project_site_id,'sites']],
-    ()=>api('options?'+query({project_id:project.value})));
-  form.elements.project_site_id.addEventListener('change',event=>{
-    if(event.target.value)form.elements.construction_site.value=event.target.selectedOptions[0].textContent;
-  });
+  bindWorkdaySite();
   updateSummary();filterWorkers();
 }

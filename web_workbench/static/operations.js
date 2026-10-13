@@ -34,7 +34,7 @@ function reviewHTML(review) {
   const metrics=Object.entries(summary).map(([key,value])=>`<article class="metric"><label>${esc(evidenceLabel(key))}</label><strong>${esc(money(value))}</strong></article>`).join('');
   const impact=review.impact?evidenceHTML(Object.fromEntries(Object.entries(review.impact).filter(([,value])=>value===null || typeof value!=='object')),'回算影响'):'';
   const wageNotice=review.impact?notice(`回算 ${review.impact.affected_count} 条 · 工资锁定跳过 ${review.impact.skipped_locked_count} 条 · 金额不变 ${review.impact.unchanged_count} 条`):'';
-  return (metrics?`<section class="metrics review-metrics">${metrics}</section>`:'')+wageNotice+(review.notice?notice(review.notice):'')+notice('操作依据：'+review.reason)+evidenceHTML(review.changes,'拟执行的内容')+(impact?`<details><summary>查看完整回算影响</summary>${impact}</details>`:'')+(review.rows?.length?evidenceHTML(review.rows,'逐项影响明细'):'')+(review.before?`<details><summary>查看操作前的完整记录</summary>${evidenceHTML(review.before)}</details>`:'');
+  return (metrics?`<section class="metrics review-metrics">${metrics}</section>`:'')+wageNotice+(review.notice?notice(review.notice):'')+notice('操作依据：'+review.reason)+evidenceHTML(review.changes,'拟执行的内容')+(impact?`<details><summary>查看完整回算影响</summary>${impact}</details>`:'')+(review.rows?.length?evidenceHTML(review.rows,'逐项影响明细'):'')+(review.ownership_projects?.length?evidenceHTML(review.ownership_projects,'关联项目自动归属影响'):'')+(review.before?`<details><summary>查看操作前的完整记录</summary>${evidenceHTML(review.before)}</details>`:'');
 }
 
 function excelReviewHTML(review,module) {
@@ -42,14 +42,17 @@ function excelReviewHTML(review,module) {
   return notice(`已在隔离副本核对 ${review.row_count} 行，将形成 ${review.record_count} 笔${spec.title}记录。正式台账尚未写入。`)+table(review.rows,spec.columns)+`<details><summary>展开完整字段逐项核对</summary>${evidenceHTML(review.rows)}</details>`;
 }
 
-async function renderEntities() {
-  const entities=await api('operation_read?name=entities');
-  main.innerHTML=header('经营主体','以原有主体档案为准，人工确认历史业务归属；不由客户名称猜测。')+evidenceHTML(entities)+`<section class="card"><h2>历史业务归属</h2><div class="head-actions"><button data-operation="entity_assign" ${state.boot.read_only?'disabled':''}>确认业务归属</button><button data-operation="entity_tax" ${state.boot.read_only?'disabled':''}>维护主体税号</button><button id="entity-records">查看待确认记录</button></div></section>`;
-  bindOperationActions(main);document.querySelector('#entity-records').onclick=()=>openReadConsole();
+function entityRecordOption(row) {
+  const parts = [`#${row.id}`, row.label || '名称待补充'];
+  if (row.projects && row.projects !== row.label) parts.push(row.projects);
+  if (row.date) parts.push(row.date);
+  if (row.amount_minor !== null && row.amount_minor !== undefined) parts.push(money(row.amount_minor));
+  if (row.ownership_label) parts.push(`${row.ownership_label} · ${row.entity_name}`);
+  return {value: row.id, label: parts.join(' · ')};
 }
 
-async function operationOptions(definition, context) {
-  const options={...state.boot.options};
+async function operationOptions(definition, context, currentOptions=state.boot.options) {
+  const options={...currentOptions};
   for (const source of new Set(definition.fields.map(field=>field.source).filter(Boolean))) {
     if (source==='sites') {
       const rows=await api('operation_read?'+query({name:'sites',project_id:context.project_id || context.id || state.project}));
@@ -57,7 +60,10 @@ async function operationOptions(definition, context) {
     } else if (source==='fund_sources') {
       const rows=await api('operation_read?'+query({name:source,kind:context.kind || 'purchase'}));
       options[source]=rows.map(row=>({value:row.id,label:`${row.label || row.source_name || row.id} · ${row.period || ''} · ${money(row.remaining_minor)}`}));
-    } else if (source==='entity_records' || source.startsWith('unassigned_')) {
+    } else if (source==='entity_records') {
+      const rows=await api('operation_read?'+query({name:source,kind:context.kind || 'contracts',assignable:'1'}));
+      options[source]=rows.map(entityRecordOption);
+    } else if (source.startsWith('unassigned_')) {
       const rows=await api('operation_read?'+query({name:source,kind:context.kind || 'projects'}));
       options[source]=rows.map(row=>({value:row.id,label:`${row.name || row.project_name || row.worker_name || row.order_no || row.id} · ${row.work_date || ''}`}));
     }
@@ -137,6 +143,8 @@ async function openOperation(name,context={},viewOptions={}) {
   if (name==='collection_followup') context={...await api('operation_read?'+query({name:'collection_case',id:context.id})),...context};
   if(name==='receipt_allocation') {
     const receipt=await api('record?'+query({module:'receipts',id:context.id}));
+    context.project_id=receipt.project_id;
+    context.contract_id=receipt.contract_id;
     context.allocations=receipt.allocations.filter(row=>row.settlement_id && row.status==='active').map(row=>({settlement_id:row.settlement_id,amount:minorInput(row.allocated_amount_minor)}));
     context.allow_advance=BigInt(receipt.advance_minor || 0)>0n;
   }
@@ -145,7 +153,10 @@ async function openOperation(name,context={},viewOptions={}) {
     const current=await api('operation_read?'+query({name:'cost_allocations',id:context.id}));context.method=current.method;context.project_ids=current.lines.map(row=>row.project_id);
     if(current.method==='manual') context.allocations=current.lines.map(row=>({project_id:row.project_id,amount:minorInput(row.amount_minor)}));
   }
-  const options=await operationOptions(definition,context);
+  const currentOptions=await request.read('options?'+query({project_id:context.project_id || state.project}));
+  const options=await operationOptions(definition,context,currentOptions);
+  if(name==='receipt_allocation')options.settlements=options.settlements.filter(row=>
+    row.project_id===context.project_id&&row.contract_id===context.contract_id);
   if(name==='input_links') {
     const invoice=await api('record?'+query({module:'input_invoices',id:context.id}));
     context.links=invoice.links.map(row=>({kind:row.purchase_order_id?'purchase_orders':'cost_entries',record_id:row.purchase_order_id || row.cost_entry_id,amount:minorInput(row.amount_minor)}));
@@ -168,7 +179,7 @@ async function openOperation(name,context={},viewOptions={}) {
   const choices=definition.fields.filter(field=>['fund_sources','entity_records','sites'].includes(field.source))
     .map(field=>[form.elements.namedItem(field.name),field.source]).filter(([select])=>select);
   bindEditorChoices(['kind','project_id'].map(name=>form.elements.namedItem(name)),choices,
-    ()=>operationOptions(definition,operationValues(definition,context)));
+    ()=>operationOptions(definition,operationValues(definition,context),currentOptions));
 }
 
 function projectPurchasePrice(row) {
@@ -248,7 +259,7 @@ function installAdvancedControls() {
       !['fund_archive','worker_delete'].includes(name) && !(name==='labor_batch' && state.collection==='worklogs'));
     main.insertAdjacentHTML('beforeend',`<section class="card"><h2>经营操作 · 核对后执行</h2><div class="head-actions">${actions.map(([name,definition])=>`<button data-operation="${name}">${esc(definition.title)}</button>`).join('')}</div><button id="read-business">查看业务明细与历史</button></section>`);
     bindOperationActions(main);
-    document.querySelector('#read-business').onclick=()=>openReadConsole();
+    document.querySelector('#read-business').onclick=()=>safe(openReadConsole);
   }
   if (route==='tools') installExcelControls();
   if(route==='finance') installPDFControls();
@@ -267,10 +278,12 @@ function installExcelControls() {
   });
 }
 
-function openReadConsole() {
+async function openReadConsole() {
+  const request=beginEditorRequest();
+  const options=await request.read('options?'+query({project_id:state.project}));
   const reads={fund_sources:'业务付款核实来源',reconciliations:'账户余额核对历史',entities:'经营主体',entity_records:'业务主体归属',labor_month:'月度工资与工天',worker_month:'工人月度明细',customer_business:'客户业务明细',input_candidates:'进项票候选成本',input_links:'进项票关联记录',historical_receipts:'历史回款',collection_history:'催收跟进历史',fulfillment_gaps:'履约缺口',sites:'施工地点'};
   const fields=[{name:'name',label:'查询内容',kind:'select',choices:reads},{name:'id',label:'对应记录 / 工人 / 客户编号',kind:'integer'},{name:'kind',label:'来源类型（purchase/cost/wage 或主体记录类型）'},{name:'entity_id',label:'经营主体',kind:'select',source:'entities'},{name:'supplier_id',label:'供应商',kind:'select',source:'suppliers'},{name:'month',label:'月份 YYYY-MM'},{name:'start',label:'期间开始',kind:'date'},{name:'end',label:'期间结束',kind:'date'},{name:'year',label:'年份',kind:'integer'}];
-  openEditor('业务明细与历史',`<div class="form-grid">${fields.map(field=>fieldHTML(field)).join('')}</div><div id="read-result"></div>`,async()=>{const result=await api('operation_read?'+query(formValues(fields)));document.querySelector('#read-result').innerHTML=evidenceHTML(result);},{label:'查询'});
+  openEditor('业务明细与历史',`<div class="form-grid">${fields.map(field=>fieldHTML(field,undefined,options)).join('')}</div><div id="read-result"></div>`,async()=>{const result=await api('operation_read?'+query(formValues(fields)));document.querySelector('#read-result').innerHTML=evidenceHTML(result);},{label:'查询'});
 }
 
 async function inputPDF(id) {

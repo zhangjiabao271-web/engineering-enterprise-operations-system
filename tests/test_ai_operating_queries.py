@@ -193,6 +193,7 @@ class OperatingQueryTests(unittest.TestCase):
                 "services.ai_operating_query_service.data_governance_service.list_fulfillment_gaps",
                 return_value=[governance],
             ),
+            patch('services.operating_attention_service.overview',return_value={'checks':[]}),
         ):
             result = ai_operating_query_service.retrieve_operating_query(
                 "今天做什么？"

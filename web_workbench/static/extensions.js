@@ -43,7 +43,7 @@ async function constructionPhotos(id,filter='全部',history=false) {
 }
 
 async function renderMonthlyView() {
-  const today=state.boot.schema.worklogs.fields.find(field=>field.name==='work_date').default;
+  const today=businessToday();
   main.innerHTML=header('人工与工天','工天矩阵按独立日期区间汇总全公司有效记录，加班计入总工天。')+tabsHTML('labor','monthly')+`<section class="card"><div class="filter-bar"><label>开始日期<input id="matrix-start" type="date" value="${today.slice(0,4)}-01-01"></label><label>结束日期<input id="matrix-end" type="date" value="${today}"></label><button id="matrix-query" class="primary">查询月度工天</button></div><p class="page-note">与右上角项目范围独立；点击月份数字查看逐日出勤，不展示工资金额。</p><div id="matrix-result"></div></section>`;
   bindTabs('labor');document.querySelector('#matrix-query').onclick=()=>safe(loadMonthlyMatrix);await loadMonthlyMatrix();
 }
@@ -104,6 +104,7 @@ function installPDFControls() {
 function invoicePDFImport(module) {
   openEditor('发票 PDF · 本机规则提取',notice('沿用原本地文字解析，最多10页。此发票入口暂不支持扫描识别，扫描PDF需要人工登记。上传和预览不入账。')+'<label class="form-field">本机 PDF<input name="pdf" type="file" accept=".pdf" required></label>',async()=>{
     const result=await api('pdf_preview',{module,...await fileData(form.elements.pdf.files[0])});
+    const options=await api('options?'+query({project_id:state.project}));
     const recognized=result.recognition,match=result.match;
     const fields=state.boot.schema[module].fields.filter(field=>!['deduction_status','deduction_period'].includes(field.name));
     const values={...recognized,tax_rate_percent:recognized.tax_rate,project_id:state.project};
@@ -112,14 +113,11 @@ function invoicePDFImport(module) {
     for(const field of fields)if(!Object.hasOwn(values,field.name))values[field.name]='';
     const summary=notice(`票号 ${recognized.invoice_no || '待补充'} · 日期 ${recognized.invoice_date || '待补充'} · 价税合计 ${recognized.amount || '待补充'} 元 · 未税 ${recognized.net_amount || '待补充'} 元 · 税额 ${recognized.tax_amount || '待补充'} 元`);
     const warnings=recognized.warnings?.length?notice(recognized.warnings.join('；'),'warning'):'';
-    openEditor(match?'已匹配原开票记录 · 核对附件':'核对票面与业务归属',summary+warnings+`<details><summary>本地规则识别结果与文件指纹</summary>${evidenceHTML(recognized)}</details>`+(match?notice('已找到相同票号的原发票；只关联其原文件，不新建发票或改变原项目。')+evidenceHTML(match):`<div class="form-grid">${fields.map(field=>fieldHTML(field,values[field.name]??'')).join('')}</div>`)+explicitConfirmation('pdf-confirmed','已核对原 PDF、票号、购销双方、日期、金额和业务归属，确认保存。'),async()=>{
+    openEditor(match?'已匹配原开票记录 · 核对附件':'核对票面与业务归属',summary+warnings+`<details><summary>本地规则识别结果与文件指纹</summary>${evidenceHTML(recognized)}</details>`+(match?notice('已找到相同票号的原发票；只关联其原文件，不新建发票或改变原项目。')+evidenceHTML(match):`<div class="form-grid">${fields.map(field=>fieldHTML(field,values[field.name]??'',options)).join('')}</div>`)+explicitConfirmation('pdf-confirmed','已核对原 PDF、票号、购销双方、日期、金额和业务归属，确认保存。'),async()=>{
       await api('pdf_apply',{token:result.token,record:match?{}:formValues(fields),confirmed:form.elements.namedItem('pdf-confirmed').checked});cancelEditor=null;editor.close();toast('发票与 PDF 已由原业务服务保存。');await refreshOptions();await renderRoute(false);
     },{label:match?'确认关联原发票 PDF':'确认登记与关联 PDF',cancel:()=>api('pdf_discard',{token:result.token})});
     if(!match && module==='invoices') {
-      const project=form.elements.project_id;
-      const choices=fields.filter(field=>['contracts','settlements'].includes(field.source))
-        .map(field=>[form.elements.namedItem(field.name),field.source]);
-      bindEditorChoices([project],choices,()=>api('options?'+query({project_id:project.value})));
+      bindFinancialChoices(options);
     }
   },{label:'提取与预览'});
 }

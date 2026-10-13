@@ -199,7 +199,7 @@ class CashflowLifecycleTests(unittest.TestCase):
             self.assertIn('第2条 / 第1页', notes)
             self.assertEqual(conn.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
             self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
-            self.assertEqual(conn.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0], 630)
+            self.assertIsNotNone(conn.execute('SELECT 1 FROM schema_migrations WHERE version=630').fetchone())
 
     def test_conflicts_preserve_both_sources_and_exclude_schedule(self):
         self.document()

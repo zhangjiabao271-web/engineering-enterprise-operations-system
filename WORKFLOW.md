@@ -30,6 +30,11 @@
 
 ### 服务异常边界
 
+- 每日自检与助手确认录入专项见 `tests/test_operating_attention.py`、`tests/test_assistant_entries.py`；只使用临时合成账本，覆盖缺数、范围、日期冻结、重复确认、取消、账本变化与整批回滚。协助录入不改变查账模式的只读边界。
+- 浏览器专项先启动 `scripts/accept_proactive_fixture.py --output qa/全新目录`，再用 Node 运行 `scripts/accept_proactive_workbench.mjs 地址 qa/该目录/browser`。夹具仅用模拟模型，不能冒充真实模型语义验收；真实模型抽查仅使用 `scripts/accept_entry_model.py` 的虚构描述，不发送正式账目。
+- 经营主体与业务边界专项见 `tests/test_operating_entity_dashboard.py`、`tests/test_operating_entity_http.py`、`tests/test_business_boundary_guards.py` 及 `tests/test_web_linkages.py`。归属、客户和资金约束由服务验证，不由页面跳过。
+- 迁移640只新增管理状态表；已有630账本的演练与正式升级使用 `scripts/upgrade_proactive_workbench.py`，先在线备份和隔离逐表对账，显式 `--apply` 才升级正式库，不清理用户旧备份。
+
 - 页面只处理服务层的 `ValueError` 业务提示，不直接识别 `sqlite3` 异常。
 - 服务写入先做明确业务校验；仍可能因并发或数据库约束失败时，仅将可识别的唯一键、外键、检查约束及已知业务触发器错误翻译成面向用户的 `ValueError`。新写入操作可复用 `services/_constraint_errors.py`，提供该操作自己的提示语。
 - 未识别的数据库错误与环境故障不伪装成输入错误；界面给通用“状态待核对”提示，同时记录异常。不可在错误后直接建议重复提交。

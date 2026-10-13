@@ -460,37 +460,51 @@ def _receipt_customer_id(conn, receipt_id):
     return int(row["customer_id"])
 
 
-def _customer_invoice_receipt_plan(conn, customer_id):
-    invoices = conn.execute(
-        """SELECT i.id, i.invoice_date, i.amount_minor, e.entity_id
+def _customer_invoice_receipt_plan(conn, customer_id, resolver=None):
+    from services.entity_ownership import OwnershipResolver
+    resolver = resolver or OwnershipResolver(conn)
+
+    def owned(kind, records):
+        result = []
+        for row in records:
+            row = dict(row)
+            entity_id = resolver.record(kind, row)['entity_id']
+            if entity_id is not None:
+                result.append({**row, 'entity_id': entity_id})
+        return result
+
+    invoices = owned('sales_invoices', conn.execute(
+        """SELECT i.id, i.project_id, i.contract_id, i.invoice_date, i.amount_minor
            FROM sales_invoices i
-           JOIN record_entities e ON e.record_type='sales_invoices' AND e.record_id=i.id
            JOIN projects p ON p.id=i.project_id
            LEFT JOIN contracts c ON c.id=i.contract_id
            WHERE i.status='active'
+             AND p.business_mode='contract'
              AND COALESCE(p.customer_partner_id, c.customer_partner_id)=?
            ORDER BY i.invoice_date, i.id""",
         (int(customer_id),),
-    ).fetchall()
+    ).fetchall())
     invoice_remaining = {
         int(row["id"]): int(row["amount_minor"]) for row in invoices
     }
-    receipts = conn.execute(
-        """SELECT r.id, r.receipt_date, r.amount_minor, e.entity_id,
+    receipts = owned('receipts', conn.execute(
+        """SELECT r.id, r.receipt_date, r.amount_minor,
                   CASE
                     WHEN COUNT(DISTINCT ra.invoice_id)=1
                      AND SUM(CASE WHEN ra.invoice_id IS NULL THEN 1 ELSE 0 END)=0
                     THEN MIN(ra.invoice_id)
                   END AS manual_invoice_id
            FROM receipts r
-           JOIN record_entities e ON e.record_type='receipts' AND e.record_id=r.id
            JOIN receipt_allocations ra
              ON ra.receipt_id=r.id AND ra.status='active'
            JOIN projects p ON p.id=ra.project_id
            LEFT JOIN contracts c ON c.id=ra.contract_id
-           WHERE r.status='active' AND p.business_mode='contract'
+           WHERE r.status='active'
            GROUP BY r.id
-           HAVING COUNT(DISTINCT COALESCE(
+           HAVING SUM(CASE WHEN p.business_mode<>'contract'
+                            OR COALESCE(p.customer_partner_id, c.customer_partner_id) IS NULL
+                           THEN 1 ELSE 0 END)=0
+              AND COUNT(DISTINCT COALESCE(
                       p.customer_partner_id, c.customer_partner_id
                   ))=1
               AND MIN(COALESCE(
@@ -498,7 +512,7 @@ def _customer_invoice_receipt_plan(conn, customer_id):
                   ))=?
            ORDER BY r.receipt_date, r.id""",
         (int(customer_id),),
-    ).fetchall()
+    ).fetchall())
 
     plan = []
     invoice_entities = {int(row['id']): row['entity_id'] for row in invoices}
@@ -599,14 +613,14 @@ def _reconcile_customer_ids(conn, customer_ids, changed_at):
         _reconcile_customer_invoice_receipts(conn, customer_id, changed_at)
 
 
-def _entity_safe_invoice_values(conn, row, customer_totals):
+def _entity_safe_invoice_values(conn, row, customer_totals, resolver=None):
     # Do not trust historical allocations made before entity isolation existed.
     row = dict(row)
     customer_id = _invoice_customer_id(conn, row['id'])
     if customer_id not in customer_totals:
         totals = {}
         if customer_id:
-            for invoice_id, _, amount, _ in _customer_invoice_receipt_plan(conn, customer_id):
+            for invoice_id, _, amount, _ in _customer_invoice_receipt_plan(conn, customer_id, resolver):
                 totals[invoice_id] = totals.get(invoice_id, 0) + amount
         customer_totals[customer_id] = totals
     row['received_minor'] = customer_totals[customer_id].get(row['id'], 0)
@@ -615,6 +629,8 @@ def _entity_safe_invoice_values(conn, row, customer_totals):
 
 def list_invoices(project_id=None, include_void=False):
     with db_read() as conn:
+        from services.entity_ownership import OwnershipResolver
+        resolver = OwnershipResolver(conn)
         sql = """
             SELECT i.*, p.name AS project_name,
                    COALESCE(c.contract_no, '') AS contract_no,
@@ -649,7 +665,7 @@ def list_invoices(project_id=None, include_void=False):
         sql += " ORDER BY i.invoice_date DESC, i.id DESC"
         customer_totals = {}
         rows = [
-            _entity_safe_invoice_values(conn, row, customer_totals)
+            _entity_safe_invoice_values(conn, row, customer_totals, resolver)
             for row in conn.execute(sql, params).fetchall()
         ]
         statuses = invoice_attachment_statuses(conn, [row["id"] for row in rows])
@@ -1576,6 +1592,13 @@ def update_receipt(receipt_id, data):
             receipt = _receipt_record(conn, receipt_id)
             if not receipt or receipt["status"] != "active":
                 raise ValueError("有效回款记录不存在")
+            for key in ('project_id', 'contract_id'):
+                if key not in data:
+                    continue
+                requested = int(data[key] or 0) or None
+                if requested != receipt[key]:
+                    raise ValueError('回款的项目和合同归属已锁定，不能在编辑中直接更换；'
+                                     '请先核对对应收入、发票和资金流水，原记录未改动')
             from services.cash_closure_service import guard_receipt_change
             guard_receipt_change(conn, receipt['project_id'])
             previous_customer_id = _receipt_customer_id(conn, receipt_id)

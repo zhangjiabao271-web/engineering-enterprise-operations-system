@@ -83,7 +83,9 @@ function drawAssistant(snapshot) {
   host.innerHTML = messages.length ? messages.map((message, index) => {
     const sources = (message.sources || []).map((source, sourceIndex) => assistantSourceHTML(source, `${index}-${sourceIndex}`)).join('');
     const candidates = (message.candidates || []).map((candidate, candidateIndex) => `<button type="button" class="chat-candidate" data-candidate="${candidateIndex}" data-generation="${message.generation}" ${snapshot.busy || snapshot.generation !== message.generation ? 'disabled' : ''}><strong>${esc(candidate.label)}</strong><small>${esc(candidate.subtitle || '确认后继续查询')}</small></button>`).join('');
-    return `<article class="chat-message ${message.role === 'user' ? 'chat-user' : 'chat-assistant'}"><small>${message.role === 'user' ? '' : '经营助手 · '}${message.project_id ? esc(state.boot.options.projects.find(item => String(item.value) === String(message.project_id))?.label || '指定项目') : '全公司'}</small><div class="chat-answer ${message.message_type === 'error' ? 'chat-error' : ''}">${message.role === 'user' ? `<p>${esc(message.content)}</p>` : answerHTML(message.content)}</div>${candidates ? `<div class="chat-candidates">${candidates}</div>` : ''}${sources}</article>`;
+    const entry=message.entry_records&&!state.boot.read_only?`<button type="button" class="chat-candidate" data-entry-message="${index}" ${snapshot.busy||snapshot.generation!==message.generation?'disabled':''}>核对录入清单 · 尚未记账</button>`:'';
+    const evidence=message.evidence_note?`<details class="chat-evidence-note"><summary>范围、依据与限制</summary><p>${esc(message.evidence_note.scope)} · 答复完成于 ${esc(message.evidence_note.completed_at)}</p><p>${esc(message.evidence_note.limits)}</p></details>`:'';
+    return `<article class="chat-message ${message.role === 'user' ? 'chat-user' : 'chat-assistant'}"><small>${message.role === 'user' ? '' : '经营助手 · '}${message.project_id ? esc(state.boot.options.projects.find(item => String(item.value) === String(message.project_id))?.label || '指定项目') : '全公司'}</small><div class="chat-answer ${message.message_type === 'error' ? 'chat-error' : ''}">${message.role === 'user' ? `<p>${esc(message.content)}</p>` : answerHTML(message.content)}</div>${candidates ? `<div class="chat-candidates">${candidates}</div>` : ''}${entry}${evidence}${sources}</article>`;
   }).join('') : `<div class="chat-welcome"><span class="chat-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v13H9l-5 4zM8 9h8m-8 4h5"/></svg></span><h2>今天想了解哪项经营情况？</h2><p>收入、回款、项目成本、工人出勤。<br>查你的本机台账，每个结论都有来源。</p><div class="chat-examples"><button type="button" data-example="收入最多的客户是谁？">收入最多的客户是谁？</button><button type="button" data-example="今年实际回款是多少，包含历史旧账？">今年一共收了多少钱？</button><button type="button" data-example="这个项目的采购成本是多少？">这个项目的钱花在哪里？</button></div></div>`;
   if (snapshot.busy) host.insertAdjacentHTML('beforeend', `<article class="chat-message chat-assistant"><small>经营助手 · 正在查账</small><div class="chat-answer"><p>${esc(snapshot.stream || '正在理解条件并核对本机记录…')}</p></div></article>`);
   for (const detail of host.querySelectorAll('details')) detail.open = expanded.has(detail.dataset.sourceIndex);
@@ -107,6 +109,10 @@ function drawAssistant(snapshot) {
     await pollAssistant(assistantView.epoch);
   }));
   if (pinned) host.scrollTop = host.scrollHeight;
+  host.querySelectorAll('[data-entry-message]').forEach(button=>button.onclick=()=>safe(()=>{
+    const message=snapshot.messages[Number(button.dataset.entryMessage)];
+    return openEntryDraft(message.entry_records,message.generation,message.entry_questions||[],message.question);
+  }));
 }
 
 async function pollAssistant(epoch) {
@@ -155,6 +161,11 @@ async function renderAssistant() {
   if (epoch !== assistantView.epoch || state.route !== 'assistant') return;
   main.innerHTML = `<section class="chat-layout"><header class="chat-head"><div><h1>经营助手</h1><p id="chat-scope"></p></div><button id="chat-reset" type="button">清空对话</button></header><div id="chat-messages" class="chat-messages" role="log" aria-label="经营对话"></div><p id="chat-history-note" class="page-note"></p><form id="chat-form" class="chat-composer"><label class="sr-only" for="chat-question">输入经营问题</label><textarea id="chat-question" maxlength="4000" rows="2" placeholder="例如：这个月谁的工天最多？"></textarea><div class="chat-compose-actions"><small id="chat-state" role="status"></small><button id="chat-stop" type="button" hidden>停止</button><button id="chat-send" class="primary" type="submit">发送</button></div><label class="chat-consent"><input id="chat-model" type="checkbox">允许模型理解问题（默认不发送）</label><p class="chat-privacy">勾选后仅将问题、已确认条件和工具目录发给桌面配置的模型，不发送原始账目或附件。查询和金额计算仍在本机完成。</p></form></section>`;
   assistantView.signature = '';
+  document.querySelector('.chat-compose-actions').insertAdjacentHTML('afterbegin',`<label class="sr-only" for="chat-mode">助手模式</label><select id="chat-mode" class="chat-mode"><option value="query">查账与分析</option><option value="entry" ${state.boot.read_only?'disabled':''}>协助录入</option></select>`);
+  document.querySelector('#chat-mode').onchange=event=>{
+    document.querySelector('#chat-question').placeholder=event.target.value==='entry'?'一次说清多笔费用、采购、回款或工天，先整理清单再确认保存':'例如：这个月谁的工天最多？';
+    document.querySelector('#chat-state').textContent=event.target.value==='entry'?'先整理草稿，不直接记账':'';
+  };
   drawAssistant(snapshot);
   document.querySelector('#chat-form').onsubmit = event => {
     event.preventDefault();
@@ -166,7 +177,7 @@ async function renderAssistant() {
       assistantView.sending = true;
       try {
         await assistantAPI('ask', {session_id: assistantView.session, question, generation: assistantView.snapshot.generation,
-          allow_model: document.querySelector('#chat-model').checked});
+          allow_model: document.querySelector('#chat-model').checked,mode:document.querySelector('#chat-mode').value});
         if (epoch !== assistantView.epoch) return;
         input.value = '';
         await pollAssistant(epoch);

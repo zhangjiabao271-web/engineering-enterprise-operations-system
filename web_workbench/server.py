@@ -110,7 +110,7 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             query = {k:v[0] for k,v in parse_qs(urlsplit(self.path).query,keep_blank_values=True).items()}
             if not path.startswith('/api/'):
-                if path in ('/cockpit.js', '/cockpit.css'):
+                if path in ('/cockpit.js', '/cockpit.css', '/entities.js', '/entities.css','/attention.js','/attention.css','/entry-draft.js'):
                     filename = path[1:]
                     self.send_content((STATIC/filename).read_bytes(), mimetypes.guess_type(filename)[0]+'; charset=utf-8')
                     return
@@ -180,6 +180,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(business.options(project_id))
         elif path == '/api/rows':
             self.send_json({'rows':business.rows(query['module'],project_id,query.get('keyword',''))})
+        elif path == '/api/attention':
+            from services.operating_attention_service import overview
+            self.send_json(overview(project_id))
         elif path == '/api/project_ledger':
             self.send_json(business.project_ledger.get_details(int(query['id'])))
         elif path == '/api/record':
@@ -279,6 +282,27 @@ class Handler(BaseHTTPRequestHandler):
         return token,path,name
 
     def post_api(self,path,data):
+        if path.startswith('/api/attention/'):
+            from services import operating_attention_service as attention
+            if path == '/api/attention/day_open':
+                return attention.start_day()
+            if data.get('confirmed') is not True:
+                raise ValueError('请明确确认自检或跟进操作')
+            if path == '/api/attention/check':
+                return attention.set_check(data.get('kind'),data.get('day'),data.get('status'),data.get('basis'))
+            if path == '/api/attention/manage':
+                return attention.set_attention(data.get('key'),data.get('action'),data.get('basis'),data.get('until_day'))
+            raise ValueError('自检或经营跟进操作不存在')
+        if path.startswith('/api/entry/'):
+            from services import assistant_entry_service as entries
+            if path == '/api/entry/preview':
+                return entries.preview(data.get('records'),request_key=data.get('request_key'),project_id=data.get('project_id'),
+                                       model_questions=data.get('model_questions'),model_reviewed=data.get('model_reviewed',False))
+            if path == '/api/entry/apply':
+                return entries.apply(data.get('token'),confirmed=data.get('confirmed'))
+            if path == '/api/entry/discard':
+                return entries.discard(data.get('token'))
+            raise ValueError('助手录入操作不存在')
         if path.startswith('/api/backup/'):
             from web_workbench.backup import post_api as post_backup
             return post_backup(self.server, path, data)
@@ -287,10 +311,16 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/assistant/new':
                 return assistant.create()
             if path == '/api/assistant/ask':
+                if self.server.read_only and data.get('mode') == 'entry':
+                    raise ValueError('只读工作台不能生成记账清单')
                 return assistant.ask(data['session_id'], data.get('question'), allow_model=data.get('allow_model', False),
-                                     expected_generation=data.get('generation'))
+                                     expected_generation=data.get('generation'),mode=data.get('mode','query'))
             if path == '/api/assistant/stop':
                 return assistant.stop(data['session_id'])
+            if path == '/api/assistant/entry_completed':
+                if self.server.read_only:
+                    raise ValueError('只读工作台不能登记录入结果')
+                return assistant.entry_completed(data['session_id'],data.get('generation'),data.get('token'))
             if path == '/api/assistant/confirm':
                 return assistant.confirm(data['session_id'], data.get('generation'), data.get('index'),
                                          allow_model=data.get('allow_model', False))

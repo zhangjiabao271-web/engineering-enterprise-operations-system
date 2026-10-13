@@ -2,6 +2,10 @@
 
 // Names for service-only facts that are not part of an editable form schema.
 const factLabels = {
+  ownership_status:'归属状态', ownership_label:'归属状态', ownership_source:'归属依据',
+  ownership_reason:'归属说明', kind_label:'业务类型', assignable:'可直接确认', direct_entity_id:'原人工主体编号',
+  before_entity:'原经营主体', after_entity:'确认后经营主体', change:'归属变化',
+  contract_ids:'关联合同编号', contract_names:'关联合同', project_ids:'关联项目编号', updated_count:'本次确认笔数',
   year:'业务年度', month:'月份', date:'日期', period:'月份', period_start:'期间开始', period_end:'期间结束',
   yearly_business_minor:'年度业务额（已确认收入）', yearly_invoice_minor:'年度已开票',
   yearly_receipt_minor:'年度实际回款', current_receivable_minor:'当前未回款',

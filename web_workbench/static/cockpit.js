@@ -50,6 +50,8 @@ function renderCockpit(data) {
     `<section class="card cockpit-priorities"><div class="section-head"><h2>先看看这些待收款项目</h2><small>按未回款金额排序 · 含已完工待收款项目</small></div>${cockpit.priorities.length?cockpit.priorities.map(row=>`<button type="button" class="cockpit-priority" data-cockpit-project="${row.project_id}"><span>${esc(row.project_name)}<small>${esc(row.customer_name || '客户待完善')} · ${esc(row.project_status)}</small></span><strong>${esc(money(row.receivable_minor))}</strong><span class="cockpit-open-label">查看明细 →</span></button>`).join(''):'<p class="cockpit-empty">当前工程项目没有应收未收余额。</p>'}</section>`+
     `<details class="card cockpit-projects"><summary>在营项目经营事实 <span>${cockpit.projects.length} 个项目</span></summary><div class="cockpit-project-table"></div></details>`;
   bindCockpitDetails(main);
+  main.querySelector('.cockpit-context').insertAdjacentHTML('afterend','<section id="operating-attention" aria-label="今日自检与经营关注"><p class="cockpit-footnote">正在核对今日自检与经营关注…</p></section>');
+  safe(()=>loadOperatingAttention());
   main.querySelectorAll('[data-cockpit-project]').forEach(button=>button.onclick=()=>safe(()=>openProjectLedger(Number(button.dataset.cockpitProject),'outstanding')));
   main.querySelector('.cockpit-projects').addEventListener('toggle',event=>{
     const host = event.currentTarget.querySelector('.cockpit-project-table');

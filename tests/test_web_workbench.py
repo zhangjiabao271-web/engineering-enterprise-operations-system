@@ -135,6 +135,157 @@ class WebWorkbenchTests(unittest.TestCase):
         self.assertTrue(any(item['value'] == 1 for item in choices['projects']))
         self.assertFalse(any(item['value'] == 1 for item in choices['active_projects']))
 
+    def test_quote_options_include_specification_supplier_unit_price_and_current_records(self):
+        from services.web_workbench_operations import database_fingerprint
+        from db.connection import db_read
+        first = self.business.save_record('offers', {
+            'supplier_id': 2, 'name': '合成H型钢', 'specification': '248×124',
+            'unit': '支', 'price': '1050.00', 'price_basis': 'inclusive', 'tax_rate_percent': '9',
+        })
+        second = self.business.save_record('offers', {
+            'supplier_id': 2, 'name': '合成H型钢', 'specification': '198×99',
+            'unit': '支', 'price': '760.00', 'price_basis': 'exclusive', 'tax_rate_percent': '9',
+        })
+        with db_read() as conn:
+            before = database_fingerprint(conn)
+        status, result = self.request('options')
+        self.assertEqual(status, 200)
+        options = {int(row['value']): row['label'] for row in result['offers']}
+        suppliers = {int(row['value']): row['supplier_id'] for row in result['offers']}
+        for identity, spec, price in ((first, '248×124', '含税 ¥1050.00/支'),
+                                      (second, '198×99', '未税 ¥760.00/支')):
+            quote = self.business.get_record('offers', identity)
+            self.assertEqual(suppliers[identity],quote['supplier_id'])
+            self.assertIn(spec, options[identity])
+            self.assertIn(price, options[identity])
+            self.assertIn(quote['name'], options[identity])
+            self.assertIn(f'报价#{identity}', options[identity])
+        self.assertNotEqual(options[first], options[second])
+        with db_read() as conn:
+            self.assertEqual(database_fingerprint(conn), before)
+
+    def test_date_defaults_refresh_each_day_and_templates_do_not_change(self):
+        from datetime import date
+        original = self.business.SPECS['costs']['fields']
+        original_default = next(row['default'] for row in original if row['name'] == 'cost_date')
+        with patch.object(self.business, 'date') as clock:
+            clock.today.return_value = date(2026, 10, 12)
+            clock.fromisoformat.side_effect = date.fromisoformat
+            schema = self.business.schema()
+            for spec in schema.values():
+                for row in spec['fields']:
+                    if row.get('default_today'):
+                        self.assertEqual(row['default'], '2026-10-12')
+            identity = self.business.save_record('costs', {
+                'project_id': 1, 'category': '工程施工 / 材料辅料', 'amount': '1.00',
+            })
+            self.assertEqual(self.business.get_record('costs', identity)['cost_date'], '2026-10-12')
+            clock.today.return_value = date(2026, 10, 13)
+            refreshed = self.business.schema()
+            self.assertEqual(next(row['default'] for row in refreshed['costs']['fields']
+                                  if row['name'] == 'cost_date'), '2026-10-13')
+        self.assertEqual(next(row['default'] for row in original if row['name'] == 'cost_date'), original_default)
+
+    def test_purchase_choices_preserve_legacy_facts_and_reject_new_unknown_statuses(self):
+        fields = {row['name']: row for row in self.business.schema()['purchases']['fields']}
+        for key, facts in {
+            'invoice_status': ['有发票', '收据', '无发票', '未确认'],
+            'payment_status': ['已付款', '未付款', '未确认'],
+            'payment_method': ['现金', '对公转账', '员工垫付', '未记录'],
+        }.items():
+            self.assertTrue(set(facts).issubset(fields[key]['choices']), key)
+        with self.assertRaisesRegex(ValueError, '付款状态.*无效'):
+            self.business.save_record('purchases', {
+                'project_id': 1, 'purchase_date': '2026-10-12', 'payment_status': '合成无效状态',
+            })
+
+    def test_purchase_rows_show_all_original_material_names_and_specifications(self):
+        identity = self.business.save_record('purchases', {
+            'project_id': 1, 'supplier_id': 2, 'purchase_date': '2026-10-13',
+            'items': [
+                {'material_name_snapshot': '合成割枪', 'specification_snapshot': 'G01-100',
+                 'quantity': '1', 'unit_snapshot': '把', 'unit_price': '68', 'price_basis': 'inclusive'},
+                {'material_name_snapshot': '合成气割接头', 'specification_snapshot': 'M12',
+                 'quantity': '5', 'unit_snapshot': '只', 'unit_price': '3', 'price_basis': 'inclusive'},
+                {'material_name_snapshot': '合成调压阀', 'quantity': '1',
+                 'unit_snapshot': '只', 'unit_price': '64', 'price_basis': 'inclusive'},
+            ],
+        })
+        before = self.business.get_record('purchases', identity)
+        for keyword in ('', '割枪', 'M12', '调压阀'):
+            status, response = self.request('rows?module=purchases&project_id=1&keyword=' + urllib.parse.quote(keyword))
+            self.assertEqual(status, 200)
+            row = next(row for row in response['rows'] if row['id'] == identity)
+            self.assertEqual(row['material_details'], '合成割枪 · G01-100\n合成气割接头 · M12\n合成调压阀')
+            self.assertEqual(row['total_amount_cents'], '14700')
+            self.assertEqual(row['item_count'], 3)
+        self.assertEqual(self.business.get_record('purchases', identity), before)
+        columns = self.business.schema()['purchases']['columns']
+        self.assertEqual(columns[1], ('material_details', '材料名称 / 规格'))
+        self.assertEqual(columns[-1][0], 'order_no')
+
+    def test_old_exclusive_quotes_without_explicit_quoted_price_still_open(self):
+        from db.connection import db_transaction
+        # Simulate a real pre-migration offer in the isolated fixture, not the formal ledger.
+        original = self.business.get_record('offers', 1)
+        with db_transaction() as conn:
+            conn.execute("UPDATE supplier_offers SET quoted_price_minor=NULL, price_basis='exclusive' WHERE id=1")
+        status, choices = self.request('options')
+        self.assertEqual(status, 200, choices)
+        option = next(row for row in choices['offers'] if int(row['value']) == 1)
+        self.assertIn('未税 ¥4500.00/吨', option['label'])
+        status, quote = self.request('record?module=offers&id=1')
+        self.assertEqual(status, 200, quote)
+        self.assertEqual(quote['price'], original['price'])
+
+    def test_attention_and_entry_endpoints_reject_read_only_writes(self):
+        self.server.read_only=True
+        status,attention=self.request('attention')
+        self.assertEqual(status,200);self.assertEqual(len(attention['checks']),2)
+        for endpoint,payload in (
+            ('attention/day_open',{}),
+            ('attention/check',{'kind':'worklogs','day':attention['day'],'status':'done','basis':attention['checks'][0]['basis'],'confirmed':True}),
+            ('entry/preview',{'records':[],'request_key':'synthetic-readonly'}),
+            ('entry/apply',{'token':'unknown','confirmed':True}),
+        ):
+            with self.subTest(endpoint=endpoint):self.assertEqual(self.request(endpoint,payload)[0],403)
+
+    def test_http_entry_approval_and_duplicate_request_boundary(self):
+        payload={'request_key':'synthetic-http-entry-once','records':[{'module':'costs','data':{
+            'project':'厂房钢结构','date':'2026-10-13','category':'工程施工 / 材料辅料',
+            'description':'合成工具','amount':'25','paid':True}}]}
+        status,preview=self.request('entry/preview',payload)
+        self.assertEqual(status,200);draft=preview['result'];self.assertTrue(draft['can_apply'])
+        self.assertEqual(self.request('entry/apply',{'token':draft['token']})[0],400)
+        status,result=self.request('entry/apply',{'token':draft['token'],'confirmed':True})
+        self.assertEqual(status,200);self.assertEqual(len(result['result']),1)
+        self.assertEqual(self.request('entry/apply',{'token':draft['token'],'confirmed':True})[1],result)
+
+    def test_purchase_item_ids_from_browser_are_validated_and_keep_existing_items(self):
+        from services.web_workbench_operations import database_fingerprint
+        from db.connection import db_read
+        previous = self.business.get_record('purchases', 1)
+        item = previous['items'][0]
+        values = {'item_id': str(item['item_id']), 'product_id': str(item['supplier_offer_id']),
+                  'material_name_snapshot': item['material_name_snapshot'],
+                  'quantity': str(item['quantity']), 'unit_snapshot': item['unit_snapshot'],
+                  'unit_price': self.business.money_form_value(item['material_unit_price_cents']),
+                  'tax_percent': str(item['tax_rate_bps'] / 100), 'price_basis': 'exclusive'}
+        status, result = self.request('save', {'module': 'purchases', 'id': 1,
+            'expected': previous['_version'], 'confirmed': True,
+            'record': {**previous, 'notes': '合成原明细备注修改', 'items': [values]}})
+        self.assertEqual(status, 200, result)
+        current = self.business.get_record('purchases', 1)
+        self.assertEqual(current['items'][0]['item_id'], item['item_id'])
+        self.assertEqual(current['total_amount_cents'], previous['total_amount_cents'])
+        with db_read() as conn:
+            before = database_fingerprint(conn)
+        for identity in ('1.5', -1, True, 'not-an-id'):
+            with self.subTest(identity=identity), self.assertRaisesRegex(ValueError, '编号无效'):
+                self.business.prepare_purchase_items([{**values, 'item_id': identity}])
+        with db_read() as conn:
+            self.assertEqual(database_fingerprint(conn), before)
+
     def test_all_collections_and_dashboards_have_real_service_results(self):
         for key in self.business.SPECS:
             with self.subTest(module=key):
@@ -392,6 +543,40 @@ class WebWorkbenchTests(unittest.TestCase):
         self.assertEqual(current['credit_limit_minor'],12345678901234)
         self.assertEqual(current['credit_limit'],'123456789012.34')
         self.assertEqual(current['contact_department'],'合成部')
+
+    def test_entity_record_options_are_named_and_reads_do_not_change_the_ledger(self):
+        from db.connection import db_read
+        from services.web_workbench_operations import database_fingerprint
+        from services import funds_service, operating_entity_service
+
+        receipt = self.business.save_record('receipts', {
+            'project_id': 1, 'contract_id': 1, 'amount': '100.00',
+            'receipt_date': '2026-10-03', 'payment_method': '银行转账',
+        })
+        funds_service.record_transaction({
+            'request_key': 'synthetic-entity-label-receipt', 'category': 'receipt',
+            'source_id': receipt, 'amount': '100.00', 'transaction_date': '2026-10-03',
+            'to_account_id': 1,
+        })
+        with db_read() as conn:
+            before = database_fingerprint(conn)
+        for kind, (_, label_column, _, _) in operating_entity_service.RECORDS.items():
+            with self.subTest(kind=kind):
+                status, rows = self.request('operation_read?name=entity_records&kind=' + kind)
+                self.assertEqual(status, 200, rows)
+                self.assertTrue(rows, kind)
+                with db_read() as conn:
+                    for row in rows:
+                        self.assertIn('date', row)
+                        self.assertIn('amount_minor', row)
+                        self.assertIn('projects', row)
+                        expected = conn.execute(
+                            f'SELECT {label_column} FROM {kind} WHERE id=?', (row['id'],)
+                        ).fetchone()[0]
+                        self.assertEqual(row['label'], str(expected))
+                        self.assertTrue(row['label'].strip(), kind)
+        with db_read() as conn:
+            self.assertEqual(database_fingerprint(conn), before)
 
     def test_fund_verification_plan_payment_and_input_links_follow_services(self):
         from services import web_workbench_operations as operations

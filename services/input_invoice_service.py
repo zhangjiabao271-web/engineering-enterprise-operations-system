@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from db.connection import db_read, db_transaction, PROJECT_ROOT
 from services._common import now
-from services.operating_entity_service import entity_for
+from services.entity_ownership import OwnershipResolver
 
 DEDUCTIONS = {'pending':'待会计确认', 'eligible':'可抵扣', 'deducted':'已抵扣', 'ineligible':'不可抵扣'}
 
@@ -111,13 +111,14 @@ def _source(conn, kind, record_id):
 def _check_links(conn, invoice, links, exclude_invoice_id=None):
     used = set()
     total = 0
+    resolver = OwnershipResolver(conn) if links else None
     for link in links:
         kind, record_id = link['kind'], int(link['record_id'])
         if (kind,record_id) in used:
             raise ValueError('同一成本记录不能重复关联')
         used.add((kind,record_id))
         row = _source(conn,kind,record_id)
-        if entity_for(conn,kind,record_id) != invoice['entity_id']:
+        if resolver.record(kind, row)['entity_id'] != invoice['entity_id']:
             raise ValueError('成本主体未确认或与发票购买主体不同，请先在经营主体页确认')
         if kind == 'purchase_orders' and row['supplier_partner_id'] != invoice['supplier_id']:
             raise ValueError('采购供应商与发票销售方不一致')
@@ -352,9 +353,10 @@ def cost_candidates(entity_id, supplier_id=None, kind='purchase_orders', keyword
         result=[]
         if kind not in ('purchase_orders','cost_entries'):
             raise ValueError('请选择采购或费用')
+        resolver = OwnershipResolver(conn)
         supplier=conn.execute('SELECT legal_name FROM business_partners WHERE id=?',(supplier_id,)).fetchone() if supplier_id else None
         for row in conn.execute(f'SELECT * FROM {kind} ORDER BY id DESC'):
-            if row['status']!='active' or entity_for(conn,kind,row['id'])!=entity_id:
+            if row['status']!='active' or resolver.record(kind,row)['entity_id']!=entity_id:
                 continue
             if kind=='cost_entries' and row['source_type']!='manual':
                 continue

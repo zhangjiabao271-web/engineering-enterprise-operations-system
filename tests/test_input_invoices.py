@@ -27,6 +27,12 @@ class InputInvoiceTests(unittest.TestCase):
                 CREATE TABLE business_partners(id INTEGER PRIMARY KEY, legal_name TEXT, status TEXT, unified_credit_code TEXT);
                 CREATE TABLE partner_roles(partner_id INTEGER, role_code TEXT);
                 CREATE TABLE projects(id INTEGER PRIMARY KEY,name TEXT,status TEXT,cash_agreed_amount_minor INTEGER);
+                CREATE TABLE contracts(id INTEGER PRIMARY KEY,name TEXT,status TEXT,parent_contract_id INTEGER);
+                CREATE TABLE contract_project_allocations(project_id INTEGER,contract_id INTEGER,status TEXT);
+                CREATE TABLE settlements(project_id INTEGER,contract_id INTEGER,status TEXT);
+                CREATE TABLE sales_invoices(project_id INTEGER,contract_id INTEGER,status TEXT);
+                CREATE TABLE receipts(id INTEGER PRIMARY KEY,project_id INTEGER,contract_id INTEGER,status TEXT);
+                CREATE TABLE receipt_allocations(receipt_id INTEGER,project_id INTEGER,contract_id INTEGER,status TEXT);
                 CREATE TABLE purchase_orders(id INTEGER PRIMARY KEY,order_no TEXT,project_id INTEGER,
                     supplier_partner_id INTEGER,merchant_name_snapshot TEXT,total_amount_cents INTEGER,
                     purchase_date TEXT,status TEXT);
@@ -72,10 +78,13 @@ class InputInvoiceTests(unittest.TestCase):
         self.assertEqual(self.read('SELECT * FROM purchase_orders'),before)
         self.assertEqual(len(self.read('SELECT * FROM operating_entity_audit')),1)
 
-    def test_project_suggestion_is_not_automatic_attribution(self):
+    def test_explicit_cash_project_confirmation_is_inherited_without_rewriting_costs(self):
+        before=self.read('SELECT * FROM purchase_orders')
         self.assign('projects')
         rows=entities.list_records('purchase_orders')
-        self.assertTrue(all(r['suggested_entity_id']==1 and r['entity_id'] is None for r in rows))
+        self.assertTrue(all(r['entity_id']==1 and r['ownership_status']=='inherited' for r in rows))
+        self.assertEqual(self.read('SELECT * FROM purchase_orders'),before)
+        self.assertEqual(len(invoices.cost_candidates(1)),2)
 
     def test_invoice_does_not_create_or_change_costs(self):
         before=self.read('SELECT * FROM purchase_orders'),self.read('SELECT * FROM cost_entries')

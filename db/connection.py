@@ -8,6 +8,21 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("SUPPLY_CHAIN_DB_PATH", PROJECT_ROOT / "supplier_data.db"))
 _READ_SNAPSHOT = ContextVar('business_read_snapshot', default=None)
+_WRITE_TRANSACTION = ContextVar('business_write_transaction', default=None)
+
+
+@contextmanager
+def use_write_transaction(conn):
+    """Compose existing services inside one caller-owned atomic transaction."""
+    if _READ_SNAPSHOT.get() is not None or not conn.in_transaction:
+        raise ValueError('共享写入必须使用已开启的独立事务')
+    if conn.execute('PRAGMA query_only').fetchone()[0]:
+        raise ValueError('只读连接不能共享写入')
+    token = _WRITE_TRANSACTION.set(conn)
+    try:
+        yield
+    finally:
+        _WRITE_TRANSACTION.reset(token)
 
 
 @contextmanager
@@ -47,6 +62,12 @@ def db_transaction(db_path=None, *, immediate=False):
         conn.execute(...)  # 正常返回即提交，抛异常即回滚
     immediate=True 时用 BEGIN IMMEDIATE 预先拿写锁，避免多写者升级死锁。
     """
+    shared = _WRITE_TRANSACTION.get()
+    if shared is not None:
+        if db_path is not None:
+            raise ValueError('共享写入不能切换数据库')
+        yield shared
+        return
     conn = get_connection(db_path)
     try:
         if immediate:
@@ -63,7 +84,7 @@ def db_transaction(db_path=None, *, immediate=False):
 @contextmanager
 def db_read(db_path=None):
     """OS-level read-only connection and a consistent snapshot across SELECTs."""
-    shared = _READ_SNAPSHOT.get()
+    shared = _READ_SNAPSHOT.get() or _WRITE_TRANSACTION.get()
     if shared is not None:
         if db_path is not None:
             raise ValueError('共享只读查询不能切换数据库')

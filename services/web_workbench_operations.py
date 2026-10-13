@@ -61,7 +61,7 @@ OPERATIONS={
  'input_links':spec('input_invoices','关联进项票成本',[F('links','采购 / 费用关联明细','invoice_links'),REASON]),
  'input_deduction':spec('input_invoices','核对进项税抵扣状态',[C('deduction_status','抵扣状态',{'pending':'待核实','eligible':'可抵扣','deducted':'已抵扣','ineligible':'不可抵扣'},'pending'),F('deduction_period','已抵扣月份（YYYY-MM）'),REASON]),
  'input_void':spec('input_invoices','作废进项发票',[REASON]),
- 'entity_assign':spec('entities','确认业务经营主体',[C('kind','业务类型',{k:v[0] for k,v in b.entities.RECORDS.items()},'projects'),F('ids','业务记录','multi',source='entity_records',required=True),S('entity_id','经营主体','entities',True),REASON]),
+ 'entity_assign':spec('entities','确认业务经营主体',[C('kind','业务类型',{k:v[0] for k,v in b.entities.RECORDS.items()},'contracts'),F('ids','业务记录','multi',source='entity_records',required=True),S('entity_id','经营主体','entities',True),REASON]),
  'entity_tax':spec('entities','维护主体税号',[S('entity_id','经营主体','entities',True),F('tax_number','税号'),REASON]),
  'historical_receipt':spec('historical','登记历史项目回款',[F('receipt_date','实际回款日期','date',required=True),F('amount','金额（元）','money',required=True),F('payer_name','付款方'),F('payment_method','支付方式',default='待确认'),F('notes','备注','textarea'),REASON]),
  'supplier_deactivate':spec('suppliers','停用供应商',[REASON]),
@@ -84,6 +84,8 @@ def database_fingerprint(conn):
     tables=[row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
     snapshot={}
     for table in tables:
+        if table in {'daily_self_checks','operating_attention_states','operating_check_history','assistant_entry_drafts'}:
+            continue
         quoted='"'+table.replace('"','""')+'"'
         snapshot[table]=[dict(row) for row in conn.execute(f'SELECT * FROM {quoted} ORDER BY rowid')]
     return digest(json.loads(json.dumps(snapshot,ensure_ascii=False,default=str)))
@@ -173,9 +175,8 @@ def prepare(name,data):
         for row in review['rows']:
             b.money_input(row['amount'],zero=False)
     elif name=='entity_assign':
-        review['rows']=[r for r in b.entities.list_records(values['kind']) if r['id'] in values['ids']]
-        if len(review['rows'])!=len(values['ids']):
-            raise ValueError('部分业务记录已不存在或已作废')
+        impact = b.entities.preview_assignment(values['kind'], values['ids'], values['entity_id'])
+        review.update(rows=impact['rows'], notice=impact['notice'], ownership_projects=impact['projects'])
     elif name in ('labor_lock','labor_overtime','labor_void'):
         review['rows']=[b.get_record('worklogs',record_id) for record_id in values['ids']]
     elif name in ('site_update','site_deactivate'):
@@ -280,7 +281,16 @@ def read(name,query):
     if name=='fund_sources':return b.funds.list_sources(query.get('kind','purchase'),include_closed=True)
     if name=='reconciliations':return b.funds.list_reconciliations()
     if name=='entities':return b.entities.list_entities()
-    if name=='entity_records':return b.entities.list_records(query.get('kind','projects'),pending_only=query.get('pending')=='1')
+    if name=='entity_records':return b.entities.list_records(query.get('kind','contracts'),pending_only=query.get('pending')=='1',
+        assignable_only=query.get('assignable')=='1', keyword=query.get('keyword',''),
+        project_id=int(query['project_id']) if query.get('project_id') else None)
+    if name in ('entity_overview','entity_detail'):
+        from services import operating_entity_dashboard
+        project_id = int(query['project_id']) if query.get('project_id') else None
+        if name=='entity_overview':return operating_entity_dashboard.get_overview(project_id)
+        entity_id = 'all' if query.get('entity_id')=='all' else (int(query['entity_id']) if query.get('entity_id') else None)
+        return operating_entity_dashboard.get_detail(query['metric'],entity_id,project_id)
+    if name=='entity_history':return b.entities.ownership_history(query['kind'],i)
     if name=='input_candidates':return b.inputs.cost_candidates(int(query['entity_id']),int(query['supplier_id']) if query.get('supplier_id') else None,query.get('kind','purchase_orders'))
     if name=='input_links':
         with db_read() as conn:return [dict(r) for r in conn.execute('SELECT * FROM input_invoice_links WHERE invoice_id=? ORDER BY id',(i,))]

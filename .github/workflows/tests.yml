@@ -49,7 +49,7 @@ jobs:
       - name: Run deterministic frontend tests
         shell: pwsh
         run: |
-          $tests = @('test_attachment_continuous', 'test_cockpit_detail', 'test_editor_lifecycle', 'test_project_ledger_header', 'test_project_purchase_details', 'test_search_choice', 'test_workbench_navigation')
+          $tests = @('test_attachment_continuous', 'test_cockpit_detail', 'test_editor_lifecycle', 'test_operating_entities', 'test_project_ledger_header', 'test_project_purchase_details', 'test_search_choice', 'test_workbench_navigation')
           foreach ($test in $tests) {
             node "scripts/$test.mjs"
             if ($LASTEXITCODE -ne 0) { throw "Frontend test failed: $test" }

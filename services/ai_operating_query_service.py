@@ -623,6 +623,8 @@ def _collection_actions(question):
 
 
 def _business_action_plan():
+    from services.operating_attention_service import overview
+    daily=overview()['checks']
     collection_rows = collection_service.get_actionable_cases()
     fulfillment_rows = data_governance_service.list_fulfillment_gaps()
     if collection_rows or fulfillment_rows:
@@ -675,6 +677,13 @@ def _business_action_plan():
                 ),
             )
         )
+    if daily:
+        pending=[row for row in daily if row['status'] not in ('done','none')]
+        answer+=' 今日自检：'+('、'.join(row['label']+'待核对' for row in pending) if pending else '已全部人工核对')+'。未登记不自动视为遗漏。'
+        labels={'pending':'待核对','done':'已录完','none':'今日无业务','later':'稍后处理'}
+        sources.append(_source('今日自检','home','查看自检','全公司每日录入核对',
+            [{**row,'status':labels[row['status']]} for row in daily],
+            columns=_detail_columns(('label','事项','text'),('day','业务日期','text'),('count','已登记人数/单数','number'),('status','核对状态','text'))))
     return _matched(
         "business_action_plan",
         answer,

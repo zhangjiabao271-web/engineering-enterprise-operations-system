@@ -357,6 +357,8 @@ def create_contract(data):
         )
         from services.invoice_income_service import set_mode
         set_mode(conn, cursor.lastrowid, data.get('income_mode', 'manual'))
+        from services.operating_entity_service import save_record_entity
+        save_record_entity(conn, 'contracts', cursor.lastrowid, data)
         return cursor.lastrowid
 
 
@@ -399,6 +401,8 @@ def update_contract(contract_id, data):
 
     with db_transaction(immediate=True) as conn:
         changed_at = _now()
+        from services.entity_ownership import OwnershipResolver
+        ownership_before = OwnershipResolver(conn)
         organization_id = _organization_id(conn)
         partner_id = data.get("customer_partner_id") or None
         parent_contract_id = int(data.get("parent_contract_id") or 0) or None
@@ -415,6 +419,8 @@ def update_contract(contract_id, data):
             conn, organization_id, partner_id, data.get("customer_name"),
             allow_inactive_id=existing.get("customer_partner_id"),
         )
+        from services.business_relationships import guard_customer_change
+        guard_customer_change(conn, 'contracts', contract_id, partner_id)
         if converting_to_actual:
             _convert_contract_to_actual_pricing(conn, contract_id, changed_at)
         conn.execute(
@@ -446,6 +452,14 @@ def update_contract(contract_id, data):
         )
         from services.invoice_income_service import set_mode
         set_mode(conn, contract_id, data.get('income_mode', existing['income_mode']))
+        from services.operating_entity_service import (
+            save_record_entity, validate_inherited_ownership_change,
+            _reconcile_inherited_invoices,
+        )
+        save_record_entity(conn, 'contracts', contract_id, data)
+        validate_inherited_ownership_change(conn, ownership_before)
+        if parent_contract_id != existing.get('parent_contract_id'):
+            _reconcile_inherited_invoices(conn, 'contracts', contract_id, changed_at)
 
 
 def void_contracts(contract_ids):

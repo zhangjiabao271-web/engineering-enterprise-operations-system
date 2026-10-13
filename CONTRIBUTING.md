@@ -35,6 +35,15 @@ python -m venv .venv
 
 网页改动同时运行相应 `scripts/test_*.mjs` 前端专项；无浏览器专项不代表实际窗口验收。完整CI包含静态脚本语法检查和确定性的前端交互测试。
 
+可选的实际浏览器验收需要 Node.js 和 Playwright：
+
+```powershell
+npm install --no-save --package-lock=false playwright
+npx playwright install chromium
+```
+
+先启动相应 `scripts/accept_*_fixture.py` 的全新合成账本，再运行对应浏览器脚本；不得把正式工作台地址传入验收脚本。默认使用 Playwright Chromium，也可仅在当前终端设置 `WORKBENCH_BROWSER` 指向已有浏览器可执行文件。依赖、验收数据库及截图均不提交仓库。
+
 提交即表示你同意按本项目的 [MIT License](LICENSE) 发布贡献。
 
 ## AI 协作

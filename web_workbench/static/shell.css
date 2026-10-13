@@ -83,6 +83,11 @@ td { padding: 15px 16px; }
 .table-wrap td[data-column$="_name"],
 .table-wrap td[data-column="customer_name_snapshot"],
 .table-wrap td[data-column="material_name_snapshot"] { min-width: 15em; }
+.table-wrap td[data-column="material_details"] {
+  min-width: 18em; width: 24em; max-width: 30em;
+  white-space: pre-line; overflow-wrap: anywhere;
+  overflow: visible; text-overflow: clip; line-height: 1.65;
+}
 .table-wrap td[data-column$="_date"],
 .table-wrap td[data-column$="_code"],
 .table-wrap td[data-column="contract_no"],

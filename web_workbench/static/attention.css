@@ -1,0 +1,25 @@
+.daily-checklist,.operating-priorities{margin:20px 0 24px;background:var(--surface,#fff)}
+.daily-checklist .section-head h2,.operating-priorities .section-head h2{font-size:18px}
+.daily-check,.attention-issue{display:flex;justify-content:space-between;gap:20px;padding:16px 0;border-top:1px solid var(--line)}
+.daily-check>div:first-child,.attention-issue>div:first-child{min-width:0;flex:1}
+.daily-check strong,.attention-issue strong{display:block;font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.daily-check span,.daily-check small,.attention-issue small{display:block;font-size:12px;color:var(--muted);margin-top:6px;line-height:1.65}
+.attention-issue p{font-size:12px;color:var(--muted);margin:7px 0;line-height:1.65}
+.daily-actions,.attention-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:7px;max-width:450px}
+.daily-actions button,.attention-actions button{font-size:12px;min-height:36px}
+.daily-actions .daily-status{margin:0 6px 0 0;color:var(--text)}
+.daily-check.is-complete strong{color:var(--muted)}
+.attention-clear{font-size:13px;color:var(--muted);padding:10px 0;line-height:1.7}
+#operating-attention details{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+#operating-attention summary{font-size:12px;color:var(--blue);cursor:pointer;line-height:1.8}
+.attention-change{color:var(--blue)!important}
+.attention-resolved{padding:12px 0;font-size:13px;overflow-wrap:anywhere}
+.attention-resolved span{display:block;color:var(--muted);font-size:12px;margin-top:5px}
+.collection-copy-text{width:100%;min-height:180px;line-height:1.8}
+.entry-review-row{padding:18px 0;border-bottom:1px solid var(--line)}
+.entry-review-row h3{font-size:14px;margin-bottom:12px;overflow-wrap:anywhere}
+.entry-review-warning{font-size:12px;line-height:1.8;color:var(--muted);margin:10px 0}
+.entry-result{font-size:13px;line-height:1.8;overflow-wrap:anywhere}
+.chat-mode{width:150px;flex:none;font-size:12px}
+.chat-evidence-note{font-size:11px;line-height:1.7;color:var(--muted);margin-top:12px}
+@media(max-width:800px){.daily-check,.attention-issue{flex-direction:column;gap:12px}.daily-actions,.attention-actions{justify-content:flex-start;max-width:none}.daily-actions button,.attention-actions button{min-height:44px}.daily-checklist .section-head,.operating-priorities .section-head{flex-wrap:wrap}}

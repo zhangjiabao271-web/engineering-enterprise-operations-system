@@ -411,6 +411,8 @@ def update_project(project_id, data):
             allow_inactive_id=existing["customer_partner_id"],
             entity_type=data.get("customer_entity_type"),
         )
+        from services.business_relationships import guard_customer_change
+        guard_customer_change(conn, 'projects', project_id, customer_id)
         if (
             existing["business_mode"] == "contract"
             and business_mode == "cash"

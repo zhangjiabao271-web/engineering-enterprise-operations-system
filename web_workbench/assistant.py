@@ -82,6 +82,23 @@ class WebAssistant:
             self._cancel(self._session(identity))
             return self.snapshot(identity)
 
+    def entry_completed(self,identity,generation,token):
+        from services.assistant_entry_service import get_draft
+        draft=get_draft(token)
+        if draft['state']!='applied':
+            raise ValueError('草稿尚未保存，不记录完成状态')
+        with self._lock:
+            session=self._session(identity)
+            if session['busy'] or generation!=session['generation']:
+                raise ValueError('对话已变化，账目保存结果请从业务台账核对')
+            message=session['messages'][-1]
+            if message.get('message_type')!='entry_draft':
+                raise ValueError('当前消息不是录入草稿')
+            message.update(content=f"已保存并回读核对{len(draft['result'])}笔记录。成本、回款与资金流水分别记账，本次未额外生成资金流水。",
+                           message_type='entry_saved',entry_records=None,entry_result=draft['result'])
+            session['context'].pop('entry_records',None)
+            return self.snapshot(identity)
+
     def confirm(self, identity, generation, index, *, allow_model=False):
         """Accept only a candidate produced by the latest server-side turn."""
         with self._lock:
@@ -100,12 +117,16 @@ class WebAssistant:
             return self.ask(identity, message['question'], allow_model=allow_model,
                             _user_content='确认：' + str(candidate.get('label') or '该候选'))
 
-    def ask(self, identity, question, *, allow_model=False, expected_generation=None, _user_content=None):
+    def ask(self, identity, question, *, allow_model=False, expected_generation=None, _user_content=None,mode='query'):
         question = str(question or '').strip()
         if not question or len(question) > 4000:
             raise ValueError('请输入1至4000字的经营问题。')
         if type(allow_model) is not bool:
             raise ValueError('模型授权选项须明确勾选。')
+        if mode not in ('query','entry'):
+            raise ValueError('请选择查账或协助录入模式')
+        if mode=='entry' and not allow_model:
+            raise ValueError('协助录入需要模型理解这段业务描述，请先明确授权；不会向模型发送原始账目')
         with self._lock:
             if self._closed:
                 raise ValueError('经营助手已关闭。')
@@ -136,8 +157,16 @@ class WebAssistant:
                     engine = ask_ai_turn
                 else:
                     engine = self._engine
-                result = engine(question, project_id=project_id, conversation_context=context,
-                                history=history, cancel_event=cancel, on_chunk=chunk, allow_model=allow_model)
+                if mode=='entry':
+                    from services.assistant_entry_service import extract
+                    extracted=extract(question,previous=context.get('entry_records'))
+                    result={'answer':'已整理为录入草稿，尚未记账。请打开确认清单核对项目、日期、金额和缺失条件。',
+                            'entry_records':extracted['records'],'entry_questions':extracted['questions'],
+                            'sources':[],'message_type':'entry_draft',
+                            'context_updates':{'entry_records':extracted['records']}}
+                else:
+                    result = engine(question, project_id=project_id, conversation_context=context,
+                                    history=history, cancel_event=cancel, on_chunk=chunk, allow_model=allow_model)
             except AIError as error:
                 if error.code == 'cancelled':
                     cancel.set()
@@ -163,6 +192,13 @@ class WebAssistant:
                     'question': question, 'generation': generation, 'project_id': session['project_id'],
                     **{key: deepcopy(result.get(key)) for key in
                        ('sources', 'candidates', 'message_type', 'answer_mode', 'error_code')}})
+                session['messages'][-1].update({key:deepcopy(result.get(key)) for key in ('entry_records','entry_questions')})
+                if mode=='query' and result.get('sources'):
+                    from services.operating_attention_service import clock
+                    session['messages'][-1]['evidence_note']={
+                        'completed_at':clock().isoformat(timespec='seconds'),
+                        'scope':'指定项目' if session['project_id'] else '全公司',
+                        'limits':'金额由本地服务计算；已登记成本不代表成本已全部补齐，也不代表实际付款。依据变化后请重新查询。'}
                 excess = max(0, len(session['messages']) - 40)
                 session['dropped_messages'] += excess
                 session['messages'] = session['messages'][excess:]
