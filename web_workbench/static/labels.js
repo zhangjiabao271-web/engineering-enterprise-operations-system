@@ -2,6 +2,7 @@
 
 // Names for service-only facts that are not part of an editable form schema.
 const factLabels = {
+  materials:'材料名称', material_details:'材料 / 规格',
   ownership_status:'归属状态', ownership_label:'归属状态', ownership_source:'归属依据',
   ownership_reason:'归属说明', kind_label:'业务类型', assignable:'可直接确认', direct_entity_id:'原人工主体编号',
   before_entity:'原经营主体', after_entity:'确认后经营主体', change:'归属变化',

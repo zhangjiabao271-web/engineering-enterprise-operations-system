@@ -1,0 +1,8 @@
+.governance-table{margin-top:20px}
+.governance-table .section-head{gap:12px;flex-wrap:wrap}
+.governance-table .section-head span{font-size:12px;color:var(--muted)}
+.governance-table td[data-column="material_details"]{white-space:pre-line;min-width:320px;line-height:1.8}
+.governance-table td[data-column="notes"]{min-width:140px;overflow-wrap:anywhere}
+.governance-table td[data-column="order_no"]{white-space:nowrap}
+.governance-table .table-actions button{margin:3px 0;min-height:36px}
+@media(max-width:800px){.governance-table .table-actions button{min-height:44px}.governance-table td[data-column="material_details"]{min-width:260px}}

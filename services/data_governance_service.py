@@ -8,6 +8,12 @@ from db.connection import db_read, db_transaction
 from services._common import now as _now
 from services.project_service import _customer_id
 
+UNASSIGNED_PURCHASE_WHERE = """po.status='active' AND po.project_id IS NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM purchase_cost_allocation_lines pal
+        WHERE pal.purchase_order_id=po.id AND pal.status='active'
+    )"""
+
 
 def _rows(conn, sql, params=()):
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
@@ -23,10 +29,10 @@ def get_governance_summary():
                WHERE COALESCE(status, 'active')='active' AND project_id IS NULL"""
         ).fetchone()
         purchase = conn.execute(
-            """SELECT COUNT(*) AS record_count,
+            f"""SELECT COUNT(*) AS record_count,
                       COALESCE(SUM(total_amount_cents), 0) AS amount_minor
-               FROM purchase_orders
-               WHERE status='active' AND project_id IS NULL"""
+               FROM purchase_orders po
+               WHERE {UNASSIGNED_PURCHASE_WHERE}"""
         ).fetchone()
         projects = conn.execute(
             """SELECT
@@ -184,25 +190,41 @@ def assign_labor_records(work_log_ids, project_id, project_site_id=None):
 
 def list_unassigned_purchases(keyword=""):
     with db_read() as conn:
-        sql = """SELECT po.id, po.order_no, po.purchase_date,
-                        po.merchant_name_snapshot AS supplier_name,
-                        GROUP_CONCAT(poi.material_name_snapshot, '、') AS materials,
+        sql = f"""SELECT po.id, po.order_no, po.purchase_date,
+                        COALESCE(NULLIF(po.merchant_name_snapshot,''), bp.legal_name, '') AS supplier_name,
                         po.total_amount_cents AS amount_minor,
+                        po.total_amount_cents, po.freight_amount_cents,
+                        po.payment_status, po.invoice_status,
                         COALESCE(po.notes, '') AS notes
                  FROM purchase_orders po
-                 LEFT JOIN purchase_order_items poi ON poi.purchase_order_id=po.id
-                 WHERE po.status='active' AND po.project_id IS NULL
-                   AND NOT EXISTS (
-                     SELECT 1 FROM purchase_cost_allocation_lines pal
-                     WHERE pal.purchase_order_id=po.id AND pal.status='active'
-                   )"""
+                 LEFT JOIN business_partners bp ON bp.id=po.supplier_partner_id
+                 WHERE {UNASSIGNED_PURCHASE_WHERE}"""
         params = []
         if keyword:
             sql += """ AND (po.order_no LIKE ? OR po.merchant_name_snapshot LIKE ?
-                             OR poi.material_name_snapshot LIKE ? OR po.notes LIKE ?)"""
-            params.extend([f"%{keyword}%"] * 4)
-        sql += " GROUP BY po.id ORDER BY po.purchase_date DESC, po.id DESC"
-        return _rows(conn, sql, params)
+                             OR bp.legal_name LIKE ? OR po.notes LIKE ?
+                             OR EXISTS (SELECT 1 FROM purchase_order_items poi
+                                WHERE poi.purchase_order_id=po.id AND (
+                                    poi.material_name_snapshot LIKE ?
+                                    OR poi.specification_snapshot LIKE ? OR poi.purpose LIKE ?)))"""
+            params.extend([f"%{keyword}%"] * 7)
+        sql += " ORDER BY po.purchase_date DESC, po.id DESC"
+        rows = _rows(conn, sql, params)
+        if not rows:
+            return []
+        by_id = {row['id']: row for row in rows}
+        for row in rows:
+            row['items'] = []
+        placeholders = ','.join('?' for _ in by_id)
+        for item in _rows(conn, f"""SELECT * FROM purchase_order_items
+                            WHERE purchase_order_id IN ({placeholders}) ORDER BY id""", tuple(by_id)):
+            by_id[item['purchase_order_id']]['items'].append(item)
+        for row in rows:
+            row['materials'] = '、'.join(item['material_name_snapshot'] for item in row['items'])
+            row['material_details'] = '\n'.join(' · '.join(str(value) for value in (
+                item['material_name_snapshot'], item['specification_snapshot']) if value)
+                for item in row['items'])
+        return rows
 
 
 def assign_purchase_orders(order_ids, project_id):
@@ -244,7 +266,7 @@ def list_project_completeness(active_only=True):
         where = "WHERE p.status='进行中'" if active_only else ""
         return _rows(
             conn,
-            f"""SELECT p.id, p.project_code, p.name, p.status,
+            f"""SELECT p.id, p.project_code, p.name, p.name AS project_name, p.status,
                        p.business_mode, p.invoice_policy,
                        COALESCE(bp.legal_name, p.customer_name, '') AS customer_name,
                        p.customer_partner_id,

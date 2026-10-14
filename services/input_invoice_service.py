@@ -361,14 +361,24 @@ def cost_candidates(entity_id, supplier_id=None, kind='purchase_orders', keyword
             if kind=='cost_entries' and row['source_type']!='manual':
                 continue
             name=row['merchant_name_snapshot'] if kind=='purchase_orders' else row['counterparty_name_snapshot']
+            source=dict(row)
+            description=source.get('notes') or ''
+            if kind=='purchase_orders':
+                details=conn.execute('SELECT material_name_snapshot,specification_snapshot FROM purchase_order_items WHERE purchase_order_id=? ORDER BY id',(row['id'],)).fetchall()
+                description='、'.join(' · '.join(str(part) for part in item if part) for item in details)
+            else:
+                description=' · '.join(part for part in (source.get('category'),description) if part)
             if supplier_id and (row['supplier_partner_id']!=supplier_id if kind=='purchase_orders' else _normal(name)!=_normal(supplier[0] if supplier else '')):
                 continue
-            if keyword and keyword.casefold() not in ' '.join(str(v or '') for v in row).casefold():
+            if keyword and keyword.casefold() not in (' '.join(str(v or '') for v in row)+' '+description).casefold():
                 continue
             column='purchase_order_id' if kind=='purchase_orders' else 'cost_entry_id'
             linked=conn.execute(f'''SELECT COALESCE(SUM(l.amount_minor),0) FROM input_invoice_links l
                 JOIN input_invoices i ON i.id=l.invoice_id WHERE l.{column}=? AND i.status='active' ''',(row['id'],)).fetchone()[0]
             total=row['total_amount_cents'] if kind=='purchase_orders' else row['amount_minor']
-            result.append({'id':row['id'],'kind':kind,'label':row['order_no'] if kind=='purchase_orders' else row['cost_no'],
+            number=row['order_no'] if kind=='purchase_orders' else row['cost_no']
+            day=row['purchase_date'] if kind=='purchase_orders' else row['cost_date']
+            result.append({'id':row['id'],'kind':kind,'label':' · '.join(part for part in (day,number,description) if part),
+                           'source_no':number,'date':day,'description':description,
                            'counterparty':name,'amount_minor':total,'linked_minor':linked,'remaining_minor':max(total-linked,0)})
         return result

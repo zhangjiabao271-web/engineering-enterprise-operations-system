@@ -448,8 +448,11 @@ def dashboards(view, project_id=None, month=None):
     if view == 'finance':
         return finance.get_finance_dashboard(project_id)
     if view == 'governance':
+        projects = governance.list_project_completeness()
+        if project_id:
+            projects = [row for row in projects if row['id'] == int(project_id)]
         return {'summary':governance.get_governance_summary(), 'unassigned_labor':governance.list_unassigned_labor(),
-                'unassigned_purchases':governance.list_unassigned_purchases(), 'projects':governance.list_project_completeness()}
+                'unassigned_purchases':governance.list_unassigned_purchases(), 'projects':projects}
     if view == 'cost':
         from services.web_workbench_costs import ledger_dashboard
         return ledger_dashboard(project_id, month)

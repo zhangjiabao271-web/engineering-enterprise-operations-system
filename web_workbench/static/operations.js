@@ -34,7 +34,11 @@ function reviewHTML(review) {
   const metrics=Object.entries(summary).map(([key,value])=>`<article class="metric"><label>${esc(evidenceLabel(key))}</label><strong>${esc(money(value))}</strong></article>`).join('');
   const impact=review.impact?evidenceHTML(Object.fromEntries(Object.entries(review.impact).filter(([,value])=>value===null || typeof value!=='object')),'回算影响'):'';
   const wageNotice=review.impact?notice(`回算 ${review.impact.affected_count} 条 · 工资锁定跳过 ${review.impact.skipped_locked_count} 条 · 金额不变 ${review.impact.unchanged_count} 条`):'';
-  return (metrics?`<section class="metrics review-metrics">${metrics}</section>`:'')+wageNotice+(review.notice?notice(review.notice):'')+notice('操作依据：'+review.reason)+evidenceHTML(review.changes,'拟执行的内容')+(impact?`<details><summary>查看完整回算影响</summary>${impact}</details>`:'')+(review.rows?.length?evidenceHTML(review.rows,'逐项影响明细'):'')+(review.ownership_projects?.length?evidenceHTML(review.ownership_projects,'关联项目自动归属影响'):'')+(review.before?`<details><summary>查看操作前的完整记录</summary>${evidenceHTML(review.before)}</details>`:'');
+  let rows='';
+  if (review.rows?.length) {
+    rows=review.source_kind ? governanceSourceTable(review.rows,review.source_kind) : evidenceHTML(review.rows,'逐项影响明细');
+  }
+  return (metrics?`<section class="metrics review-metrics">${metrics}</section>`:'')+wageNotice+(review.notice?notice(review.notice):'')+notice('操作依据：'+review.reason)+evidenceHTML(review.changes,'拟执行的内容')+(impact?`<details><summary>查看完整回算影响</summary>${impact}</details>`:'')+rows+(review.ownership_projects?.length?evidenceHTML(review.ownership_projects,'关联项目自动归属影响'):'')+(review.before?`<details><summary>查看操作前的完整记录</summary>${evidenceHTML(review.before)}</details>`:'');
 }
 
 function excelReviewHTML(review,module) {
@@ -65,7 +69,7 @@ async function operationOptions(definition, context, currentOptions=state.boot.o
       options[source]=rows.map(entityRecordOption);
     } else if (source.startsWith('unassigned_')) {
       const rows=await api('operation_read?'+query({name:source,kind:context.kind || 'projects'}));
-      options[source]=rows.map(row=>({value:row.id,label:`${row.name || row.project_name || row.worker_name || row.order_no || row.id} · ${row.work_date || ''}`}));
+      options[source]=rows.map(row=>governanceRecordOption(row,source));
     }
   }
   if (definition.module==='worklogs') {

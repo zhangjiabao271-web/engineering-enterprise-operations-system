@@ -576,13 +576,7 @@ async function renderDashboard(view) {
     if (view === 'home') main.insertAdjacentHTML('beforeend',notice('经营净现金是既有项目经营收支口径；真实银行余额请查看资金与计划中的资金账户。'));
   }
   if (view === 'governance') {
-    main.innerHTML += notice('归集操作调用原有业务服务，不会通过网页改写项目利润计算。');
-    for (const [name,title,action] of [['unassigned_labor','待归集工天','assign_labor'],['unassigned_purchases','待归集采购','assign_purchase']]) {
-      const columns = name === 'unassigned_labor' ? [['work_date','日期'],['worker_name','工人'],['construction_site','地点'],['amount_minor','工资']] : [['order_no','采购单'],['purchase_date','日期'],['total_amount_cents','金额']];
-      main.innerHTML += `<section class="card"><h2>${title}</h2>${table(data[name],columns,row => !state.boot.read_only ? `<button data-assign="${action}" data-id="${row.id}">归集到项目</button>` : '')}</section>`;
-    }
-    main.querySelectorAll('[data-assign]').forEach(button => button.onclick = () => actionForm('确认项目归属',button.dataset.assign,Number(button.dataset.id),[{...state.boot.schema.worklogs.fields.find(field => field.name==='project_id')}],record => ({...record,ids:[record.id]})));
-    main.insertAdjacentHTML('beforeend',`<section class="card"><h2>项目完整性</h2>${table(data.projects,[['project_name','项目'],['customer_name','客户'],['contract_count','合同数'],['settlement_count','收入确认数']])}</section>`);
+    renderGovernance(data);
   }
 }
 

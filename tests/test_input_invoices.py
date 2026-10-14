@@ -36,6 +36,9 @@ class InputInvoiceTests(unittest.TestCase):
                 CREATE TABLE purchase_orders(id INTEGER PRIMARY KEY,order_no TEXT,project_id INTEGER,
                     supplier_partner_id INTEGER,merchant_name_snapshot TEXT,total_amount_cents INTEGER,
                     purchase_date TEXT,status TEXT);
+                CREATE TABLE purchase_order_items(id INTEGER PRIMARY KEY,purchase_order_id INTEGER,
+                    material_name_snapshot TEXT,specification_snapshot TEXT);
+                INSERT INTO purchase_order_items VALUES(1,1,'合成螺杆','M24'),(2,2,'合成螺帽','M24');
                 CREATE TABLE cost_entries(id INTEGER PRIMARY KEY,cost_no TEXT,project_id INTEGER,
                     counterparty_name_snapshot TEXT,amount_minor INTEGER,cost_date TEXT,status TEXT,source_type TEXT);
                 CREATE TABLE fund_transactions(id INTEGER PRIMARY KEY,source_kind TEXT,source_id INTEGER,status TEXT);

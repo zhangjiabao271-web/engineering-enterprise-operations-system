@@ -110,7 +110,7 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             query = {k:v[0] for k,v in parse_qs(urlsplit(self.path).query,keep_blank_values=True).items()}
             if not path.startswith('/api/'):
-                if path in ('/cockpit.js', '/cockpit.css', '/entities.js', '/entities.css','/attention.js','/attention.css','/entry-draft.js'):
+                if path in ('/cockpit.js', '/cockpit.css', '/entities.js', '/entities.css','/attention.js','/attention.css','/entry-draft.js','/governance.js','/governance.css'):
                     filename = path[1:]
                     self.send_content((STATIC/filename).read_bytes(), mimetypes.guess_type(filename)[0]+'; charset=utf-8')
                     return

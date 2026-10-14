@@ -177,6 +177,22 @@ def prepare(name,data):
     elif name=='entity_assign':
         impact = b.entities.preview_assignment(values['kind'], values['ids'], values['entity_id'])
         review.update(rows=impact['rows'], notice=impact['notice'], ownership_projects=impact['projects'])
+    elif name in ('governance_purchase', 'governance_labor'):
+        purchases = name == 'governance_purchase'
+        candidates = b.governance.list_unassigned_purchases() if purchases else b.governance.list_unassigned_labor()
+        selected = set(values['ids'])
+        chosen = [row for row in candidates if row['id'] in selected]
+        if len(chosen) != len(selected):
+            raise ValueError('部分记录已归集、作废或不存在，请刷新后核对')
+        target = b.projects.get_project(values['project_id'])
+        if not target or target['status'] == '已关闭':
+            raise ValueError('目标项目不存在或已关闭')
+        keys = ('id','order_no','purchase_date','supplier_name','material_details','amount_minor','notes','items','freight_amount_cents','payment_status') if purchases else (
+            'id','work_date','worker_name','construction_site','work_type','work_days','amount_minor','notes')
+        review['rows'] = [{key: row[key] for key in keys} for row in chosen]
+        review['source_kind'] = 'purchases' if purchases else 'worklogs'
+        review['total_minor'] = sum(row['amount_minor'] for row in chosen)
+        review['notice'] = f"归集到：{target['name']} · {target['project_code']}；仅改变明确选中记录的项目归属，不改原金额。"
     elif name in ('labor_lock','labor_overtime','labor_void'):
         review['rows']=[b.get_record('worklogs',record_id) for record_id in values['ids']]
     elif name in ('site_update','site_deactivate'):
