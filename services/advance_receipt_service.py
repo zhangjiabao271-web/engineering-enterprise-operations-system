@@ -5,7 +5,7 @@ def reconcile(conn, project_id, contract_id):
     from services import finance_service as finance
     rows = conn.execute('''SELECT DISTINCT r.* FROM receipts r
         JOIN receipt_allocations a ON a.receipt_id=r.id
-        WHERE r.status='active' AND r.automatic_income_allocation=1
+        WHERE r.status='active' AND a.status='active' AND r.automatic_income_allocation=1
           AND a.project_id=? AND a.contract_id IS ?
         ORDER BY r.receipt_date, r.id''', (project_id, contract_id)).fetchall()
     if not rows:
@@ -13,7 +13,7 @@ def reconcile(conn, project_id, contract_id):
     settlements = conn.execute('''SELECT s.id, s.amount_minor - COALESCE((
         SELECT SUM(a.allocated_amount_minor) FROM receipt_allocations a
         JOIN receipts r ON r.id=a.receipt_id
-        WHERE a.settlement_id=s.id AND r.status='active'
+        WHERE a.settlement_id=s.id AND a.status='active' AND r.status='active'
           AND r.automatic_income_allocation=0),0) AS available
         FROM settlements s WHERE s.project_id=? AND s.contract_id IS ?
           AND s.status='active' ORDER BY s.settlement_date,s.id''',

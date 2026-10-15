@@ -19,6 +19,10 @@ def fingerprint():
 
 def get_api(handler, path, query):
     from services import web_workbench_service as business
+    if path == '/api/receipt_income_preview':
+        from services.receipt_income_service import public_preview
+        handler.send_json(public_preview(int(query['id']), query.get('amount')))
+        return True
     if path == '/api/write_ticket':
         kind = query.get('kind', 'save')
         module = query.get('module')

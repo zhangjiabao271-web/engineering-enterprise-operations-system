@@ -38,7 +38,8 @@ function reviewHTML(review) {
   if (review.rows?.length) {
     rows=review.source_kind ? governanceSourceTable(review.rows,review.source_kind) : evidenceHTML(review.rows,'逐项影响明细');
   }
-  return (metrics?`<section class="metrics review-metrics">${metrics}</section>`:'')+wageNotice+(review.notice?notice(review.notice):'')+notice('操作依据：'+review.reason)+evidenceHTML(review.changes,'拟执行的内容')+(impact?`<details><summary>查看完整回算影响</summary>${impact}</details>`:'')+rows+(review.ownership_projects?.length?evidenceHTML(review.ownership_projects,'关联项目自动归属影响'):'')+(review.before?`<details><summary>查看操作前的完整记录</summary>${evidenceHTML(review.before)}</details>`:'');
+  const receiptIncome=review.receipt_income_impact ? receiptIncomeHTML(review.receipt_income_impact) : '';
+  return (metrics?`<section class="metrics review-metrics">${metrics}</section>`:'')+wageNotice+(review.notice?notice(review.notice):'')+notice('操作依据：'+review.reason)+evidenceHTML(review.changes,'拟执行的内容')+(impact?`<details><summary>查看完整回算影响</summary>${impact}</details>`:'')+rows+receiptIncome+(review.ownership_projects?.length?evidenceHTML(review.ownership_projects,'关联项目自动归属影响'):'')+(review.before?`<details><summary>查看操作前的完整记录</summary>${evidenceHTML(review.before)}</details>`:'');
 }
 
 function excelReviewHTML(review,module) {
@@ -132,7 +133,7 @@ function operationValues(definition,context) {
 
 async function openOperation(name,context={},viewOptions={}) {
   const request=beginEditorRequest();
-  const definition=state.boot.operations[name];
+  let definition=state.boot.operations[name];
   if (!definition) throw new Error('业务操作未开放');
   if (definition.read) {
     const result=await request.read('operation_read?'+query({name:definition.read,...context}));
@@ -140,6 +141,13 @@ async function openOperation(name,context={},viewOptions={}) {
     openEditor(definition.title,evidenceHTML(result,'业务事实',definition.module),null);return;
   }
   if (state.boot.read_only) throw new Error('当前只读');
+  let receiptIncome='';
+  if (name==='receipt_void') {
+    const impact=await request.read('receipt_income_preview?'+query({id:context.id}));
+    definition={...definition,fields:definition.fields.filter(field=>impact.requires_decision || field.name!=='receipt_income_action')
+      .map(field=>field.name==='receipt_income_action'?{...field,required:true}:field)};
+    receiptIncome=impact.requires_decision ? receiptIncomeHTML(impact) : '';
+  }
   if (name==='labor_batch') return openWorkdayBatch(context);
   if (definition.module==='workers') context.worker_id=context.id;
   if (definition.module==='accounts') context.account_id=context.id;
@@ -171,7 +179,7 @@ async function openOperation(name,context={},viewOptions={}) {
     }
   }
   request.check();
-  openEditor(definition.title,notice('填写操作依据并预览。预览和取消均不改动经营记录。')+`<div class="form-grid">${definition.fields.map(field=>operationField(field,context[field.name],options)).join('')}</div>`,async()=>{
+  openEditor(definition.title,notice('填写操作依据并预览。预览和取消均不改动经营记录。')+receiptIncome+`<div class="form-grid">${definition.fields.map(field=>operationField(field,context[field.name],options)).join('')}</div>`,async()=>{
     const values=operationValues(definition,context);
     const result=await api('operation_preview',{name,record:values});
     openEditor('确认预览 · '+definition.title,reviewHTML(result.review)+`<label class="confirm-check"><input name="operation-confirmed" type="checkbox" required>我已核对来源、金额、日期、影响范围和操作依据，确认执行。</label>`,async()=>{

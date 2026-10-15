@@ -60,6 +60,9 @@
 - 改动完成后检查本次差异。正式桌面验收需运行新进程验证；重启前保留用户未保存输入，不直接结束正在使用的进程。
 - 发布是独立动作，遵循用户已有授权。检查开源目录差异、隐私和 CI；本地测试通过不代表 GitHub CI 已通过。
 
+- 回款补足收入更正专项：`tests/test_receipt_income_corrections.py` 与 `scripts/test_receipt_income.mjs`；合成浏览器先运行 `scripts/accept_receipt_correction_fixture.py --output qa/全新目录`，再运行 `scripts/accept_receipt_corrections.mjs 地址 qa/该目录/browser`。验证明确选择、取消、关联保护和同事务追溯，不向正式账本提交更正测试。
+- 新账本初始化与隐私专项：`tests/test_initial_setup_privacy.py`。已有账本不重新初始化；历史迁移保持原样。发布前运行 `python scripts/check_release_privacy.py`，扫描跟踪及未忽略的文件、匿名种子和疑似敏感内容；输出不打印敏感值。
+
 ## 模型更新时
 
 核对官方指南，审计实际加载的规则；保留业务知识、工具使用契约和失败恢复要求，移除重复常识、冲突与无条件流程。用同一组代表性任务比较完成质量、工具调用与耗时，再决定是否继续裁剪；没有测量不声称节省了 token 或提高了性能。

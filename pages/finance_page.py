@@ -624,7 +624,11 @@ class ReceivablePage(FinanceCollectionMixin, FinanceInvoiceDialogMixin, FinanceR
         if not messagebox.askyesno("确认作废", "确定作废该回款吗？"):
             return
         try:
-            finance_service.void_receipts([receipt_id])
+            from ui.receipt_income_review import review_receipt_change
+            decision = review_receipt_change(self.parent, receipt_id)
+            if decision is None:
+                return
+            finance_service.void_receipts([receipt_id], **decision)
         except Exception as error:
             messagebox.showwarning("无法作废", str(error))
             return

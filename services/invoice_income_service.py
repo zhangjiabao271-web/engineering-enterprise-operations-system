@@ -105,6 +105,10 @@ def set_mode(conn, contract_id, mode):
 
 def protect_manual(conn, contract_id=None, settlement_id=None):
     if settlement_id and conn.execute(
+            'SELECT 1 FROM receipt_confirmed_settlements WHERE settlement_id=?',
+            (settlement_id,)).fetchone():
+        raise ValueError('这笔收入由回款补足规则维护，请到对应回款预览更正影响，不能单独修改或作废')
+    if settlement_id and conn.execute(
             'SELECT 1 FROM invoice_income_links WHERE settlement_id=?',
             (settlement_id,)).fetchone():
         raise ValueError('这笔收入由发票自动维护，请到销项发票修改或作废对应发票')

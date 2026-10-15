@@ -51,7 +51,7 @@ OPERATIONS={
  'settlement_void':spec('settlements','作废收入确认',[REASON]),
  'invoice_void':spec('invoices','作废销项发票',[REASON]),
  'receipt_allocation':spec('receipts','调整收入核销明细',[F('allocations','收入确认核销金额','settlement_rows'),F('allow_advance','余额明确作为预收款','checkbox'),REASON]),
- 'receipt_void':spec('receipts','作废录错的回款（保留记录）',[REASON]),
+ 'receipt_void':spec('receipts','作废录错的回款（保留记录）',[C('receipt_income_action','关联自动补足收入如何处理',{'':'有关联补足收入时请明确选择','retain':'仅更正回款，保留真实结算','reverse':'同步撤销录错的自动补足收入'}),REASON]),
  'receipt_history':spec('receipts','查看回款修改历史',read='receipt_history'),
  'fund_verify':spec('funds','核实业务期初付款',[C('kind','业务来源',{'purchase':'采购','cost':'费用','wage':'工资'},'purchase'),S('source_id','业务记录','fund_sources',True),F('source_period','工资月份（YYYY-MM）'),F('settled_amount','资金启用前已付款（元）','money',required=True),F('payee','收款单位 / 人员',required=True),REASON]),
  'fund_reconcile':spec('accounts','核对账户余额',[S('account_id','资金账户','accounts',True),F('balance_date','核对日期','date',required=True),F('actual_amount','实查余额（元）','money',required=True),REASON]),
@@ -63,6 +63,7 @@ OPERATIONS={
  'input_void':spec('input_invoices','作废进项发票',[REASON]),
  'entity_assign':spec('entities','确认业务经营主体',[C('kind','业务类型',{k:v[0] for k,v in b.entities.RECORDS.items()},'contracts'),F('ids','业务记录','multi',source='entity_records',required=True),S('entity_id','经营主体','entities',True),REASON]),
  'entity_tax':spec('entities','维护主体税号',[S('entity_id','经营主体','entities',True),F('tax_number','税号'),REASON]),
+ 'entity_setup':spec('entities','首次设置经营主体',[S('entity_id','待设置主体','entities',True),F('name','真实主体全称',required=True),F('tax_number','纳税人识别号'),REASON]),
  'historical_receipt':spec('historical','登记历史项目回款',[F('receipt_date','实际回款日期','date',required=True),F('amount','金额（元）','money',required=True),F('payer_name','付款方'),F('payment_method','支付方式',default='待确认'),F('notes','备注','textarea'),REASON]),
  'supplier_deactivate':spec('suppliers','停用供应商',[REASON]),
  'customer_deactivate':spec('customers','停用客户档案',[REASON]),
@@ -154,7 +155,10 @@ def prepare(name,data):
         review['rows']=b.finance.preview_receipt_allocations(receipt,exclude_receipt_id=record_id)
     elif name=='receipt_void':
         validate_receipt_void(record_id)
-        review['notice']='只作废录错的到账事实，保留原回款与修改历史，重新计算发票余额和未回款；不撤销已确认收入，也不删除附件。'
+        from services import receipt_income_service as income
+        review['receipt_income_impact'] = income.public_preview(record_id)
+        income.validate_choice(review['receipt_income_impact'], values.get('receipt_income_action'), values['reason'])
+        review['notice']='保留原回款与修改历史、重新计算发票余额和未回款、不删除附件；关联自动补足收入仅按本次明确选择处理。'
     elif name=='fund_verify':
         source=next((r for r in b.funds.list_sources(values['kind'],include_closed=True)
                      if r['id']==values['source_id'] and r.get('period','')==values.get('source_period','')),None)
@@ -177,6 +181,10 @@ def prepare(name,data):
     elif name=='entity_assign':
         impact = b.entities.preview_assignment(values['kind'], values['ids'], values['entity_id'])
         review.update(rows=impact['rows'], notice=impact['notice'], ownership_projects=impact['projects'])
+    elif name=='entity_setup':
+        from services.initial_setup_service import preview_configuration
+        impact = preview_configuration(values['entity_id'],values['name'],values.get('tax_number',''),values['reason'])
+        review.update(before=impact['before'],rows=[impact['after']],notice='仅设置尚未使用的匿名主体档案；已有账目和归属不改动。')
     elif name in ('governance_purchase', 'governance_labor'):
         purchases = name == 'governance_purchase'
         candidates = b.governance.list_unassigned_purchases() if purchases else b.governance.list_unassigned_labor()
@@ -207,6 +215,9 @@ def prepare(name,data):
 
 def apply(name,values,request_key):
     i=values['id'];reason=values.get('reason','');ids=values.get('ids') or [i]
+    if name=='entity_setup':
+        from services.initial_setup_service import configure_entity
+        return configure_entity(values['entity_id'],values['name'],values.get('tax_number',''),reason)
     if name=='collection_followup':return b.collection.save_project_case(i,values)
     if name=='labor_batch':return b.labor.add_work_logs_batch(values['entries'],active_only=True)
     if name=='cost_allocate':return b.costs.allocate_cost(i,values['method'],values['project_ids'],values.get('allocations'))
@@ -237,7 +248,7 @@ def apply(name,values,request_key):
         return b.finance.update_receipt(i,record)
     if name=='receipt_void':
         validate_receipt_void(i)
-        b.finance.void_receipts([i])
+        b.finance.void_receipts([i], receipt_income_action=values.get('receipt_income_action'), receipt_income_reason=reason)
         from db.connection import db_transaction
         with db_transaction() as conn:
             conn.execute("UPDATE receipts SET notes=COALESCE(notes,'') || ? WHERE id=? AND status='void'",
@@ -282,7 +293,9 @@ def read(name,query):
     if name=='receipt_history':
         with db_read() as conn:
             if i:
+                from services.receipt_income_service import history
                 return {'record':dict(conn.execute('SELECT * FROM receipts WHERE id=?',(i,)).fetchone() or {}),
+                        'income_history':history(conn,i),
                         'history':[dict(row) for row in conn.execute('SELECT * FROM receipt_revisions WHERE receipt_id=? ORDER BY id DESC',(i,))]}
             return [dict(row) for row in conn.execute("SELECT id,receipt_no,receipt_date,payer_name_snapshot,amount_minor,payment_method,notes,status FROM receipts WHERE status='void' ORDER BY receipt_date DESC,id DESC")]
     if name=='cost_history':return b.costs.list_cost_revisions(i)

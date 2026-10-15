@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {createRequire} from 'node:module';
+const {chromium}=createRequire(import.meta.url)('playwright');
+const [origin,folder]=process.argv.slice(2);
+assert(/^http:\/\/127\.0\.0\.1:\d+$/.test(origin));
+const output=path.resolve(folder);assert(output.startsWith(path.resolve('qa')+path.sep));await fs.mkdir(output);
+const browser=await chromium.launch({headless:true,...(process.env.WORKBENCH_BROWSER?{executablePath:process.env.WORKBENCH_BROWSER}:{})});
+const page=await browser.newPage({viewport:{width:1366,height:768},reducedMotion:'reduce'});
+const errors=[],checks=[];page.on('pageerror',error=>errors.push(error.message));
+const idle=()=>page.waitForFunction(()=>main.getAttribute('aria-busy')==='false'&&!editorSubmitting);
+const state=()=>page.evaluate(()=>api('qa_state'));
+const cancel=async()=>{await page.locator('#editor-cancel').click();await page.waitForFunction(()=>!editor.open);};
+const openEdit=async id=>{await page.locator(`[data-action="edit"][data-id="${id}"]`).click();await page.locator('[name="amount"]').waitFor();};
+const amount=async value=>{await page.locator('[name="amount"]').fill(value);await page.locator('[name="amount"]').blur();await page.waitForFunction(()=>document.querySelector('#receipt-income-impact')?.textContent.includes('若选择同步撤销'));};
+const choose=async(action,reason)=>{await page.locator('[name="receipt_income_action"]').selectOption(action);await page.locator('[name="receipt_income_reason"]').fill(reason);await page.locator('[name="confirmed"]').check();};
+const save=async()=>{await page.locator('#editor-save').click();await page.waitForFunction(()=>!editor.open&&!editorSubmitting);await idle();};
+async function openVoid(id){
+  const menu=page.locator(`[data-operation="receipt_void"][data-id="${id}"]`).locator('..').locator('..');
+  if (!await menu.evaluate(element=>element.open)) await menu.locator('summary').click();
+  await menu.locator('[data-operation="receipt_void"]').click();
+  await page.locator('[name="receipt_income_action"]').waitFor();
+}
+try{
+  await page.goto(origin+'/#finance');await idle();assert(await page.evaluate(()=>state.boot.demo));
+  await page.locator('[data-tab="receipts"]').click();await idle();
+  const before=await state();assert(before.synthetic);
+  await openEdit(before.first_id);await amount('100');
+  assert.equal(await page.locator('[name="receipt_income_action"]').inputValue(),'');
+  assert((await page.locator('#receipt-income-impact').innerText()).includes('¥100.00'));
+  await page.locator('#receipt-income-impact').scrollIntoViewIfNeeded();
+  await page.screenshot({path:path.join(output,'receipt-review-desktop.png'),fullPage:true});
+  await page.setViewportSize({width:375,height:812});
+  await page.locator('#receipt-income-impact').scrollIntoViewIfNeeded();
+  await page.screenshot({path:path.join(output,'receipt-review-mobile.png'),fullPage:true});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.setViewportSize({width:1366,height:768});
+  await cancel();assert.deepEqual(await state(),before);
+  checks.push('调减预览、金额及关联明细可见，处理方式不预选；取消不落账，小屏不溢出');
+  await openEdit(before.first_id);await amount('100');await choose('reverse','合成更正误补');await save();
+  assert.equal((await state()).settled.first,10000);checks.push('明确撤销后回款和对应自动收入同事务调减');
+  await openEdit(before.blocked_id);await amount('100');assert((await page.locator('#receipt-income-impact').innerText()).includes('不能同步撤销'));
+  const blockedBefore=await state();await choose('reverse','合成尝试冲突撤销');await page.locator('#editor-save').click();
+  await page.waitForFunction(()=>!editorSubmitting&&!document.querySelector('#form-error').hidden);
+  assert((await page.locator('#form-error').innerText()).includes('发票或其他回款'));assert.deepEqual(await state(),blockedBefore);
+  await choose('retain','已完成业务收入真实，只纠正到账');await save();assert.equal((await state()).settled.blocked,20000);
+  checks.push('有关联发票时错误保持在原表单并不写账；明确保留时收入不变');
+  await openVoid(before.first_id);await page.locator('[name="receipt_income_action"]').selectOption('reverse');await page.locator('[name="reason"]').fill('合成整笔录错');await page.locator('#editor-save').click();
+  await page.locator('[name="operation-confirmed"]').waitFor();assert((await page.locator('#editor-body').innerText()).includes('拟保留收入'));
+  const voidBefore=await state();await cancel();assert.deepEqual(await state(),voidBefore);
+  await openVoid(before.first_id);await page.locator('[name="receipt_income_action"]').selectOption('reverse');await page.locator('[name="reason"]').fill('合成整笔录错');await page.locator('#editor-save').click();
+  await page.locator('[name="operation-confirmed"]').check();await save();assert.equal((await state()).settled.first,0);
+  checks.push('作废先查看关联收入影响，取消不写；确认后保留作废事实并撤销误补收入');
+  await page.evaluate(()=>location.hash='entities');await idle();await page.locator('#entity-initial-setup').click();
+  await page.locator('[name="entity_id"]').selectOption('1');await page.locator('[name="name"]').fill('合成验收经营主体');await page.locator('[name="reason"]').fill('合成首次设置');await page.locator('#editor-save').click();
+  await page.locator('[name="operation-confirmed"]').waitFor();await page.locator('[name="operation-confirmed"]').check();await save();
+  assert.equal((await state()).entities[0].name,'合成验收经营主体');checks.push('匿名新账本提供首次设置入口；真实名称经预览和明确确认后保存');
+  assert.deepEqual(errors,[]);
+}catch(error){errors.push(error.stack);}
+finally{await fs.writeFile(path.join(output,'results.json'),JSON.stringify({synthetic:true,checks,errors},null,2));await browser.close();}
+console.log(JSON.stringify({synthetic:true,checks,errors},null,2));if(errors.length)process.exitCode=1;

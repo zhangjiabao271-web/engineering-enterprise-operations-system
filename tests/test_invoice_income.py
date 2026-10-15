@@ -156,8 +156,9 @@ class InvoiceIncomeTests(pricing_tests.ContractPricingServiceTests):
         self.finance.update_receipt(receipt, dict(data, amount='350', receipt_date='2026-09-30'))
         self.assertEqual(self.contracts.get_contract(data['contract_id'])['settled_minor'], 35000)
         self.assertEqual(self.finance.get_receipt(receipt)['pending_allocation_minor'], 0)
-        self.finance.update_receipt(receipt, dict(data, amount='200', receipt_date='2026-09-30'))
-        self.finance.void_receipts([receipt])
+        self.finance.update_receipt(receipt, dict(data, amount='200', receipt_date='2026-09-30',
+            receipt_income_action='retain', receipt_income_reason='真实结算保留'))
+        self.finance.void_receipts([receipt], receipt_income_action='retain', receipt_income_reason='仅更正回款')
         self.assertEqual(self.contracts.get_contract(data['contract_id'])['settled_minor'], 35000)
 
     def test_receipt_mode_requires_confirmed_income_for_invoices_and_isolates_projects(self):

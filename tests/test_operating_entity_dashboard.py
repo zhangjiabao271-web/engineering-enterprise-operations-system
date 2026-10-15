@@ -86,7 +86,7 @@ class OperatingEntityDashboardTests(unittest.TestCase):
     def test_original_contract_form_can_confirm_and_correct_subject_atomically(self):
         contract = self.business.get_record('contracts',1)
         self.business.save_record('contracts',{**contract,'entity_id':1},1,contract['_version'])
-        self.assertEqual(self.business.rows('contracts')[0]['entity_name'], '示例钢结构有限公司')
+        self.assertEqual(self.business.rows('contracts')[0]['entity_name'], self.ownership.list_entities()[0]['name'])
         self.assertEqual(self.business.rows('projects')[0]['ownership_source'], '沿用合同')
         contract = self.business.get_record('contracts',1)
         self.business.save_record('contracts',{**contract,'entity_id':2},1,contract['_version'])
@@ -195,7 +195,7 @@ class OperatingEntityDashboardTests(unittest.TestCase):
         self.ownership.assign_records('contracts',[1],1)
         costs_before=self.dashboard.get_overview()['total_metrics']['costs_minor']
         data={'invoice_no':'12345678901234567890','invoice_date':'2026-10-03',
-              'entity_id':1,'supplier_id':2,'buyer_name':'示例钢结构有限公司',
+              'entity_id':1,'supplier_id':2,'buyer_name':self.ownership.list_entities()[0]['name'],
               'seller_name':'合成演示 · 钢材供应商','net_amount':'100','tax_amount':'13',
               'amount':'113','tax_rate_label':'13%'}
         invoice=input_invoice_service.create_invoice(data,[{'kind':'purchase_orders','record_id':1,'amount':'113'}])

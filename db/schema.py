@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 def init_db():
     conn = get_connection()
+    new_database = not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
+    database_path = conn.execute('PRAGMA database_list').fetchone()[2]
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS suppliers (
@@ -98,6 +100,9 @@ def init_db():
     conn.commit()
     conn.close()
     run_migrations()
+    if new_database:
+        from services.initial_setup_service import initialize_new_ledger
+        initialize_new_ledger(database_path)
 
 
 def _init_business_schema(conn):

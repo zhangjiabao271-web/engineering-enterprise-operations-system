@@ -65,6 +65,10 @@ async function renderEntities() {
   main.querySelectorAll('[data-entity-metric]').forEach(button=>button.onclick=()=>safe(()=>openEntityDetail(button.dataset.entityMetric,button.dataset.entityId)));
   main.querySelectorAll('[data-entity-width]').forEach(part=>part.style.width=Number(part.dataset.entityWidth)+'%');
   main.querySelectorAll('[data-entity-tax]').forEach(button=>button.onclick=()=>safe(()=>openOperation('entity_tax',{entity_id:Number(button.dataset.entityTax)})));
+  if (!state.boot.read_only && overview.entities.some(entity=>['示例钢结构有限公司','示例建筑安装队'].includes(entity.name))) {
+    main.insertAdjacentHTML('afterbegin','<div class="notice warning">新安装尚未设置真实经营主体；示例名称不是你的公司，不会自动确认业务归属。<button type="button" id="entity-initial-setup">首次设置经营主体</button></div>');
+    main.querySelector('#entity-initial-setup').onclick=()=>safe(()=>openOperation('entity_setup'));
+  }
   main.querySelector('#entity-refresh').onclick=()=>safe(()=>renderRoute(false));
   const showPending = ()=>{
     entityRegistryView.status='pending';main.querySelector('#entity-status').value='pending';

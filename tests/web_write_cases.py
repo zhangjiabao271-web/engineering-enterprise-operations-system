@@ -84,6 +84,7 @@ def operation_fixture(name, b):
         elif name=='input_deduction':values.update(deduction_status='deducted',deduction_period='2026-10')
     elif name=='entity_assign':values.update(kind='purchase_orders',ids=[1],entity_id=entity['id'])
     elif name=='entity_tax':values.update(entity_id=entity['id'],tax_number='91331000SYNTHETIC01')
+    elif name=='entity_setup':values.update(entity_id=entity['id'],name='合成首次设置主体',tax_number='SYNTHETIC-SETUP')
     elif name=='historical_receipt':values.update(id=b.save_record('historical',{'customer_id':1,'name':'合成历史工程','opening_amount':'200.01'}),receipt_date='2026-10-03',amount='100.01',payer_name='合成历史付款人',payment_method='银行转账')
     elif name=='supplier_deactivate':values['id']=b.save_record('suppliers',{'name':'合成可停用供应商'})
     elif name=='customer_deactivate':values['id']=b.save_record('customers',{'legal_name':'合成可停用客户'})
@@ -134,6 +135,7 @@ def operation_facts(name, b, values, conn):
     if name=='input_deduction':return scalar('SELECT deduction_status FROM input_invoices WHERE id=?',(record_id,)),'deducted'
     if name=='entity_assign':return scalar('SELECT entity_id FROM record_entities WHERE record_type=? AND record_id=?',(values['kind'],ids[0])),values['entity_id']
     if name=='entity_tax':return scalar('SELECT tax_number FROM operating_entities WHERE id=?',(values['entity_id'],)),values['tax_number']
+    if name=='entity_setup':return scalar('SELECT name FROM operating_entities WHERE id=?',(values['entity_id'],)),values['name']
     if name=='historical_receipt':return scalar('SELECT SUM(amount_minor) FROM historical_receipts WHERE project_id=?',(record_id,)),10001
     if name=='attachment_void':
         from services.attachment_service import attachment_path

@@ -51,7 +51,7 @@ class BusinessBoundaryGuardTests(unittest.TestCase):
         return input_invoice_service.create_invoice({
             'invoice_no': str(uuid4().int)[:20], 'invoice_date': '2026-10-03',
             'entity_id': 1, 'supplier_id': 2,
-            'buyer_name': '示例钢结构有限公司', 'seller_name': '合成演示 · 钢材供应商',
+            'buyer_name': self.owners.list_entities()[0]['name'], 'seller_name': '合成演示 · 钢材供应商',
             'net_amount': '100', 'tax_amount': '13', 'amount': '113', 'tax_rate_label': '13%',
         }, [{'kind': kind, 'record_id': identity, 'amount': '113'}])
 

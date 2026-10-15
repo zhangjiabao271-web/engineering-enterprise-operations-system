@@ -2,6 +2,8 @@
 
 // Names for service-only facts that are not part of an editable form schema.
 const factLabels = {
+  receipt_income_impact:'回款关联收入影响',income_history:'自动补足收入更正历史',
+  receipt_income_action:'关联收入处理',receipt_income_reason:'更正说明',
   materials:'材料名称', material_details:'材料 / 规格',
   ownership_status:'归属状态', ownership_label:'归属状态', ownership_source:'归属依据',
   ownership_reason:'归属说明', kind_label:'业务类型', assignable:'可直接确认', direct_entity_id:'原人工主体编号',

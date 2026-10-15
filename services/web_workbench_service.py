@@ -322,6 +322,10 @@ def get_record(module, record_id):
         with db_read() as conn:
             row = {**row, 'entity_id': entities.entity_for(
                 conn, 'sales_invoices' if module == 'invoices' else module, record_id)}
+            if module == 'receipts':
+                row['_receipt_income_owned'] = bool(conn.execute('''SELECT 1
+                    FROM receipt_confirmed_settlements l JOIN settlements s ON s.id=l.settlement_id
+                    WHERE l.receipt_id=? AND s.status='active' ''', (record_id,)).fetchone())
     result = dict(row)
     result['_version'] = digest(json.loads(json.dumps(row, ensure_ascii=False, default=lambda value: sorted(value) if isinstance(value,set) else str(value))))
     aliases = {'allocated_amount_minor':'amount','amount_minor':'amount','tax_inclusive_amount_minor':'amount','control_limit_minor':'control_limit',

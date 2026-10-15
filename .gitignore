@@ -41,6 +41,7 @@ htmlcov/
 
 # ===== 临时与调试文件 =====
 tmp_*.py
+.tmp_*.py
 fix_file*.py
 *.kimi_broken_*.py
 ui_design_preview.html

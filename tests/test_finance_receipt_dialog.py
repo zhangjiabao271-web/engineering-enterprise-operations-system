@@ -301,12 +301,23 @@ class ReceiptSaveCallbackTests(unittest.TestCase):
         self.ctx.editing = True
         self.ctx.receipt_id = 42
         with patch("pages.finance_receipt_dialog.build_receipt_payload", return_value={"amount": "12.00"}), \
+             patch("ui.receipt_income_review.review_receipt_change", return_value={}), \
              patch("pages.finance_receipt_dialog.finance_service.update_receipt") as update:
             self.page._save_receipt(self.ctx)
         update.assert_called_once_with(42, {"amount": "12.00"})
         self.ctx.dialog.destroy.assert_called_once_with()
         self.page.refresh.assert_called_once_with()
         self.page.notebook.select.assert_called_once_with(2)
+
+    def test_cancel_income_review_preserves_edit_and_does_not_save(self):
+        self.ctx.editing = True
+        self.ctx.receipt_id = 42
+        with patch("pages.finance_receipt_dialog.build_receipt_payload", return_value={"amount":"12.00"}), \
+             patch("ui.receipt_income_review.review_receipt_change", return_value=None), \
+             patch("pages.finance_receipt_dialog.finance_service.update_receipt") as update:
+            self.page._save_receipt(self.ctx)
+        update.assert_not_called()
+        self.ctx.dialog.destroy.assert_not_called()
 
     def test_refresh_failure_does_not_suggest_saving_again(self):
         self.page.refresh.side_effect = RuntimeError("refresh failed")

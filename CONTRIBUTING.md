@@ -26,6 +26,8 @@ python -m venv .venv
 
 只使用虚构测试数据。禁止提交真实数据库、附件、导出文件、API Key、客户资料、合同、财务数据或个人联系方式。
 
+提交前运行 `python scripts/check_release_privacy.py`。该检查同时进入CI，扫描跟踪及未忽略的文件；输出只包含文件名与规则，不打印疑似敏感值。
+
 ## 提交 Pull Request
 
 1. 使用当前任务分支；需要新分支时从合适基线创建，不重置已有工作。

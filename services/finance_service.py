@@ -1139,7 +1139,7 @@ def _settlement_capacity_rows(
                       SELECT SUM(ra.allocated_amount_minor)
                       FROM receipt_allocations ra
                       JOIN receipts r ON r.id=ra.receipt_id
-                      WHERE ra.settlement_id=s.id AND r.status='active'
+                      WHERE ra.settlement_id=s.id AND ra.status='active' AND r.status='active'
                         AND (? IS NULL OR ra.receipt_id<>?)
                   ), 0) AS received_minor
            FROM settlements s
@@ -1592,6 +1592,11 @@ def update_receipt(receipt_id, data):
             receipt = _receipt_record(conn, receipt_id)
             if not receipt or receipt["status"] != "active":
                 raise ValueError("有效回款记录不存在")
+            from services import receipt_income_service as receipt_income
+            income_impact = receipt_income.preview(conn, [receipt_id], amount_minor=amount_minor)
+            income_action = data.get('receipt_income_action')
+            income_reason = data.get('receipt_income_reason', '')
+            receipt_income.validate_choice(income_impact, income_action, income_reason)
             for key in ('project_id', 'contract_id'):
                 if key not in data:
                     continue
@@ -1680,6 +1685,7 @@ def update_receipt(receipt_id, data):
                 _confirm_receipt_shortfall(conn, receipt_id, receipt['project_id'],
                                           receipt['contract_id'], receipt_date, amount_minor)
             from services.advance_receipt_service import reconcile
+            receipt_income.apply(conn, income_impact, income_action, income_reason)
             reconcile(conn, receipt['project_id'], receipt['contract_id'])
             _save_operating_entity(conn, 'receipts', receipt_id, data)
             _reconcile_customer_ids(
@@ -1698,10 +1704,13 @@ def update_receipt(receipt_id, data):
     related='回款关联记录已变化，请刷新核对',
     invalid='回款当前状态不允许作废，请核对相关业务',
 )
-def void_receipts(receipt_ids):
+def void_receipts(receipt_ids, *, receipt_income_action=None, receipt_income_reason=''):
     if not receipt_ids:
         return
     with db_transaction(immediate=True) as conn:
+        from services import receipt_income_service as receipt_income
+        income_impact = receipt_income.preview(conn, receipt_ids)
+        receipt_income.validate_choice(income_impact, receipt_income_action, receipt_income_reason)
         targets = set()
         placeholders = ",".join("?" * len(receipt_ids))
         now = _now()
@@ -1727,6 +1736,7 @@ def void_receipts(receipt_ids):
             receipt_ids,
         )
         from services.advance_receipt_service import reconcile
+        receipt_income.apply(conn, income_impact, receipt_income_action, receipt_income_reason)
         for project_id, contract_id in targets:
             reconcile(conn, project_id, contract_id)
         _reconcile_customer_ids(conn, customer_ids, now)

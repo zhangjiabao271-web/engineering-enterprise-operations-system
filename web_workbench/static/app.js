@@ -347,6 +347,7 @@ async function editRecord(module, id, defaults={}) {
   }
   const ticket=await request.read('write_ticket?'+query({kind:'save',module,id,expected:record._version}));
   let fields = spec.fields;
+  if (module==='receipts' && id && record._receipt_income_owned) fields=[...fields,...receiptIncomeFields()];
   if (id && module === 'costs') fields = fields.map(field => {
     if (field.name !== 'category' || field.choices.includes(record.category)) return field;
     return {...field, choices:Object.fromEntries([...field.choices.map(value => [value,value]),
@@ -365,9 +366,16 @@ async function editRecord(module, id, defaults={}) {
     `<div class="form-grid">${fields.map(field => fieldHTML(field,record[field.name] ?? (field.name === 'project_id' ? state.project : undefined),options)).join('')}</div>` +
     (module === 'purchases' ? '<div id="purchase-items"></div><button type="button" id="add-item">添加材料明细</button><output id="purchase-preview" class="purchase-preview" aria-live="polite"></output>' : '') +
     (!id && ['purchases','worklogs'].includes(module) ? '<label class="confirm-check"><input name="continue-entry" type="checkbox">保存后继续录入（保留项目、日期等共同条件，金额和材料重新填写）</label>' : '') +
+    (module==='receipts' && id && record._receipt_income_owned ? '<section id="receipt-income-impact" aria-live="polite"></section>' : '') +
     '<label class="confirm-check"><input name="confirmed" type="checkbox" required>我已核对日期、金额、项目归属及业务依据，确认保存本笔记录。</label>';
   openEditor((id ? '编辑' : '新增') + spec.title,body,async () => {
     const values = formValues(fields);
+    if (module==='receipts' && id && record._receipt_income_owned) {
+      const impact=await form._receiptIncomeRefresh();
+      if (impact.requires_decision && (!values.receipt_income_action || !values.receipt_income_reason.trim())) {
+        throw new Error('请根据影响预览明确选择收入处理方式，并填写更正说明。');
+      }
+    }
     if (module==='transactions') values.request_key=requestKey;
     if (module === 'contracts' && values.pricing_mode === 'actual') values.amount = '0';
     if (module === 'purchases') {
@@ -391,6 +399,7 @@ async function editRecord(module, id, defaults={}) {
       form.elements.namedItem('continue-entry').checked=true;
     }
   },{cancel:()=>api('write_discard',{token:ticket.token})});
+  if (module==='receipts' && id && record._receipt_income_owned) bindReceiptIncomePreview(record);
   if (module === 'purchases') {
     const host = document.querySelector('#purchase-items');
     (record.items?.length ? record.items : [{}]).forEach(item => host.append(purchaseItem(item,options)));

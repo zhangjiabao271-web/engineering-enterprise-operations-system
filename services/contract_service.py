@@ -941,7 +941,7 @@ def update_settlement(settlement_id, data):
             """SELECT COALESCE(SUM(ra.allocated_amount_minor), 0)
                FROM receipt_allocations ra
                JOIN receipts r ON r.id=ra.receipt_id
-               WHERE ra.settlement_id=? AND r.status='active'""",
+               WHERE ra.settlement_id=? AND ra.status='active' AND r.status='active'""",
             (settlement_id,),
         ).fetchone()[0]
         if amount_minor < received_minor:

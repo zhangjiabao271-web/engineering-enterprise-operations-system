@@ -681,6 +681,11 @@ class FinanceReceiptDialogMixin(FinanceReceiptAllocationMixin):
             return
         try:
             if ctx.editing:
+                from ui.receipt_income_review import review_receipt_change
+                decision = review_receipt_change(ctx.dialog, ctx.receipt_id, payload['amount'])
+                if decision is None:
+                    return
+                payload.update(decision)
                 finance_service.update_receipt(ctx.receipt_id, payload)
             else:
                 finance_service.create_receipt(payload)
