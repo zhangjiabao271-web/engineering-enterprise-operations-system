@@ -234,60 +234,6 @@ class ProjectPurchaseRenderingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
-@unittest.skipUnless(
-    os.environ.get("SUPPLY_CHAIN_GUI_TESTS") == "1",
-    "GUI validation requires an interactive Windows desktop",
-)
-class ProjectCostDetailGuiTests(unittest.TestCase):
-    def test_dialog_tabs_totals_and_horizontal_scroll(self):
-        import ctypes
-        import tkinter as tk
-        import ttkbootstrap as ttk
-
-        from pages.project_cost_detail_dialog import show_project_cost_details
-        from ui.components import DataTable
-        from ui.theme import configure_design_system
-
-        ctypes.windll.kernel32.SetErrorMode(2)
-        try:
-            root = ttk.Window(themename="flatly")
-        except tk.TclError as error:
-            raise unittest.SkipTest(f"Tk runtime unavailable: {error}") from error
-        try:
-            root.geometry("1200x800")
-            configure_design_system(root)
-            with connection.db_read() as conn:
-                project_id = conn.execute(
-                    """SELECT project_id FROM purchase_project_costs
-                       GROUP BY project_id ORDER BY COUNT(*) DESC LIMIT 1"""
-                ).fetchone()[0]
-            dialog = show_project_cost_details(root, project_id)
-            root.update()
-            self.assertTrue(dialog.winfo_ismapped())
-            self.assertGreaterEqual(dialog.winfo_width(), 760)
-            self.assertGreaterEqual(dialog.winfo_height(), 430)
-            widgets = []
-
-            def collect(widget):
-                for child in widget.winfo_children():
-                    widgets.append(child)
-                    collect(child)
-
-            collect(dialog)
-            tables = [widget for widget in widgets if isinstance(widget, DataTable)]
-            self.assertEqual(len(tables), 3)
-            self.assertTrue(all(table.winfo_exists() for table in tables))
-            purchase_tree = tables[0].tree
-            self.assertTrue(purchase_tree.winfo_ismapped())
-            purchase_tree.xview_moveto(1)
-            root.update()
-            self.assertGreater(purchase_tree.xview()[0], 0)
-            close = next(widget for widget in widgets
-                         if isinstance(widget, ttk.Button) and widget.cget("text") == "关闭")
-            self.assertTrue(close.winfo_ismapped())
-            dialog.destroy()
-        finally:
-            root.destroy()
 
 
 if __name__ == "__main__":

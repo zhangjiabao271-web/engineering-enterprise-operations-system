@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 
 const origin=process.argv[2],output=path.resolve(process.argv[3]);
+const testPython=process.env.SUPPLY_CHAIN_TEST_PYTHON || fileURLToPath(new URL('../.venv/Scripts/python.exe',import.meta.url));
 assert(new URL(origin).hostname==='127.0.0.1');fs.mkdirSync(output,{recursive:true});
 const profileArgument=process.argv[4] && !process.argv[4].startsWith('--')?process.argv[4]:null;
 const profile=profileArgument?path.resolve(profileArgument):path.join(output,'edge-profile');
@@ -34,28 +35,47 @@ async function evaluate(expression){const result=await call('Runtime.evaluate',{
 async function until(expression){for(let index=0;index<160;index++){if(await evaluate(expression))return;await new Promise(resolve=>setTimeout(resolve,60));}throw new Error('Timed out '+expression+' / '+await evaluate('document.querySelector("#form-error").textContent+" / "+document.querySelector("#toast").textContent'));}
 async function screenshot(name){const image=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(output,name+'.png'),Buffer.from(image.data,'base64'));}
 async function selectFile(selector,file){const document=await call('DOM.getDocument');const input=await call('DOM.querySelector',{nodeId:document.root.nodeId,selector});assert(input.nodeId,selector);await call('DOM.setFileInputFiles',{nodeId:input.nodeId,files:[file]});}
-const routes={contracts:'contracts',allocations:'contracts',settlements:'contracts',invoices:'finance',receipts:'finance',collection:'finance',input_invoices:'finance',accounts:'funds',plans:'funds',transactions:'funds',historical:'finance',workers:'labor',worklogs:'labor',costs:'cost',attachments:'contracts',entities:'entities',governance:'governance',funds:'funds'};
+const routes={contracts:'contracts?view=all',allocations:'contracts',settlements:'contracts',invoices:'finance',receipts:'finance',collection:'finance',input_invoices:'finance',accounts:'funds',plans:'funds',transactions:'funds',historical:'finance',workers:'labor',worklogs:'labor',costs:'cost',attachments:'contracts?view=all',entities:'entities',governance:'governance',funds:'funds'};
 
 async function openRoute(fixture){
   await call('Page.reload',{ignoreCache:true});await until('typeof state!=="undefined" && state.boot && !main.querySelector(".loading")');
   const route=routes[fixture.module] || fixture.module;
   await evaluate(`state.project='';state.collection='';state.page=0;state.keyword='';document.querySelector('#project-scope').value='';location.hash=${JSON.stringify(route)};`);
-  await until(`state.route===${JSON.stringify(route)} && !main.querySelector('.loading')`);
+  await until(`state.route===${JSON.stringify(route.split('?')[0])} && main.getAttribute('aria-busy')==='false' && !main.querySelector('.loading')`);
   const tab=await evaluate(`!!main.querySelector('[data-tab="${fixture.module}"]')`);
   if(tab){await evaluate(`main.querySelector('[data-tab="${fixture.module}"]').click()`);await until(`!!main.querySelector('[data-tab="${fixture.module}"].active') && !main.querySelector('.loading')`);}
+  if(fixture.module==='suppliers' && fixture.id){
+    await evaluate(`(()=>{const row=state.boot.options.suppliers.find(row=>String(row.value)===String(${JSON.stringify(fixture.id)}));const kind=row?.supplier_kind;if(kind)main.querySelector('[data-partner-kind="'+kind+'"]')?.click();})()`);
+    await until(`!!main.querySelector('[data-partner-edit="${fixture.id}"]')`);
+  }
 }
 
 async function openOperationForm(fixture){
   if(fixture.name==='attachment_void'){
-    await evaluate("main.querySelector('[data-action=attachments][data-id=\"1\"]').click()");await until('editor.open && !!form.elements.attachment');
+    await evaluate("main.querySelector('[data-contract-files=\"1\"]').click()");await until('editor.open && !!form.elements.attachment');
     await evaluate(`editor.querySelector('[data-evidence-id="${fixture.record.ids[0]}"]').click()`);await until('editor.open && !!form.elements.reason');return;
   }
-  await evaluate(`(()=>{const buttons=[...main.querySelectorAll('[data-operation="${fixture.name}"]')];const button=buttons.find(button=>button.dataset.id===String(${JSON.stringify(fixture.record.id)})) || buttons[0];if(!button)throw new Error('Missing visible operation ${fixture.name}');const menu=button.closest('details');if(menu)menu.open=true;button.click();})()`);
+  if(fixture.name==='entity_assign'){
+    await evaluate(`(()=>{const kind=main.querySelector('#entity-kind');kind.value=${JSON.stringify(fixture.record.kind)};kind.dispatchEvent(new Event('change'));const status=main.querySelector('#entity-status');status.value='all';status.dispatchEvent(new Event('change'));})()`);
+    await until(`!!main.querySelector('[data-entity-assign="${fixture.record.ids[0]}"]') && !main.querySelector('.loading')`);
+    await evaluate(`main.querySelector('[data-entity-assign="${fixture.record.ids[0]}"]').click()`);
+  }else if(fixture.name==='entity_tax'){
+    await evaluate(`main.querySelector('[data-entity-tax="${fixture.record.entity_id}"]').click()`);
+  }else if(fixture.name==='entity_setup'){
+    await evaluate("main.querySelector('#entity-initial-setup').click()");
+  }else{
+    if(fixture.name==='contract_void'){
+      await evaluate(`main.querySelector('[data-contract-detail="${fixture.record.id}"][data-kind="overview"]').click()`);
+      await until('editor.open && !!form.querySelector(".contract-dialog-actions")');
+    }
+    await evaluate(`(()=>{const host=${fixture.name==='contract_void'?'form':'main'};const buttons=[...host.querySelectorAll('[data-operation="${fixture.name}"]')];const button=buttons.find(button=>button.dataset.id===String(${JSON.stringify(fixture.record.id)})) || buttons[0];if(!button)throw new Error('Missing visible operation ${fixture.name}');const menu=button.closest('details');if(menu)menu.open=true;button.click();})()`);
+  }
   await until(fixture.name==='labor_batch'?'editor.open && !!document.querySelector("#batch-worker-search")':'editor.open && !!form.elements.reason');
 }
 
 async function fillOperation(fixture){
   if(fixture.name==='attachment_void'){await evaluate(`form.elements.reason.value=${JSON.stringify(fixture.record.reason)}`);return;}
+  if(fixture.name==='entity_assign'){await evaluate(`form.elements.entity_id.value=${JSON.stringify(String(fixture.record.entity_id))};form.elements.reason.value=${JSON.stringify(fixture.record.reason)}`);return;}
   if(fixture.name==='labor_batch'){
     await evaluate(`(()=>{
       const values=${JSON.stringify(fixture.record)},common=values.entries[0];
@@ -103,7 +123,7 @@ async function fillOperation(fixture){
 async function operationCase(fixture){
   const before=await evaluate("api('qa_state').then(result=>result.digest)");
   await openOperationForm(fixture);await fillOperation(fixture);await evaluate('form.requestSubmit()');
-  const checkbox=fixture.name==='attachment_void'?'evidence-confirmed':fixture.name==='labor_batch'?'batch-confirmed':'operation-confirmed';
+  const checkbox={attachment_void:'evidence-confirmed',labor_batch:'batch-confirmed',entity_assign:'entity-confirmed'}[fixture.name] || 'operation-confirmed';
   await until(`!!form.elements.namedItem('${checkbox}')`);assert.equal(await evaluate(`form.elements.namedItem('${checkbox}').checked`),false);
   await evaluate("document.querySelector('#editor-cancel').click()");await until('!editor.open && !document.querySelector("#editor-save").disabled');
   assert.equal(await evaluate("api('qa_state').then(result=>result.digest)"),before,'cancel '+fixture.name);
@@ -118,11 +138,18 @@ async function operationCase(fixture){
 async function fillOrdinary(fixture){
   await evaluate(`(async()=>{
     const values=${JSON.stringify(fixture.record)},fields=state.boot.schema[${JSON.stringify(fixture.module)}].fields;
+    if(form.elements.allocation_scope && (values.contract_id || values.settlement_id || values.invoice_id)){form.elements.allocation_scope.value='contract';form.elements.allocation_scope.dispatchEvent(new Event('change'));}
     for(const field of fields){const element=form.elements.namedItem(field.name);if(!element || values[field.name]===undefined)continue;if(field.kind==='checkbox')element.checked=values[field.name];else element.value=values[field.name]??'';}
+    if(form.elements.pricing_mode)form.elements.pricing_mode.dispatchEvent(new Event('change'));
     if(values.project_id && form.elements.project_id){form.elements.project_id.dispatchEvent(new Event('change'));await new Promise(resolve=>setTimeout(resolve,150));}
   })()`);
-  if(fixture.record.contract_id){await until(`!!form.elements.contract_id.querySelector('option[value="${fixture.record.contract_id}"]')`);await evaluate(`form.elements.contract_id.value='${fixture.record.contract_id}'`);}
-  if(fixture.record.settlement_id){await until(`!!form.elements.settlement_id.querySelector('option[value="${fixture.record.settlement_id}"]')`);await evaluate(`form.elements.settlement_id.value='${fixture.record.settlement_id}'`);}
+  await until('!editorLookups.size');
+  for(const name of ['contract_id','settlement_id','invoice_id','project_site_id']){
+    const value=fixture.record[name];if(!value)continue;
+    await until(`!!form.elements.${name}.querySelector('option[value="${value}"]')`);
+    await evaluate(`form.elements.${name}.value='${value}';form.elements.${name}.dispatchEvent(new Event('change'))`);
+    await until('!editorLookups.size');
+  }
   if(fixture.module==='purchases'){
     await evaluate(`document.querySelector('#purchase-items').replaceChildren();for(const values of ${JSON.stringify(fixture.record.items)}){document.querySelector('#add-item').click();const item=document.querySelector('#purchase-items').lastElementChild;for(const [key,value] of Object.entries(values)){const input=item.querySelector('[name="item-'+key+'"]');if(input)input.value=value??'';}}`);
   }
@@ -131,8 +158,21 @@ async function fillOrdinary(fixture){
 
 async function ordinaryCase(fixture){
   const before=await evaluate("api('qa_state').then(result=>result.digest)");
-  const selector=fixture.kind==='create'?'#new-record':`[data-action=edit][data-id="${fixture.id}"]`;
-  const open=async()=>{await evaluate(`main.querySelector(${JSON.stringify(selector)}).click()`);await until('editor.open && !!form.elements.confirmed');await fillOrdinary(fixture);};
+  const partner=['suppliers','customers'].includes(fixture.module);
+  let selector;
+  if(fixture.kind==='create'){
+    selector='#new-record';
+    if(partner)selector='#partner-new';
+    else if(fixture.module==='contracts')selector='#contract-new';
+  }else selector=partner?`[data-partner-edit="${fixture.id}"]`:`[data-action=edit][data-id="${fixture.id}"]`;
+  const open=async()=>{
+    if(fixture.module==='contracts' && fixture.kind==='edit'){
+      await evaluate(`main.querySelector('[data-contract-detail="${fixture.id}"][data-kind="overview"]').click()`);
+      await until('editor.open && !!form.querySelector("#contract-dialog-edit")');
+      await evaluate('form.querySelector("#contract-dialog-edit").click()');
+    }else await evaluate(`main.querySelector(${JSON.stringify(selector)}).click()`);
+    await until('editor.open && !!form.elements.confirmed');await fillOrdinary(fixture);
+  };
   await open();await evaluate("document.querySelector('#editor-cancel').click()");await until('!editor.open && !document.querySelector("#editor-save").disabled');assert.equal(await evaluate("api('qa_state').then(result=>result.digest)"),before);
   await open();lastWrite=null;assert.equal(await evaluate('form.elements.confirmed.checked'),false);await evaluate('form.elements.confirmed.checked=true;form.requestSubmit()');await until('!editor.open && !document.querySelector("#editor-save").disabled && !main.querySelector(".loading")');
   if(['transactions','receipts','purchases','input_invoices'].includes(fixture.module))await screenshot(fixture.name+'_saved');
@@ -166,7 +206,7 @@ async function verifyRetry(fixture){
 async function evidenceCases(){
   const {spawnSync}=await import('node:child_process');
   const photo=path.join(output,'synthetic-photo.png'),attachment=path.join(output,'synthetic-source.txt');
-  const generated=spawnSync('D:/work/supply chain/.venv/Scripts/python.exe',['-B','-c',"from PIL import Image;import sys;Image.new('RGB',(30,20),'blue').save(sys.argv[1])",photo],{windowsHide:true,encoding:'utf8'});
+  const generated=spawnSync(testPython,['-B','-c',"from PIL import Image;import sys;Image.new('RGB',(30,20),'blue').save(sys.argv[1])",photo],{windowsHide:true,encoding:'utf8'});
   assert.equal(generated.status,0,generated.stderr);fs.writeFileSync(attachment,'合成普通附件；原条款待人工核对。','utf8');
   const fixture=await evaluate("api('qa_fixture',{name:'create_construction'})");await openRoute(fixture);
   const record=1;
@@ -224,7 +264,7 @@ async function inputPDFCases(){
   const snapshot=()=>evaluate("api('qa_state').then(result=>result.digest)");
   function generate(file,number){
     const script="from tests.test_web_workbench_extended import synthetic_invoice_pdf;import sys;synthetic_invoice_pdf(sys.argv[1],number=sys.argv[2],buyer=sys.argv[3],seller=sys.argv[4],net='100.01',gross='113.01')";
-    const result=spawnSync('D:/work/supply chain/.venv/Scripts/python.exe',['-B','-c',script,file,number,fixture.record.buyer_name,fixture.record.seller_name],{cwd:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),windowsHide:true,encoding:'utf8'});
+    const result=spawnSync(testPython,['-B','-c',script,file,number,fixture.record.buyer_name,fixture.record.seller_name],{cwd:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),windowsHide:true,encoding:'utf8'});
     assert.equal(result.status,0,result.stderr);
   }
   const original=path.join(output,'synthetic-manual-input.pdf');generate(original,fixture.record.invoice_no);
@@ -252,7 +292,10 @@ async function inputPDFCases(){
 try{
   await call('Runtime.enable');await call('Page.enable');await call('Network.enable');await call('Emulation.setDeviceMetricsOverride',{width:1440,height:960,deviceScaleFactor:1,mobile:false});
   await call('Page.navigate',{url:origin});await until('typeof state!=="undefined" && state.boot && !main.querySelector(".loading")');assert(await evaluate('state.boot.demo && !state.boot.read_only'));
-  const cases=await evaluate("api('qa_cases')");
+  const selectedArgument=process.argv.find(argument=>argument.startsWith('--only='));
+  const selected=selectedArgument?new Set(selectedArgument.slice(7).split(',')):null;
+  const cases=(await evaluate("api('qa_cases')")).filter(entry=>!selected || selected.has(entry.name));
+  if(selected)assert.equal(cases.length,selected.size,'Unknown or duplicate selected test case');
   for(const entry of process.argv.includes('--evidence-only')?[]:cases){
     const fixture=await evaluate(`api('qa_fixture',{name:${JSON.stringify(entry.name)}})`);
     try{
@@ -263,8 +306,7 @@ try{
     }
     catch(error){await screenshot('FAILED_'+fixture.name);matrix.push({...entry,status:'failed',error:String(error)});fs.writeFileSync(path.join(output,'matrix.json'),JSON.stringify(matrix,null,2));console.log('FAIL',fixture.name,String(error));}
   }
-  await evidenceCases();
-  await inputPDFCases();
+  if(!selected){await evidenceCases();await inputPDFCases();}
   fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({cases:matrix.length,matrix,errors,external_requests:0},null,2));console.log('Complete browser write matrix:',matrix.length);
   assert.deepEqual(matrix.filter(row=>row.status!=='passed'),[]);assert.deepEqual(errors,[]);assert.deepEqual(requests.filter(url=>url.startsWith('http')&&!url.startsWith(origin)),[]);
 }finally{try{await call('Browser.close');}catch{}socket.close();}

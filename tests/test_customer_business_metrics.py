@@ -79,15 +79,6 @@ class CustomerDashboardSummaryTests(unittest.TestCase):
 
         self.assertEqual(summary["income_rows"][0]["label"], "客户简称")
 
-    def test_donut_condenses_minor_customers_without_losing_amount(self):
-        from ui.charts import DonutBreakdown
-
-        items = [(f"客户{index}", index * 100) for index in range(1, 8)]
-        result = DonutBreakdown._condense_items(items, 5, "其他客户")
-
-        self.assertEqual(len(result), 6)
-        self.assertEqual(result[-1][0], "其他客户")
-        self.assertEqual(sum(amount for _label, amount in result), 2_800)
 
 
 class CustomerBusinessMetricTests(unittest.TestCase):

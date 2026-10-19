@@ -112,7 +112,7 @@ class ContractCashBusinessTests(unittest.TestCase):
     def test_three_cash_jobs_confirmed_income_and_advance_not_agreed_revenue(self):
         first = self.project('合成现金甲', agreed='78000')
         second = self.project('合成现金乙', agreed='97100')
-        advance = self.project('合成前丁', agreed='86000')
+        advance = self.project('合成预收工程', agreed='86000')
         a = self.income(first, 7_800_000)
         b = self.income(second, 9_710_000)
         self.receipt([(first, a, None, 7_800_000)])

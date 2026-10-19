@@ -3,7 +3,7 @@
 [![Tests](https://github.com/zhangjiabao271-web/engineering-enterprise-operations-system/actions/workflows/tests.yml/badge.svg)](https://github.com/zhangjiabao271-web/engineering-enterprise-operations-system/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-986A3E.svg)](LICENSE)
 
-面向小微工程企业的本机经营工作台：网页界面 + Python 业务服务 + SQLite，可像桌面软件一样独立窗口打开，也可在浏览器使用。旧 Tkinter/ttkbootstrap 界面保留兼容入口。
+面向小微工程企业的本机经营工作台：网页界面 + Python 业务服务 + SQLite，可像桌面软件一样独立窗口打开，也可在浏览器使用。只维护一套 Web 界面，旧 Tkinter/ttkbootstrap 界面已退役。
 
 **产品北极星：项目经营可核算率** —— 让每一个独立项目都能回答"赚没赚钱、钱有没有回来、结论是否可信"。
 
@@ -14,7 +14,7 @@
 - **项目成本明细**：从项目经营核算直接查看材料、人工和其他费用明细；原项目工作空间保留兼容入口，不再重复占用主导航
 - **合同、结算、开票与回款**：按客户查看合同及零星现金工程；顶部确认收入、回款、开票、未收可逐笔下钻，份额不重复；支持未签业务、后补合同及项目内顺序抵扣
 - **成本台账**：统一查看采购、人工和手工其他成本，待归集成本可后续归入项目
-- **客户与供应商档案**：客户收入贡献和未收、供应商采购额和待付看板；金额可下钻，不重复设置合同维护入口
+- **客户与供应商档案**：客户收入贡献和未收、供应商采购额与采购单数；金额可下钻，不把采购已付款标记当作实际资金，不重复设置合同维护入口
 - **供应商与产品管理**：产品报价（未税价 / 税率 / 含税价）默认引用供应商税率，按供应商筛选材料，支持报价对比
 - **采购中心**：正式采购与零星采购双轨，支持耗材多项目均摊、Excel 导入导出、批量归集、作废留痕
 - **工天看板**：工人档案、批量记工、重复拦截、任意日期范围的工人/月度矩阵，以及逐日出勤明细与 Excel 导出
@@ -67,9 +67,7 @@ run_web_demo.bat
 
 该命令备份数据库及引用附件，在全新隔离副本中升级并逐表核对，正式库不变。核对通过后，使用另一全新目录并显式添加 `--apply` 才升级正式库。若还有其他待迁移版本，此脚本会拒绝执行，不能跳过原有升级流程。助手草稿先校验、后确认；模型问题、预收款或原合同随回款补足结算的影响必须核对，取消、过期或账本变化后不直接记账。
 
-旧版可通过 `run.bat` 或 `.venv\Scripts\python main.py` 打开。脚本只在虚拟环境自带 Tcl/Tk 时设置对应路径。
-
-如果系统提示缺少 Tkinter/Tcl，请从 <https://www.python.org/downloads/windows/> 安装官方 Windows Python，并确保安装时包含 Tcl/Tk 支持。
+旧 `main.py`、`run.bat`、`pages/` 和 `ui/` 已移除，运行不再需要 Tcl/Tk 或 ttkbootstrap。Excel 模板、解析与导出使用独立服务；图片和 PDF 页面处理显式依赖 Pillow。详见 [旧界面退役说明](docs/legacy-tk-retirement.md)。
 
 ## AI 助手配置（可选）
 
@@ -90,9 +88,9 @@ run_web_demo.bat
 .venv\Scripts\python -m pytest
 ```
 
-pytest 自动从空库建立独立临时基准，数据库和附件均隔离；依赖本地历史业务数据的旧用例会明确跳过，不将真实数据作为公开测试夹具。GUI 测试需要单独启用并准备可用的 Tcl/Tk 桌面环境。
+pytest 自动从空库建立独立临时基准，数据库和附件均隔离；依赖本地历史业务数据的旧用例会明确跳过，不将真实数据作为公开测试夹具。旧 Tk 专用测试已移除，业务服务与 Web 操作测试继续保留。
 
-前端无需打包；安装Node.js后可运行 `node scripts/test_cockpit_detail.mjs`，其他无数据库交互回归见 CI。CI覆盖Windows/Python 3.10与3.12以及静态脚本语法和前端专项；跳过的GUI或历史数据用例不计为实际验收通过。
+前端无需打包；安装Node.js后可运行 `node scripts/test_cockpit_detail.mjs`，其他无数据库交互回归见 CI。CI覆盖Windows/Python 3.10与3.12以及静态脚本语法和前端专项；跳过的历史数据或环境限制用例不计为实际验收通过。真实 WebView2 窗口另在合成账本中验收，不以服务测试代替实际窗口检查。
 
 ## 使用边界
 
@@ -115,13 +113,10 @@ pytest 自动从空库建立独立临时基准，数据库和附件均隔离；�
 
 ```
 web_workbench/     # 当前网页与原生桌面窗口入口
-main.py            # 旧 Tkinter 应用入口与导航
 ai_engine.py       # AI 经营助手引擎
 ai_client.py       # DeepSeek API 客户端
 db/                # 基础建表、连接管理与编号迁移
 services/          # 业务服务层（页面不直连数据库）
-pages/             # 页面层
-ui/                # 通用 UI 组件
 tests/             # pytest 测试套件
 scripts/           # 冒烟与审计脚本
 docs/              # 安装、使用与安全边界

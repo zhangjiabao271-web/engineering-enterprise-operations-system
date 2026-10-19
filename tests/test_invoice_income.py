@@ -70,14 +70,11 @@ class InvoiceIncomeTests(pricing_tests.ContractPricingServiceTests):
         self.assertEqual(self.contracts.get_contract(contract['id'])['income_mode'], 'manual')
 
     def test_invoice_target_without_income(self):
-        from pages.finance_page import ReceivablePage
-        from unittest.mock import Mock
+        from services.web_workbench_service import options
         data = self.setup_case()
-        page = Mock()
-        page.selected_project_id.return_value = data['project_id']
-        targets = ReceivablePage._invoice_target_map(page)
+        targets = options(data['project_id'])['contracts']
         self.assertEqual(len(targets), 1)
-        self.assertEqual(next(iter(targets.values()))['income_mode'], 'invoice')
+        self.assertEqual(targets[0]['income_mode'], 'invoice')
 
     def test_multi_project_isolation(self):
         data = self.setup_case()
@@ -192,14 +189,11 @@ class InvoiceIncomeTests(pricing_tests.ContractPricingServiceTests):
         self.assertEqual(self.contracts.get_contract(data['contract_id'])['settled_minor'], 100000)
 
     def test_receipt_mode_preview_and_invoice_target_explain_effective_policy(self):
-        from pages.finance_page import ReceivablePage
-        from unittest.mock import Mock
+        from services.web_workbench_service import options
         data = self.setup_case('receipt')
         preview = self.finance.preview_receipt_allocations(
             dict(data, receipt_date='2026-09-30'))
         self.assertEqual(preview[0]['settlement_no'], '保存后同步补足实际结算')
         self.finance.create_receipt(dict(data, receipt_date='2026-09-30'))
-        page = Mock()
-        page.selected_project_id.return_value = data['project_id']
-        targets = ReceivablePage._invoice_target_map(page)
-        self.assertEqual(next(iter(targets.values()))['income_mode'], 'receipt')
+        targets = options(data['project_id'])['contracts']
+        self.assertEqual(targets[0]['income_mode'], 'receipt')

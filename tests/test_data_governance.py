@@ -84,23 +84,7 @@ class DataGovernanceTests(unittest.TestCase):
         return next(row for row in self.governance.list_project_completeness()
                     if row["id"] == project_id)
 
-    def test_governance_contract_action_keeps_project_scope(self):
-        from pages.data_governance_page import DataGovernancePage
-        page = DataGovernancePage.__new__(DataGovernancePage)
-        page.project_table = Mock()
-        page.project_table.tree.selection.return_value = ("42",)
-        page.navigate = Mock()
-        page.go_to_project_contract()
-        page.navigate.assert_called_once_with("contract", project_id=42)
 
-    def test_contract_attachment_dialog_refreshes_parent(self):
-        from pages.contract_page import ContractManagementPage
-        page = ContractManagementPage.__new__(ContractManagementPage)
-        page.parent, page.contract_tree, page.refresh = Mock(), Mock(spec=["selection"]), Mock()
-        page.contract_tree.selection.return_value = ("21",)
-        with patch("pages.contract_page.open_attachment_manager") as manager:
-            page.open_contract_attachments()
-        manager.assert_called_once_with(page.parent, "contract", 21, "合同", on_change=page.refresh)
 
     def test_summary_and_explicit_labor_assignment(self):
         suffix = uuid4().hex[:8]

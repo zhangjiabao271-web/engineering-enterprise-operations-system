@@ -44,7 +44,7 @@
 - 助手查询范围以项目编号为准，同名项目须澄清；全公司查询清除旧项目编号。已有经营查询登记在 `services/ai_query_capabilities.py`，与聚合工具共用校验和只读快照，不得默默忽略日期、项目或其他条件。新增查询不向模型发送原始账目。
 - 助手的实际回款查询 `collections` 包含独立旧账且每笔到账只计一次；`receipts` 仅表达现有项目分配。旧账用独立 `historical_project_id`，不得套用工程项目编号或新增工程收入。逐条排序在截断之前执行；线程只产生结果，切换或清空后的旧结果不得写回会话。
 - 网页浏览器入口 `run_web.bat` 和原生 `run_desktop.vbs` 保持正式账本只读；`run_web_demo.bat` 生成隔离合成演示。原生可录入入口为 `run_workbench.vbs`，正式启用状态见 `docs/desktop-workbench.md`。模型授权默认关闭；网页助手会话仅在内存，取消与代次检查必须在结果写回前完成。网页专项见 `tests/test_web_assistant.py`、`tests/test_web_workbench.py`；`scripts/accept_web_iteration.mjs` 只接受可写合成演示，生产模式不用于录入验收。
-- 同账本旧 Tk、新 Web 可写入口共用 `db/application_lock.py` 的交互录入锁；不能同时录入。启用写入前保存不覆盖旧文件的数据库及完整附件 ZIP 备份；原生窗口首开最大化，保留可还原尺寸，关闭后释放窗口锁、录入锁和端口。
+- 同账本的 Web 写入窗口使用 `db/application_lock.py` 的交互录入锁，不能重复录入。旧 Tk 界面已退役；启用写入前仍保存不覆盖旧文件的数据库及完整附件 ZIP 备份，关闭窗口后释放窗口锁、录入锁和端口。
 - 启动/退出专项见 `tests/test_web_desktop.py`，动效与成本弹窗见 `scripts/accept_desktop_shell.mjs`（只接受合成账本）。涉及原生包装时额外实测启动、下载另存为、关闭释放端口及随机端口重启后的视觉偏好；保留用户未保存输入，不直接结束正在使用的进程。
 - 切页及工天入口可点击性见 `scripts/accept_web_labor_navigation.mjs 地址 qa/全新目录`，只能连接合成写入验收服务器。真实鼠标验收覆盖往返、页签、翻页、搜索、减少动效以及批量名单最后一人；同一合成服务的复位脚本顺序执行，不能并行重置数据库。
 - 网页返回视图状态的无数据库检查见 `scripts/test_workbench_navigation.mjs`（用 Node 运行）；悬浮横向滚动条另在合成长表中实测拖动双向同步、表尾接管、弹窗隐藏和窗口缩放。返回实测包含项目范围、页签、查询、分页及横向位置，不能只核对页面标题。
@@ -73,6 +73,13 @@
 采购耗材均摊专项：`tests/test_purchase_consumable_allocations.py` 覆盖整单含运费守恒、混合材料类别、修改／取消归集、版本历史和成本明细。实际浏览器验收先用 `scripts/accept_purchase_supplier_fixture.py --output qa/全新目录` 启动合成服务，再运行 `node scripts/accept_purchase_consumables.mjs 地址 qa/该目录/browser`；覆盖默认未完工范围、勾选、尾差、迟到预览、连续录入和历史项目保留。只连合成账本，不重分摊正式历史采购。
 
 工作区收拢专项：`tests/test_project_accounting.py`、`tests/test_partner_overview.py`、`tests/test_workbench_information_architecture.py`，覆盖账面与已确认毛利分层、全部成本守恒、客户业务年度与合同签约年区别、有效分配及客户/供应商精确范围；运行 `node scripts/test_workbench_navigation.mjs` 检查旧链接与返回状态。界面验收仅使用 `scripts/accept_workspace_fixture.py --output qa/全新目录` 合成账本及 `node scripts/accept_workspace_consolidation.mjs 地址 qa/该目录`，不以测试录入修改正式账本。
+
+## Web 单界面与旧 Tk 退役验证
+
+- 旧 `main.py`、`run.bat`、`pages/`、`ui/` 及专用界面测试已移除。正式入口是 `run_workbench.vbs`；`run_desktop.vbs` 是同一 WebView2 的只读入口，不是旧 Tk 程序。
+- Excel 专项运行 `tests.test_excel_transfer_service`、`tests.test_tk_retirement` 与现有 Web Excel 写入测试，覆盖预览不写、整批回滚、重复与过期拒绝、含税及运费守恒、公式安全和四类导出。金额、数据库和服务层测试继续保留，不能只靠删除测试获得通过。
+- 在未安装 ttkbootstrap 的全新环境安装当前 `requirements.txt` 与 `requirements-desktop.txt`，再验收启动、批量工天、采购、合同回款、附件、Excel 和备份恢复；新代码不得再依赖旧页面。回归测试用阻断导入进一步覆盖 tkinter、旧页面和旧组件依赖。
+- 退役只删除源码与生成缓存，不卸载用户现有环境或触碰正式业务数据。恢复材料和范围见 `docs/legacy-tk-retirement.md`；不会自动同步或发布独立开源仓库。
 
 ## 模型更新时
 

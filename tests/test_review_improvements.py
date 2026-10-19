@@ -29,12 +29,6 @@ class BackupAndSortTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_sort_money_percent_and_identifiers(self):
-        from ui.components.table import display_sort_key
-        self.assertEqual(sorted(["¥900.00", "¥10,000.00", "-¥200.00"], key=display_sort_key),
-                         ["-¥200.00", "¥900.00", "¥10,000.00"])
-        self.assertLess(display_sort_key("9.0%"), display_sort_key("80.0%"))
-        self.assertEqual(display_sort_key("FP-2026-01")[0], 1)
 
 
 class ReviewBusinessTests(unittest.TestCase):

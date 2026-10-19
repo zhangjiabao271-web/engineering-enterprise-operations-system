@@ -1,8 +1,7 @@
 """Service boundary for construction and acceptance workflows.
 
-V4.4: the construction storage implementation lives here, reading/writing
-through db.connection directly.  The page depends only on this service;
-database.py keeps a thin delegation for legacy callers.
+Construction storage lives here and uses db.connection. The Web workbench
+calls this service; the former desktop and database.py adapters are retired.
 """
 
 from datetime import datetime
