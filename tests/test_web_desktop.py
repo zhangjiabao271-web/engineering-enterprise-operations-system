@@ -10,7 +10,7 @@ import unittest
 import urllib.request
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from web_workbench import desktop, runtime
 
@@ -114,6 +114,9 @@ class DesktopStartupTests(unittest.TestCase):
 
     def test_native_backend_is_owned_and_closed_even_if_webview_fails(self):
         webview = Mock(settings={})
+        webview.create_window.return_value = MagicMock()
+        autofill_event = webview.create_window.return_value.events.before_load
+        autofill_event.__iadd__.return_value = autofill_event
         addresses = []
         def create(title, origin, **kwargs):
             from urllib.parse import urlsplit
@@ -122,6 +125,7 @@ class DesktopStartupTests(unittest.TestCase):
             self.assertLessEqual(kwargs['min_size'][0], kwargs['width'])
             self.assertLessEqual(kwargs['min_size'][1], kwargs['height'])
             self.assertTrue(kwargs['maximized'])
+            return webview.create_window.return_value
         webview.create_window.side_effect = create
         for failure in (False, True):
             webview.start.side_effect = RuntimeError('synthetic WebView failure') if failure else None
@@ -134,6 +138,7 @@ class DesktopStartupTests(unittest.TestCase):
         self.assertTrue(webview.settings['ALLOW_DOWNLOADS'])
         self.assertEqual(webview.start.call_args.kwargs['gui'], 'edgechromium')
         self.assertFalse(webview.start.call_args.kwargs['debug'])
+        autofill_event.__iadd__.assert_called_with(desktop.disable_native_autofill)
 
     def test_window_title_is_plain_for_live_and_explicit_for_other_modes(self):
         cases = (
@@ -147,8 +152,30 @@ class DesktopStartupTests(unittest.TestCase):
             for read_only, demo, expected in cases:
                 with self.subTest(read_only=read_only, demo=demo):
                     webview = Mock(settings={})
+                    webview.create_window.return_value = MagicMock()
                     desktop.run_window(webview, read_only=read_only, demo=demo, profile=self.directory)
                     self.assertEqual(webview.create_window.call_args.args[0], expected)
+
+    def test_browser_saved_info_is_disabled_on_the_ui_thread(self):
+        window = Mock()
+        control = window.native.webview
+        control.InvokeRequired = False
+        desktop.disable_native_autofill(window)
+        self.assertFalse(control.CoreWebView2.Settings.IsGeneralAutofillEnabled)
+        self.assertFalse(control.CoreWebView2.Settings.IsPasswordAutosaveEnabled)
+        control.Invoke.assert_not_called()
+
+    def test_browser_saved_info_changes_are_marshaled_from_a_worker(self):
+        from types import SimpleNamespace
+        window = Mock()
+        control = window.native.webview
+        control.InvokeRequired = True
+        control.Invoke.side_effect = lambda callback: callback()
+        with patch.dict(sys.modules, {'System': SimpleNamespace(Action=lambda callback: callback)}):
+            desktop.disable_native_autofill(window)
+        control.Invoke.assert_called_once()
+        self.assertFalse(control.CoreWebView2.Settings.IsGeneralAutofillEnabled)
+        self.assertFalse(control.CoreWebView2.Settings.IsPasswordAutosaveEnabled)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows named mutex')
     def test_same_ledger_cannot_open_twice_and_lock_is_released(self):

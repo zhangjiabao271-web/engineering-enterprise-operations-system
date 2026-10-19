@@ -63,7 +63,7 @@ try{
       return api('save',{module,record,form_ticket:ticket.token,confirmed:true});
     };
     const options=await api('options');const ids=options.active_workers.map(worker=>worker.value);
-    for(const name of ['合成示例工人丙','合成王正尚','合成章国忠','合成罗运喜','合成袁新亮','示例工人乙']){
+    for(const name of ['合成示例工人丙','合成示例工人丁','合成示例工人戊','合成示例工人己','合成示例工人庚','示例工人乙']){
       ids.push(await save('workers',{name,daily_rate:'200'}));
     }
     const retired=await save('workers',{name:'合成离职人员',daily_rate:'180',status:'离职'});

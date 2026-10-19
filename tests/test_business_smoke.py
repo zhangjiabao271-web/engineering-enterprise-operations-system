@@ -470,13 +470,13 @@ class PurchaseCostAllocationTests(_IsolatedDatabaseTestCase):
             100_001,
         )
 
-    def test_equal_allocation_rejects_non_tool_category(self):
+    def test_equal_allocation_supports_material_consumables(self):
         from services import procurement_service, project_service
 
         project_ids = [
             project_service.create_project(
                 {
-                    "name": f"非法均摊项目-{index}",
+                    "name": f"耗材均摊项目-{index}",
                     "project_code": f"EQ-BAD-{index}",
                     "status": "进行中",
                 }
@@ -485,8 +485,11 @@ class PurchaseCostAllocationTests(_IsolatedDatabaseTestCase):
         ]
         item = self._item()
         item["cost_category"] = "材料费"
-        with self.assertRaisesRegex(ValueError, "只有.*工具和设备"):
-            procurement_service.add_purchase_order(self._header(project_ids), item)
+        order_id = procurement_service.add_purchase_order(self._header(project_ids), item)
+        self.assertEqual(
+            sum(row['amount_minor'] for row in procurement_service.get_purchase_allocations(order_id)),
+            100_000,
+        )
 
 
 class CostDashboardTests(_IsolatedDatabaseTestCase):

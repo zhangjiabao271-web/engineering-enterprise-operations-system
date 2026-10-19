@@ -31,7 +31,7 @@ OPERATIONS={
  'cost_void':spec('costs','作废手工费用',[REASON]),
  'cost_history':spec('costs','费用修改历史',read='cost_history'),
  'cost_allocations':spec('costs','费用当前归集',read='cost_allocations'),
- 'purchase_allocate':spec('purchases','采购项目归集',[C('method','归集方式',{'direct':'单项目','equal':'工具设备均摊','unassigned':'暂不归集'},'direct'),PROJECTS,REASON]),
+ 'purchase_allocate':spec('purchases','采购项目归集',[C('method','归集方式',{'direct':'单项目','equal':'多项目均摊（含耗材）','unassigned':'暂不归集'},'direct'),PROJECTS,REASON]),
  'purchase_void':spec('purchases','作废采购单',[REASON]),
  'purchase_status':spec('purchases','采购支付与票据状态',[F('payment_method','支付方式'),F('payment_status','支付状态'),F('invoice_status','票据状态'),REASON]),
  'purchase_history':spec('purchases','采购价格修改历史',read='purchase_history'),
@@ -49,6 +49,7 @@ OPERATIONS={
  'allocation_update':spec('allocations','调整合同项目分配',[F('amount','分配金额（元）','money',required=True),REASON]),
  'allocation_void':spec('allocations','作废项目分配',[REASON]),
  'settlement_void':spec('settlements','作废收入确认',[REASON]),
+ 'settlement_contract':spec('settlements','补关联合同',[S('contract_id','已签合同','contracts',True),REASON]),
  'invoice_void':spec('invoices','作废销项发票',[REASON]),
  'receipt_allocation':spec('receipts','调整收入核销明细',[F('allocations','收入确认核销金额','settlement_rows'),F('allow_advance','余额明确作为预收款','checkbox'),REASON]),
  'receipt_void':spec('receipts','作废录错的回款（保留记录）',[C('receipt_income_action','关联自动补足收入如何处理',{'':'有关联补足收入时请明确选择','retain':'仅更正回款，保留真实结算','reverse':'同步撤销录错的自动补足收入'}),REASON]),
@@ -138,8 +139,6 @@ def prepare(name,data):
     elif name=='purchase_allocate':
         method=values['method']
         if method=='equal':
-            if before['items'][0]['cost_category']!=b.procurement.TOOL_EQUIPMENT_CATEGORY:
-                raise ValueError('仅工具和设备采购支持多项目均摊')
             review['rows']=b.procurement.build_equal_allocation_plan(before['total_amount_cents'],values['project_ids'])
         elif method=='direct' and len(values['project_ids'])!=1:
             raise ValueError('单项目归集请选择且只选一个项目')
@@ -149,7 +148,12 @@ def prepare(name,data):
     elif name=='labor_adjust':
         review['impact']=b.labor.preview_rate_adjustment(values)
         review['rows']=review['impact']['project_impacts']
+    elif name=='settlement_contract':
+        from services.settlement_contract_service import preview
+        review.update(preview(record_id, values['contract_id']))
     elif name=='receipt_allocation':
+        if before.get('allocation_scope') == 'project':
+            raise ValueError('本笔回款按项目顺序抵扣，修改到账金额或日期后会自动重排；可在回款详情查看各笔抵扣结果')
         receipt=dict(before,allow_advance=bool(values.get('allow_advance')),
                      settlement_allocations=values.get('allocations',[]))
         review['rows']=b.finance.preview_receipt_allocations(receipt,exclude_receipt_id=record_id)
@@ -241,6 +245,9 @@ def apply(name,values,request_key):
     if name=='allocation_update':return b.contracts.update_allocation_amount(i,values['amount'],reason)
     if name=='allocation_void':return b.contracts.void_allocations([i])
     if name=='settlement_void':return b.contracts.void_settlements([i])
+    if name=='settlement_contract':
+        from services.settlement_contract_service import attach
+        return attach(i,values['contract_id'],reason)
     if name=='invoice_void':return b.finance.void_invoices([i])
     if name=='receipt_allocation':
         record=b.get_record('receipts',i)

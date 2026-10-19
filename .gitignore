@@ -12,6 +12,8 @@ ai_credentials.dat
 # ===== 数据库与备份 =====
 backups/
 qa/
+output/
+exports/
 *.db
 *.db-journal
 *.db-wal

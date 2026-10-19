@@ -12,7 +12,7 @@ async function renderCostLedger(parent, module) {
     labor_minor:data.summary.labor_minor,
     manual_minor:data.summary.manual_minor,
   };
-  const create = state.boot.read_only?'':'<button id="cost-ledger-create" class="primary">登记成本</button>';
+  const create = state.boot.read_only?'':'<button id="cost-ledger-create" class="primary">登记其他费用</button>';
   const actions = row => {
     const source = {purchase:'purchases',labor:'worklogs',manual:'costs'}[row.source_type];
     if (!source) return '';
@@ -21,7 +21,7 @@ async function renderCostLedger(parent, module) {
     return button('detail','来源明细') + (spec.can_update && !state.boot.read_only?button('edit','修改原记录'):'') + (spec.attachment?button('attachments','附件'):'');
   };
   main.innerHTML = header('成本台账','汇总与明细使用同一期间、同一项目范围。修改来源记录后，成本与核算同步更新。',create) +
-    tabsHTML(parent,module) + `<section class="card"><div class="filter-bar"><label>统计期间<select id="cost-ledger-period"><option value="all" ${data.period==='all'?'selected':''}>全部期间（全周期）</option>${months.map(month=>`<option value="${esc(month)}" ${month===data.period?'selected':''}>${esc(month)}</option>`).join('')}</select></label><p class="page-note">${esc(data.period_label)} · 项目筛选时只计本项目分摊份额；修改入口编辑原整笔记录，不重复登记成本或付款。</p></div></section>` +
+    tabsHTML(parent,module) + `<p class="page-note">采购和工天自动计入成本，不要重复登记；这里只新增其他费用。<a href="#purchases">登记采购</a> · <a href="#labor">登记工天</a></p><section class="card"><div class="filter-bar"><label>统计期间<select id="cost-ledger-period"><option value="all" ${data.period==='all'?'selected':''}>全部期间（全周期）</option>${months.map(month=>`<option value="${esc(month)}" ${month===data.period?'selected':''}>${esc(month)}</option>`).join('')}</select></label><p class="page-note">${esc(data.period_label)} · 项目筛选时只计本项目分摊份额；修改入口编辑原整笔记录，不重复登记成本或付款。</p></div></section>` +
     metricCards(amounts) + table(data.rows.slice(state.costPage*40,(state.costPage+1)*40),columns,actions,'cost-ledger-records') +
     `<div class="pagination"><button id="cost-ledger-prev" ${state.costPage===0?'disabled':''}>上一页</button><span>第 ${state.costPage+1} / ${pages} 页 · 共 ${data.rows.length} 条，汇总包含当前期间全部明细</span><button id="cost-ledger-next" ${state.costPage+1===pages?'disabled':''}>下一页</button></div>`;
   bindTabs(parent);

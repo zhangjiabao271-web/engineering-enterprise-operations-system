@@ -1,43 +1,36 @@
 """Read-only project ledger with financial facts and reconcilable drill-downs."""
 
-from db.business_facts import project_finance_rows
+from db.business_facts import project_finance_rows, COST_FACTS_SQL
 from db.connection import db_read, use_read_snapshot
 from services import contract_service, finance_service, project_service
+from services import project_accounting_service as accounting
 
 
-MONEY_KEYS = ("settlement_minor", "receipt_minor", "invoice_minor", "receivable_minor")
+MONEY_KEYS = ("allocated_minor", "settlement_minor", "receipt_minor", "invoice_minor", "receivable_minor",
+              "cost_minor", "gross_profit_minor")
 
 
 def _rows(conn, project_id=None, keyword=""):
     projects = project_service.list_projects(keyword=keyword)
     finances = {row["project_id"]: row for row in project_finance_rows(conn, project_id)}
-    counts = {row["project_id"]: dict(row) for row in conn.execute("""
-        SELECT project_id,
-               SUM(kind='settlement') AS settlement_count,
-               SUM(kind='invoice') AS invoice_count,
-               SUM(kind='receipt') AS receipt_count
-        FROM (
-            SELECT project_id, 'settlement' AS kind, id FROM settlements WHERE status='active'
-            UNION ALL
-            SELECT project_id, 'invoice', id FROM sales_invoices WHERE status='active'
-            UNION ALL
-            SELECT a.project_id, 'receipt', r.id
-            FROM receipt_allocations a JOIN receipts r ON r.id=a.receipt_id
-            WHERE a.status='active' AND r.status='active' GROUP BY a.project_id,r.id
-        ) GROUP BY project_id
-    """)}
+    cost_totals = {row['project_id']: row['total'] for row in conn.execute(
+        'SELECT project_id,SUM(amount_minor) AS total FROM (' + COST_FACTS_SQL + ') GROUP BY project_id')}
+    unsigned = {row['project_id']: dict(row) for row in conn.execute('''SELECT project_id,COUNT(*) AS count,
+        SUM(amount_minor) AS amount FROM settlements WHERE status='active' AND source_type='contract'
+        AND contract_id IS NULL GROUP BY project_id''')}
     result = []
     for project in projects:
         facts = finances.get(project["id"])
         if facts is None:
             continue
-        count = counts.get(project["id"], {})
+        facts['cost_minor'] = cost_totals.get(project['id'], 0)
+        facts['gross_profit_minor'] = facts['settlement_minor'] - facts['cost_minor']
         result.append({**project, **{key: facts[key] for key in MONEY_KEYS},
+                       'unsigned_count': unsigned.get(project['id'], {}).get('count', 0),
+                       'unsigned_minor': unsigned.get(project['id'], {}).get('amount', 0),
                        "pending_receipt_minor": facts["pending_receipt_minor"],
-                       "advance_minor": facts["advance_minor"],
-                       **{key: int(count.get(key, 0)) for key in
-                          ("settlement_count", "receipt_count", "invoice_count")}})
-    return result
+                       "advance_minor": facts["advance_minor"]})
+    return accounting.decorate_projects(result)
 
 
 def list_projects(project_id=None, keyword=""):
@@ -75,7 +68,24 @@ def get_details(project_id):
         for row in income:
             row["received_minor"] = received.get(row["id"], 0)
             row["unreceived_minor"] = max(row["amount_minor"] - row["received_minor"], 0)
+        contracts = [dict(row) for row in conn.execute('''SELECT c.*,a.allocated_amount_minor,
+            c.tax_inclusive_amount_minor AS contract_amount_minor FROM contract_project_allocations a
+            JOIN contracts c ON c.id=a.contract_id WHERE a.project_id=? AND a.status='active'
+            AND c.status<>'void' ORDER BY c.sign_date,c.id''', (project_id,))]
+        costs = [dict(row) for row in conn.execute('SELECT * FROM (' + COST_FACTS_SQL +
+            ') WHERE project_id=? ORDER BY date DESC,id', (project_id,))]
+        accounting_fields = {key: project[key] for key in accounting.ACCOUNTING_KEYS}
         details = {
+            'contracts': {'rows': contracts, 'amount_key': 'allocated_amount_minor',
+                          'total_minor': project['allocated_minor']},
+            'costs': {'rows': costs, 'amount_key': 'amount_minor', 'total_minor': project['cost_minor']},
+            'profit': {'rows': [row for row in [
+                               {'label': '已确认收入', 'amount_minor': project['settlement_minor']},
+                               {'label': '减：项目累计成本', 'amount_minor': -project['cost_minor']}]
+                               if row['amount_minor']],
+                       'amount_key': 'amount_minor', 'total_minor': project['gross_profit_minor'],
+                       'label': '账面毛利（含待完善）', 'note': project['accounting_note'],
+                       **accounting_fields},
             "settlements": {"rows": income, "amount_key": "amount_minor",
                             "total_minor": project["settlement_minor"]},
             "receipts": {"rows": receipts, "amount_key": "project_amount_minor",
@@ -89,5 +99,8 @@ def get_details(project_id):
         for detail in details.values():
             detail["detail_total_minor"] = sum(row[detail["amount_key"]] for row in detail["rows"])
             detail["reconciled"] = detail["detail_total_minor"] == detail["total_minor"]
-        return {"project": project, "summary": {key: project[key] for key in MONEY_KEYS},
+        summary = {key: project[key] for key in MONEY_KEYS}
+        summary.update(accounting.summarize_projects([project]))
+        summary.update(accounting_fields)
+        return {"project": project, "summary": summary,
                 "details": details}

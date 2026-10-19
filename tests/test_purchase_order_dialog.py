@@ -259,7 +259,7 @@ class ValidatePurchaseSubmissionTests(unittest.TestCase):
     def test_equal_allocation_needs_two_projects(self):
         error = validate_purchase_submission(
             **self._valid(use_equal_allocation=True, allocation_project_count=1))
-        self.assertEqual(error[1], "工具和设备多项目平均分摊至少需要勾选两个项目。")
+        self.assertEqual(error[1], "多项目平均分摊至少需要勾选两个项目。")
 
     def test_project_must_be_picked_from_list(self):
         error = validate_purchase_submission(**self._valid(project_selected=False))

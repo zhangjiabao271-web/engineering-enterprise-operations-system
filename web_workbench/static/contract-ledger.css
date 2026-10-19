@@ -1,0 +1,51 @@
+/* Customer names and lifetime amounts form the contract ledger's visual spine. */
+.contract-breadcrumb { display:flex; align-items:center; gap:12px; margin:20px 0; font-size:13px; color:var(--muted); flex-wrap:wrap; }
+.contract-breadcrumb button { padding:7px 10px; color:var(--blue); }
+.contract-breadcrumb a { color:var(--blue); text-decoration:none; }
+.contract-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:20px; padding:20px 24px; border:1px solid var(--line); border-radius:16px; background:var(--surface); margin:16px 0 24px; }
+.contract-summary span { display:block; font-size:12px; color:var(--muted); margin-bottom:5px; }
+.contract-summary strong { font:600 23px/1.5 "Segoe UI",sans-serif; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.business-summary-heading { margin:20px 0 8px; font-size:15px; }
+.contract-summary .business-summary-button { min-width:0; padding:8px; border-color:transparent; text-align:left; background:transparent; }
+.contract-summary .business-summary-button:hover { background:var(--soft-blue); border-color:var(--line); }
+.contract-summary .business-summary-button small { display:block; margin-top:6px; color:var(--muted); font-size:12px; }
+.project-business-section,.contract-business-section { margin:22px 0; }
+.project-business-section h2,.contract-business-section h2 { font-size:16px; }
+#business-facts td { white-space:normal; overflow-wrap:anywhere; overflow:visible; }
+#business-facts td.amount { white-space:nowrap; }
+.contract-filters { display:flex; align-items:end; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
+.contract-filters>label { display:grid; gap:7px; font-size:12px; color:var(--muted); }
+.contract-filters select { max-width:240px; min-height:44px; }
+.contract-search { display:flex; gap:8px; flex:1; min-width:260px; }
+.contract-search input { width:100%; min-width:0; }
+.contract-list-caption { display:flex; justify-content:space-between; gap:15px; align-items:center; margin:14px 0; font-size:13px; }
+.contract-list-caption>span { font-size:12px; color:var(--muted); text-align:right; }
+.contract-customer-table table { min-width:760px; }
+.contract-list-table table { min-width:1130px; }
+.contract-customer-table th,.contract-customer-table td,.contract-list-table th,.contract-list-table td { padding:17px 12px; max-width:none; overflow:visible; text-overflow:clip; }
+.contract-name { min-width:215px; width:30%; white-space:normal; overflow-wrap:anywhere; }
+.contract-name-link { display:block; border:0; background:transparent; padding:4px 0; text-align:left; white-space:normal; overflow-wrap:anywhere; font-size:15px; font-weight:600; color:var(--ink); min-height:44px; }
+.contract-name-link:hover { color:var(--blue); background:transparent; }
+.contract-name small,.contract-followup small { display:block; margin:5px 0; font-size:11px; line-height:1.7; color:var(--muted); }
+.contract-followup { min-width:155px; white-space:normal; font-size:12px; }
+.contract-money { min-height:44px; padding:7px 8px; border-color:transparent; background:transparent; font:600 16px/1.5 "Segoe UI",sans-serif; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.contract-money:hover { border-color:var(--line); background:var(--soft-blue); color:var(--blue); }
+.contract-pricing { min-width:135px; white-space:normal; }
+.contract-pricing span { display:block; color:var(--muted); font-size:12px; }
+.contract-pricing strong { display:block; margin-top:5px; font:600 15px/1.5 "Segoe UI","Microsoft YaHei UI",sans-serif; white-space:nowrap; }
+.contract-attachment { min-height:44px; color:var(--blue); white-space:nowrap; }
+.contract-attachment.needs-file { color:var(--muted); }
+.contract-dialog-actions { margin:0 0 22px; }
+.contract-project-heading { margin:24px 0 12px; }
+#contract-projects td { white-space:normal; overflow:visible; }
+#contract-facts td { white-space:normal; overflow-wrap:anywhere; overflow:visible; }
+#contract-facts td.amount { white-space:nowrap; }
+@media(max-width:1050px) { .contract-summary strong { font-size:20px; } .contract-summary { gap:12px; } }
+@media(max-width:760px) {
+  .contract-summary { grid-template-columns:repeat(2,minmax(0,1fr)); padding:16px; }
+  .contract-filters>label { flex:1; min-width:130px; }
+  .contract-filters select { max-width:100%; width:100%; }
+  .contract-search { flex-basis:100%; min-width:0; }
+  .contract-list-caption { align-items:flex-start; flex-direction:column; gap:5px; }
+  .contract-list-caption>span { text-align:left; }
+}

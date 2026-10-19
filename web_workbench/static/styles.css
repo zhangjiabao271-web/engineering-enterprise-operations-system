@@ -64,6 +64,17 @@ dialog { overflow:hidden; }
 .batch-common-details .form-grid{margin-top:14px}
 @media(max-width:600px){.batch-attendance{padding:13px}.batch-worker{grid-template-columns:minmax(0,1fr) auto;gap:10px}.batch-worker-name{grid-column:1/-1}.batch-worker-tools input{flex-basis:100%}.batch-overtime{font-size:12px}.batch-worker .workday-picker button{padding:8px 12px}}
 .purchase-preview,.item-preview{display:block;margin-top:14px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.purchase-allocation{margin:20px 0;padding:18px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.purchase-allocation>p{margin-top:8px;color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+.purchase-allocation-tools{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.purchase-allocation-projects{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:4px 12px}
+.purchase-allocation-projects label{display:flex;align-items:center;gap:10px;padding:10px 4px;min-height:44px;overflow-wrap:anywhere}
+.purchase-allocation-projects input{flex-shrink:0}
+#purchase-allocation-preview{display:block;margin-top:14px;font-variant-numeric:tabular-nums}
+#purchase-allocation-preview ul{padding:0;list-style:none;margin:10px 0 0}
+#purchase-allocation-preview li{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-top:1px solid var(--line)}
+#purchase-allocation-preview li span{min-width:0;overflow-wrap:anywhere}
+#purchase-allocation-preview li strong{white-space:nowrap;color:var(--blue)}
 .purchase-preview{padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--soft-blue);color:var(--blue);font-weight:600}
 .understanding-summary{padding:20px;border:1px solid var(--line);border-radius:14px;background:var(--soft-blue);margin-bottom:20px;overflow-wrap:anywhere}
 .understanding-summary>small{display:block;color:var(--muted);margin-bottom:10px;font-size:12px}

@@ -1,6 +1,6 @@
 # Project Profit Center Page Override
 
-- Treat every project as an independent profit unit. Never combine `澄湖` and `城北` merely because they belong to one future annual contract.
+- Treat every project as an independent profit unit. Never combine `澄湖` and `蓝湾` merely because they belong to one future annual contract.
 - Keep four primary KPI cards only: settled revenue, total cost, confirmed gross profit, and operating cash balance.
 - Show contract value, recorded output, accepted output, settlement, invoice, and receipt as separate stages.
 - Show procurement, uniquely attributed labor, and manually entered other costs as separate cost sources.
@@ -16,6 +16,11 @@
 - Keep dialog actions fixed, allow resizing and mouse-wheel scrolling, and preserve visible keyboard focus.
 
 ## Local web desktop supplement
+
+- Web accounting analysis is a tab under the project ledger, not a duplicate primary workspace. Old profit links remain compatible.
+- Its four cards show recognized income, all costs, book profit and outstanding receivables. Confirmed profit and pending-project differences are explained separately; operating net cash stays in the project rows and is not labelled a real bank balance.
+- Book profit always includes all recognized income and costs. Confirmed profit includes only accountable projects; pending-project book differences remain visible and reconcile with the book total. Both views use the same batch guardrail service and one read snapshot.
+- Each amount opens the existing project-ledger detail or original cost source. Do not create another contract, receipt or expense editor.
 
 - The cost dialog shows the whole project lifecycle, with Chinese headers and procurement, labor, and other-cost tabs. Show total cost and each source subtotal in a compact summary before the detail rows, without repeated boilerplate hints competing with the procurement facts.
 - Procurement prioritizes material/specification, quantity with unit, the original unit price with tax basis, the full tax-inclusive material-line amount, and the current project's allocated cost. Supplier and date are secondary in the material cell; source number, payment status, tax breakdown, purpose and weigh ticket expand under “查看明细”. Do not use the whole order total as a material-line amount.

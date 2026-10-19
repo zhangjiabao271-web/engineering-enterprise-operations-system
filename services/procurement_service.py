@@ -233,15 +233,13 @@ def build_equal_allocation_plan(total_amount_cents, project_ids):
     ]
 
 
-def _allocation_request(header, item, total_amount_cents):
+def _allocation_request(header, total_amount_cents):
     method = header.get("allocation_method") or (
         "direct" if header.get("project_id") else "unassigned"
     )
     if method not in ("direct", "equal", "unassigned"):
         raise ValueError("项目归集方式无效")
     if method == "equal":
-        if item.get("cost_category") != TOOL_EQUIPMENT_CATEGORY:
-            raise ValueError("只有“工具和设备”采购可以多项目平均分摊")
         return None, build_equal_allocation_plan(
             total_amount_cents, header.get("project_ids")
         )
@@ -351,8 +349,7 @@ def _prepare_order_items(header, items):
     if freight < 0:
         raise ValueError("运费不能为负数")
     total = sum(amount["line_amount_cents"] for amount in amounts) + freight
-    for item in prepared:
-        _allocation_request(header, item, total)
+    _allocation_request(header, total)
     return prepared, amounts, {"project_cost_cents": total, "freight_amount_cents": freight}
 
 
@@ -416,7 +413,7 @@ def add_purchase_order(header, item):
                     {"name": project_name, "notes": "由采购 Excel 导入创建"}, connection=conn
                 )
         project_id, allocation_plan = _allocation_request(
-            header, item, amounts["project_cost_cents"]
+            header, amounts["project_cost_cents"]
         )
         cursor = conn.execute(
             """INSERT INTO purchase_orders
@@ -604,7 +601,7 @@ def update_purchase_order(order_id, header, item):
         )
         now = _now()
         project_id, allocation_plan = _allocation_request(
-            header, item, amounts["project_cost_cents"]
+            header, amounts["project_cost_cents"]
         )
         conn.execute(
             """UPDATE purchase_orders SET project_id=?, supplier_id=?, supplier_partner_id=?,

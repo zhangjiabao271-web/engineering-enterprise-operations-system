@@ -180,7 +180,7 @@ def validate_purchase_submission(*, has_current, is_petty, merchant, supplier_id
     if has_current and not material:
         return "提示", "请完整填写供应商/商户和材料信息", None
     if use_equal_allocation and allocation_project_count < 2:
-        return "提示", "工具和设备多项目平均分摊至少需要勾选两个项目。", None
+        return "提示", "多项目平均分摊至少需要勾选两个项目。", None
     if not use_equal_allocation and not project_selected:
         return (
             "请选择项目",
@@ -304,14 +304,17 @@ class PurchaseOrderDialogMixin(PurchaseOrderProductMixin):
             form_fields=[],
             layout_width=None,
         )
-        ctx.selected_project_vars = {
-            project["id"]: ttk.BooleanVar(value=False) for project in projects
-        }
         edit_allocations = (
             procurement_service.get_purchase_allocations(order_id)
             if order_id
             else []
         )
+        allocated_ids = {line["project_id"] for line in edit_allocations}
+        ctx.selected_project_vars = {
+            project["id"]: ttk.BooleanVar(value=not order_id)
+            for project in projects
+            if project["status"] in ("进行中", "筹备中") or project["id"] in allocated_ids
+        }
         for allocation in edit_allocations:
             selected = ctx.selected_project_vars.get(allocation["project_id"])
             if selected is not None:
@@ -454,6 +457,8 @@ class PurchaseOrderDialogMixin(PurchaseOrderProductMixin):
         }
         ttk.Separator(allocation_frame).pack(fill=X, pady=(0, 4))
         for project in ctx.projects:
+            if project["id"] not in ctx.selected_project_vars:
+                continue
             ttk.Checkbutton(
                 allocation_frame,
                 text=ctx.project_labels[project["id"]],
@@ -630,19 +635,7 @@ class PurchaseOrderDialogMixin(PurchaseOrderProductMixin):
 
     def _refresh_attribution_ui(self, ctx, *_args):
         vars_ = ctx.vars_
-        is_tool = (
-            vars_["category"].get()
-            == procurement_service.TOOL_EQUIPMENT_CATEGORY
-        )
-        if not is_tool:
-            vars_["attribution"].set("单项目归集")
-            ctx.attribution_label.grid_remove()
-            ctx.attribution_combo.grid_remove()
-        else:
-            ctx.attribution_label.grid()
-            ctx.attribution_combo.grid()
-
-        if is_tool and vars_["attribution"].get() == "多项目平均分摊":
+        if vars_["attribution"].get() == "多项目平均分摊":
             ctx.project_label.grid_remove()
             ctx.project_combo.grid_remove()
             ctx.allocation_frame.grid()
@@ -786,11 +779,7 @@ class PurchaseOrderDialogMixin(PurchaseOrderProductMixin):
             products_by_label=ctx.products_by_label,
             settlement_mode=pricing["settlement_mode"],
         )
-        use_equal_allocation = (
-            vars_["category"].get()
-            == procurement_service.TOOL_EQUIPMENT_CATEGORY
-            and vars_["attribution"].get() == "多项目平均分摊"
-        )
+        use_equal_allocation = vars_["attribution"].get() == "多项目平均分摊"
         allocation_project_ids = self._selected_allocation_project_ids(ctx)
         error = validate_purchase_submission(
             has_current=has_current,

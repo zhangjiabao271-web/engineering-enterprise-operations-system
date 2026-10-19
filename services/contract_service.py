@@ -312,6 +312,11 @@ def create_contract(data):
         organization_id = _organization_id(conn)
         contract_no = (data.get("contract_no") or "").strip() or _number("HT")
         partner_id = data.get("customer_partner_id") or None
+        if not partner_id and data.get('project_id'):
+            target = conn.execute('SELECT customer_partner_id FROM projects WHERE id=?', (int(data['project_id']),)).fetchone()
+            if not target:
+                raise ValueError('所选项目不存在')
+            partner_id = target['customer_partner_id']
         parent_contract_id = int(data.get("parent_contract_id") or 0) or None
         if contract_type == "supplement" and not parent_contract_id:
             raise ValueError("补充协议必须选择所属原合同")
@@ -359,6 +364,14 @@ def create_contract(data):
         set_mode(conn, cursor.lastrowid, data.get('income_mode', 'manual'))
         from services.operating_entity_service import save_record_entity
         save_record_entity(conn, 'contracts', cursor.lastrowid, data)
+        if data.get('project_id'):
+            from services.entity_ownership import OwnershipResolver
+            from services.operating_entity_service import validate_inherited_ownership_change
+            before = OwnershipResolver(conn)
+            create_allocation({'contract_id': cursor.lastrowid, 'project_id': int(data['project_id']),
+                               'amount': str(Decimal(amount_minor) / 100),
+                               'notes': '保存合同时自动关联所选项目'}, _conn=conn)
+            validate_inherited_ownership_change(conn, before)
         return cursor.lastrowid
 
 
@@ -519,10 +532,10 @@ def list_allocations(contract_id=None, project_id=None):
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
-def create_allocation(data):
+def create_allocation(data, *, _conn=None):
     contract_id = int(data.get("contract_id") or 0)
     project_id = int(data.get("project_id") or 0)
-    with db_transaction(immediate=True) as conn:
+    with (nullcontext(_conn) if _conn is not None else db_transaction(immediate=True)) as conn:
         contract = conn.execute(
             """SELECT tax_inclusive_amount_minor, pricing_mode,
                       customer_partner_id
@@ -735,7 +748,7 @@ def list_settlements(project_id=None, contract_id=None):
                        SUM(ra.allocated_amount_minor) AS received_minor
                 FROM receipt_allocations ra
                 JOIN receipts r ON r.id=ra.receipt_id
-                WHERE ra.settlement_id IS NOT NULL AND r.status='active'
+                WHERE ra.settlement_id IS NOT NULL AND ra.status='active' AND r.status='active'
                 GROUP BY ra.settlement_id
             ) rp ON rp.settlement_id=s.id
             WHERE s.status='active'
@@ -748,6 +761,8 @@ def list_settlements(project_id=None, contract_id=None):
             sql += " AND s.contract_id=?"
             params.append(contract_id)
         sql += " ORDER BY s.settlement_date DESC, s.id DESC"
+        invoice_owned = {row[0] for row in conn.execute('SELECT settlement_id FROM invoice_income_links')}
+        receipt_owned = {row[0] for row in conn.execute('SELECT settlement_id FROM receipt_confirmed_settlements')}
         settlements = []
         for source in conn.execute(sql, params).fetchall():
             row = dict(source)
@@ -773,6 +788,13 @@ def list_settlements(project_id=None, contract_id=None):
                 row["collection_status"] = "部分回款"
             else:
                 row["collection_status"] = "待回款"
+            row['contract_state'] = '已关联合同' if row['contract_id'] else (
+                '无需合同' if row['source_type'] == 'cash_job' else '已确认业务 · 合同待补')
+            row['income_source'] = '人工确认'
+            if row['id'] in invoice_owned:
+                row['income_source'] = '随开票确认'
+            elif row['id'] in receipt_owned:
+                row['income_source'] = '随回款补足'
             settlements.append(row)
         return settlements
 
@@ -833,6 +855,7 @@ def create_settlement(data, *, _conn=None):
     settlement_date = _date(data.get("settlement_date"), "结算日期")
     period_start = _date(data.get("period_start"), "结算开始日期", optional=True)
     period_end = _date(data.get("period_end"), "结算结束日期", optional=True)
+    business_date = _date(data.get('business_date'), '业务形成日期', optional=True)
     if period_start and period_end and period_end < period_start:
         raise ValueError("结算结束日期不能早于开始日期")
     with (nullcontext(_conn) if _conn is not None else db_transaction(immediate=True)) as conn:
@@ -847,12 +870,12 @@ def create_settlement(data, *, _conn=None):
                 raise ValueError("零星现金工程不关联合同")
             contract_id = None
             validate_cash_income_capacity(conn, project_id, amount_minor)
-        else:
-            if not contract_id:
-                raise ValueError("正式合同工程必须选择合同项目分配")
+        elif contract_id:
             _validate_contract_settlement(
                 conn, contract_id, project_id, amount_minor
             )
+        elif not str(data.get('basis') or '').strip():
+            raise ValueError('合同待补的已确认业务需要填写结算或客户确认依据')
         organization_id = _organization_id(conn)
         now = _now()
         cursor = conn.execute(
@@ -878,6 +901,7 @@ def create_settlement(data, *, _conn=None):
                 now,
             ),
         )
+        conn.execute('UPDATE settlements SET business_date=? WHERE id=?', (business_date, cursor.lastrowid))
         from services.advance_receipt_service import reconcile
         reconcile(conn, project_id, contract_id)
         return cursor.lastrowid
@@ -902,6 +926,8 @@ def update_settlement(settlement_id, data):
         ).fetchone()
         if not current:
             raise ValueError("结算记录不存在或已作废")
+        if current['source_type'] == 'contract' and not current['contract_id'] and data.get('contract_id'):
+            raise ValueError('请使用“补关联合同”预览并保存合同归属，沿用原收入和回款历史')
         project_id = int(data.get("project_id") or current["project_id"])
         project = _project_policy(conn, project_id)
         source_type = (
@@ -919,15 +945,17 @@ def update_settlement(settlement_id, data):
             )
         else:
             contract_id = int(data.get("contract_id") or current["contract_id"] or 0)
-            if not contract_id:
-                raise ValueError("正式合同工程必须选择合同项目分配")
-            _validate_contract_settlement(
-                conn,
-                contract_id,
-                project_id,
-                amount_minor,
-                settlement_id=settlement_id,
-            )
+            contract_id = contract_id or None
+            if contract_id:
+                _validate_contract_settlement(
+                    conn,
+                    contract_id,
+                    project_id,
+                    amount_minor,
+                    settlement_id=settlement_id,
+                )
+            elif not str(data.get('basis') or '').strip():
+                raise ValueError('合同待补的已确认业务需要填写结算或客户确认依据')
         invoiced_minor = conn.execute(
             """SELECT COALESCE(SUM(a.allocated_amount_minor), 0)
                FROM invoice_settlement_allocations a
@@ -974,6 +1002,8 @@ def update_settlement(settlement_id, data):
                 settlement_id,
             ),
         )
+        business_date = _date(data.get('business_date', current['business_date']), '业务形成日期', optional=True)
+        conn.execute('UPDATE settlements SET business_date=? WHERE id=?', (business_date, settlement_id))
         from services.advance_receipt_service import reconcile
         reconcile(conn, project_id, contract_id)
         return settlement_id

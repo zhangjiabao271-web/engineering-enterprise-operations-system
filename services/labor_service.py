@@ -54,29 +54,15 @@ def _normalize_work_log_data(data):
 
 
 def _resolve_project(conn, data):
-    key = (data.get("construction_site") or "").strip().casefold()
-    canonical = PROJECT_SITE_ALIASES.get(key)
-    if canonical:
-        row = conn.execute(
-            """SELECT p.id AS project_id, ps.id AS site_id
-               FROM projects p
-               LEFT JOIN project_sites ps
-                 ON ps.project_id=p.id AND ps.name=p.name AND ps.is_active=1
-               WHERE p.name=?
-               ORDER BY ps.id
-               LIMIT 1""",
-            (canonical,),
-        ).fetchone()
-        if not row:
-            raise ValueError(f"项目“{canonical}”不存在")
-        return row["project_id"], row["site_id"]
     project_id = int(data.get("project_id") or 0) or None
     site_id = int(data.get("project_site_id") or 0) or None
     if project_id:
         return project_id, site_id
     key = (data.get("construction_site") or "").strip().casefold()
+    key = PROJECT_SITE_ALIASES.get(key, key).strip().casefold()
     if not key:
         return None, None
+    # 别名也只展开为名称，不绕过普通名称的唯一项目校验。
     matches = set()
     for row in conn.execute(
         """SELECT p.id AS project_id, NULL AS site_id, p.project_code AS value
@@ -96,7 +82,9 @@ def _resolve_project(conn, data):
         if (row["value"] or "").strip().casefold() == key:
             matches.add((row["project_id"], row["site_id"]))
     project_ids = {item[0] for item in matches}
-    project_id = next(iter(project_ids)) if len(project_ids) == 1 else None
+    if len(project_ids) != 1:
+        return None, None
+    project_id = next(iter(project_ids))
     site_ids = {item[1] for item in matches if item[1] is not None}
     site_id = next(iter(site_ids)) if len(site_ids) == 1 else None
     return project_id, site_id
@@ -833,7 +821,15 @@ def get_worker_monthly_workdays(start_date, end_date):
                 month: float(days) for month, days in worker["months"].items()
             },
         }
-        for worker in by_worker.values()
+        for worker in sorted(
+            by_worker.values(),
+            key=lambda worker: (
+                worker["worker_status"] != "在职",
+                -worker["work_days"],
+                worker["worker_name"],
+                worker["worker_id"],
+            ),
+        )
     ]
     return {
         "start_date": start.isoformat(),

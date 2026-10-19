@@ -217,7 +217,7 @@ class CashProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "已有发票或回款"):
             self.contracts.void_settlements([settlement_id])
 
-    def test_contract_project_still_requires_contract_allocation(self):
+    def test_unsigned_business_requires_confirmation_basis(self):
         suffix = uuid4().hex[:8]
         project_id = self.projects.create_project(
             {
@@ -228,7 +228,7 @@ class CashProjectTests(unittest.TestCase):
                 "status": "进行中",
             }
         )
-        with self.assertRaisesRegex(ValueError, "必须选择合同项目分配"):
+        with self.assertRaisesRegex(ValueError, '确认依据'):
             self.contracts.create_settlement(
                 {
                     "project_id": project_id,

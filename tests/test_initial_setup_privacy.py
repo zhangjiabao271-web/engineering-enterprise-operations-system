@@ -59,6 +59,23 @@ class InitialSetupPrivacyTests(unittest.TestCase):
         self.assertIn(('supplier_data.db','private-artifact'), findings)
         self.assertNotIn('合成保密名称', repr(findings))
 
+    def test_release_guard_rejects_business_documents_binaries_and_export_dirs(self):
+        from scripts.check_release_privacy import check_files
+        root = self.path.parent
+        (root / 'output').mkdir(exist_ok=True)
+        (root / 'output' / 'export.md').write_text('普通文本', encoding='utf-8')
+        (root / '合同扫描件.pdf').write_bytes(b'%PDF-1.4\x00\x01binary')
+        (root / '现场照片.jpg').write_bytes(b'\xff\xd8\xff\xe0\x00\x10JFIF')
+        (root / 'app.ico').write_bytes(b'\x00\x01icon-binary')
+        findings = check_files(
+            root,
+            ['output/export.md', '合同扫描件.pdf', '现场照片.jpg', 'app.ico'],
+        )
+        self.assertIn(('output/export.md', 'private-artifact'), findings)
+        self.assertIn(('合同扫描件.pdf', 'private-artifact'), findings)
+        self.assertIn(('现场照片.jpg', 'binary-artifact'), findings)
+        self.assertNotIn(('app.ico', 'binary-artifact'), findings)
+
     def test_release_guard_reads_chinese_and_whitespace_paths_without_git_quoting(self):
         import subprocess
         from scripts.check_release_privacy import release_files

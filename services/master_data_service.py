@@ -273,7 +273,7 @@ def list_customers(keyword="", active_only=False, status="", year=None):
                        SUM(ra.allocated_amount_minor) AS amount_minor,
                        MAX(r.receipt_date) AS last_date
                 FROM receipt_allocations ra
-                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active'
+                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active' AND ra.status='active'
                 JOIN projects p ON p.id=ra.project_id
                 LEFT JOIN contracts c ON c.id=ra.contract_id
                 WHERE r.receipt_date>=? AND r.receipt_date<?
@@ -305,7 +305,7 @@ def list_customers(keyword="", active_only=False, status="", year=None):
                            AS customer_id,
                        SUM(ra.allocated_amount_minor) AS amount_minor
                 FROM receipt_allocations ra
-                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active'
+                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active' AND ra.status='active'
                 JOIN projects p ON p.id=ra.project_id
                 LEFT JOIN contracts c ON c.id=ra.contract_id
                 GROUP BY COALESCE(p.customer_partner_id, c.customer_partner_id)
@@ -431,7 +431,7 @@ def get_customer_business_detail(partner_id, year=None):
                 SELECT ra.project_id, SUM(ra.allocated_amount_minor) AS amount_minor,
                        MAX(r.receipt_date) AS last_date
                 FROM receipt_allocations ra
-                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active'
+                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active' AND ra.status='active'
                 JOIN projects p ON p.id=ra.project_id
                 LEFT JOIN contracts c ON c.id=ra.contract_id
                 WHERE COALESCE(p.customer_partner_id, c.customer_partner_id)=?
@@ -450,7 +450,7 @@ def get_customer_business_detail(partner_id, year=None):
             all_receipts AS (
                 SELECT ra.project_id, SUM(ra.allocated_amount_minor) AS amount_minor
                 FROM receipt_allocations ra
-                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active'
+                JOIN receipts r ON r.id=ra.receipt_id AND r.status='active' AND ra.status='active'
                 JOIN projects p ON p.id=ra.project_id
                 LEFT JOIN contracts c ON c.id=ra.contract_id
                 WHERE COALESCE(p.customer_partner_id, c.customer_partner_id)=?

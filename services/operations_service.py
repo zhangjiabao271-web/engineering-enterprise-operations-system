@@ -1,7 +1,8 @@
 from datetime import datetime
 
-from db.connection import db_read
+from db.connection import db_read, use_read_snapshot
 from services import project_profit_service
+from services.project_accounting_service import is_accountable as _is_accountable
 
 
 ACTIVE_PROJECT_STATUSES = {"筹备中", "进行中"}
@@ -12,47 +13,9 @@ def _percent(numerator, denominator):
 
 
 def _entry_facts(conn):
-    project_ids = [
-        row["id"] for row in conn.execute("SELECT id FROM projects").fetchall()
-    ]
-    facts = {
-        project_id: {
-            "contract_count": 0,
-            "settlement_count": 0,
-            "invoice_count": 0,
-            "receipt_count": 0,
-        }
-        for project_id in project_ids
-    }
-    sources = (
-        (
-            "contract_count",
-            """SELECT project_id, COUNT(*) AS fact_count
-               FROM contract_project_allocations
-               WHERE status='active' GROUP BY project_id""",
-        ),
-        (
-            "settlement_count",
-            """SELECT project_id, COUNT(*) AS fact_count
-               FROM settlements WHERE status='active' GROUP BY project_id""",
-        ),
-        (
-            "invoice_count",
-            """SELECT project_id, COUNT(*) AS fact_count
-               FROM sales_invoices WHERE status='active' GROUP BY project_id""",
-        ),
-        (
-            "receipt_count",
-            """SELECT ra.project_id, COUNT(DISTINCT ra.receipt_id) AS fact_count
-               FROM receipt_allocations ra
-               JOIN receipts r ON r.id=ra.receipt_id
-               WHERE r.status='active' GROUP BY ra.project_id""",
-        ),
-    )
-    for key, sql in sources:
-        for row in conn.execute(sql).fetchall():
-            facts[row["project_id"]][key] = row["fact_count"]
-    return facts
+    from services.project_accounting_service import get_accounting_map
+    with use_read_snapshot(conn):
+        return get_accounting_map()
 
 
 def _project_stage(summary, facts, project):
@@ -118,28 +81,27 @@ def get_project_guidance(project_id, summary=None):
     if project["id"] != project_id:
         raise ValueError("项目与经营汇总不匹配")
     with db_read() as conn:
-        facts = dict(conn.execute(
-            """SELECT
-                 (SELECT COUNT(*) FROM contract_project_allocations
-                  WHERE project_id=? AND status='active') AS contract_count,
-                 (SELECT COUNT(*) FROM settlements
-                  WHERE project_id=? AND status='active') AS settlement_count,
-                 (SELECT COUNT(*) FROM sales_invoices
-                  WHERE project_id=? AND status='active') AS invoice_count,
-                 (SELECT COUNT(DISTINCT ra.receipt_id)
-                  FROM receipt_allocations ra
-                  JOIN receipts r ON r.id=ra.receipt_id
-                  WHERE ra.project_id=? AND r.status='active') AS receipt_count""",
-            (project_id,) * 4,
-        ).fetchone())
+        facts = _entry_facts(conn)[project_id]
     stage_code, stage_label = _project_stage(summary, facts, project)
     gaps = _project_gaps(summary, facts, project)
     return {
         "stage_code": stage_code,
         "stage_label": stage_label,
+        "is_accountable": _is_accountable(project, facts),
         "gaps": gaps,
         "gap_text": _gap_text(gaps),
     }
+
+
+def get_accountability_map():
+    """Return ``{project_id: is_accountable}`` using the dashboard rule.
+
+    Let read-only views (for example the web profit board) reuse the same
+    decision as the dashboard instead of re-deriving it from amounts.
+    """
+    with db_read() as conn:
+        return {project_id: facts['is_accountable']
+                for project_id, facts in _entry_facts(conn).items()}
 
 
 def get_executive_overview(month=None):
@@ -194,13 +156,7 @@ def get_executive_overview(month=None):
         stage_code, stage_label = _project_stage(summary, facts, project)
         gaps = _project_gaps(summary, facts, project)
         is_active = project["status"] in ACTIVE_PROJECT_STATUSES
-        is_accountable = bool(
-            facts["settlement_count"]
-            and (
-                project["business_mode"] == "cash"
-                or facts["contract_count"]
-            )
-        )
+        is_accountable = _is_accountable(project, facts)
         projects.append(
             {
                 "project_id": project["id"],

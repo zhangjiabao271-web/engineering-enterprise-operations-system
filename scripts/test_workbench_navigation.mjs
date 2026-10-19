@@ -11,7 +11,7 @@ const projectChoice = {value: '', dispatchEvent() {}};
 let tables = [{scrollLeft: 0, scrollTop: 0}];
 let busy = false;
 const context = vm.createContext({
-  crypto: {randomUUID}, Event: class {},
+  crypto: {randomUUID}, Event: class {}, URLSearchParams,
   requestAnimationFrame: callback => frames.push(callback),
   main: {querySelectorAll: () => tables, getAttribute: () => busy ? 'true' : 'false'},
   editor: {open: false},
@@ -19,7 +19,7 @@ const context = vm.createContext({
     querySelector: selector => selector === '#navigation-back' ? button : projectChoice,
     addEventListener: (event, callback) => listeners.set(event, callback),
   },
-  history: {state: null, scrollRestoration: 'auto', replaceState(value) {this.state = value;}},
+  history: {state: null, scrollRestoration: 'auto', replaceState(value) {this.state = value;},go(delta) {this.delta=delta;}},
   location: {hash: '#home'},
   window: {scrollY: 0, scrollX: 0, scrollTo({top, left}) {this.scrollY = top; this.scrollX = left;}},
   state: {project: '', collection: '', page: 0, keyword: '', selectedAnalysis: null,
@@ -28,6 +28,11 @@ const context = vm.createContext({
 });
 vm.runInContext(readFileSync(new URL('../web_workbench/static/navigation.js', import.meta.url), 'utf8'), context);
 const navigation = vm.runInContext('WorkbenchNavigation', context);
+const canonical=vm.runInContext('canonicalWorkbenchHash',context);
+assert.equal(canonical('#profit'),'#projects?tab=profit');
+assert.equal(canonical('#compare?supplier=2'),'#offers?supplier=2&tab=compare');
+assert.equal(canonical('#cashflow'),'#funds?tab=cashflow');
+assert.equal(canonical('#contracts?customer=customer%3A1'),'#contracts?customer=customer%3A1');
 const flush = () => {while (frames.length) frames.shift()();};
 const render = reset => {
   const saved = navigation.prepare(reset);
@@ -51,6 +56,10 @@ assert.equal(button.title, '返回经营驾驶舱');
 context.state.page = 2;
 context.state.keyword = '合成项目';
 context.state.projectLedgerTab = 'history';
+context.state.contractYear = '2025';
+context.state.contractBusinessScope = 'contracts';
+context.state.contractStatus = 'active';
+context.state.contractEntity = '2';
 navigation.finish({position: null});
 context.window.scrollY = 540;
 tables[0].scrollLeft = 170;
@@ -62,6 +71,7 @@ listeners.get('click')();
 context.state.project = '7';
 context.state.collection = 'contracts';
 context.state.projectLedgerTab = 'all';
+context.state.contractYear = '';
 context.location.hash = '#contracts';
 context.history.state = null;
 context.window.scrollY = 0;
@@ -77,6 +87,10 @@ assert.equal(context.state.project, '');
 assert.equal(context.state.page, 2);
 assert.equal(context.state.keyword, '合成项目');
 assert.equal(context.state.projectLedgerTab, 'history');
+assert.equal(context.state.contractYear, '2025');
+assert.equal(context.state.contractBusinessScope, 'contracts');
+assert.equal(context.state.contractStatus, 'active');
+assert.equal(context.state.contractEntity, '2');
 assert.equal(context.window.scrollY, 540);
 assert.equal(tables[0].scrollLeft, 170);
 assert.equal(projectChoice.value, '');

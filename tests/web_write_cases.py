@@ -59,6 +59,10 @@ def operation_fixture(name, b):
         p=project(b,name);contract=b.save_record('contracts',{'name':'合成可取消分配合同','contract_no':'CLOSE-ALLOCATION','amount':'1000.01','customer_partner_id':1,'sign_date':'2026-10-03'})
         values['id']=b.save_record('allocations',{'contract_id':contract,'project_id':p,'amount':'1000.01'})
     elif name=='settlement_void':values['id']=b.save_record('settlements',{'project_id':1,'contract_id':1,'amount':'100.01','settlement_date':'2026-10-03','basis':'合成可作废结算'})
+    elif name=='settlement_contract':
+        b.entities.assign_records('contracts',[1],entity['id'],'合成确认主体')
+        values['id']=b.save_record('settlements',{'project_id':1,'amount':'100.01','settlement_date':'2026-10-03','basis':'合成合同待补业务'})
+        values['contract_id']=1
     elif name=='invoice_void':values['id']=1
     elif name=='receipt_allocation':
         values['id']=b.save_record('receipts',{'project_id':1,'contract_id':1,'settlement_id':1,'amount':'100.01','receipt_date':'2026-10-03'})
@@ -125,6 +129,7 @@ def operation_facts(name, b, values, conn):
     if name=='site_update':return scalar('SELECT name FROM project_sites WHERE id=?',(values['site_id'],)),'合成修改地点'
     if name=='site_deactivate':return scalar('SELECT is_active FROM project_sites WHERE id=?',(values['site_id'],)),0
     if name=='allocation_update':return scalar('SELECT allocated_amount_minor FROM contract_project_allocations WHERE id=?',(record_id,)),25000001
+    if name=='settlement_contract':return scalar('SELECT contract_id FROM settlements WHERE id=?',(record_id,)),values['contract_id']
     if name=='receipt_allocation':return scalar("SELECT SUM(allocated_amount_minor) FROM receipt_allocations WHERE receipt_id=? AND status='active'",(record_id,)),10001
     if name=='fund_verify':
         row=next(r for r in b.funds.list_sources('purchase',include_closed=True) if r['id']==values['source_id']);return [row['verified'],row['opening_settled_minor']],[True,1001]

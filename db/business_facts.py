@@ -30,8 +30,9 @@ COST_FACTS_SQL = """
 
 PROJECT_FINANCE_SQL = """
 WITH contract_totals AS (
- SELECT project_id,SUM(allocated_amount_minor) AS allocated_minor
- FROM contract_project_allocations WHERE status='active' GROUP BY project_id
+ SELECT a.project_id,SUM(a.allocated_amount_minor) AS allocated_minor
+ FROM contract_project_allocations a JOIN contracts c ON c.id=a.contract_id
+ WHERE a.status='active' AND c.status<>'void' GROUP BY a.project_id
 ), income_totals AS (
  SELECT project_id,SUM(amount_minor) AS settlement_minor
  FROM settlements WHERE status='active' GROUP BY project_id

@@ -1,0 +1,116 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url);
+const {chromium}=require('playwright');
+const [origin,folder,mode]=process.argv.slice(2);
+assert(/^http:\/\/127\.0\.0\.1:\d+$/.test(origin));
+const root=path.resolve(folder);
+assert(root.startsWith(path.resolve('qa')+path.sep));
+const fixture=JSON.parse(await fs.readFile(path.join(root,'fixture.json'),'utf8'));
+assert(fixture.synthetic&&fixture.url===origin);
+const output=path.join(root,'browser');await fs.mkdir(output,{recursive:true});
+const browser=await chromium.launch({...(process.env.WORKBENCH_BROWSER ? {executablePath:process.env.WORKBENCH_BROWSER} : {}),headless:true,args:['--no-first-run']});
+const page=await browser.newPage({viewport:{width:1440,height:1000},reducedMotion:'reduce'});
+const checks=[],errors=[];
+page.on('pageerror',error=>errors.push(error.message));
+const idle=()=>page.waitForFunction(()=>typeof state!=='undefined'&&main.getAttribute('aria-busy')==='false'&&!editorSubmitting);
+const close=async()=>{await page.locator('#editor-cancel').click();await page.waitForFunction(()=>!editor.open);};
+const pick=async(name,text)=>{
+  const input=page.locator(`select[name="${name}"]`).locator('..').locator('input');
+  await input.fill(text);await input.press('ArrowDown');await input.press('Enter');
+};
+const save=async()=>{await page.locator('input[name="confirmed"]').check();await page.locator('#editor-save').click();await page.waitForFunction(()=>!editor.open);await idle();};
+try{
+  if(mode==='inspect'){
+    await page.goto(origin+'/#projects');await idle();
+    assert.equal(await page.locator('.ledger-followup[data-ledger-kind="receipts"]').count(),0);
+    await page.screenshot({path:path.join(output,'project-ledger-final.png'),fullPage:false});
+    await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(output,'project-mobile-final.png'),fullPage:false});
+    await page.setViewportSize({width:1440,height:1000});await page.goto(origin+'/#finance');await idle();
+    await page.locator('[data-tab="receipts"]').click();await idle();await page.locator('#new-record').click();
+    await page.waitForSelector('#editor[open]');await pick('project_id','合成验收钢平台工程');
+    await page.locator('input[name="amount"]').fill('10');
+    await page.waitForFunction(()=>document.querySelector('.receipt-allocation-preview')?.textContent.includes('本次回款将抵扣'));
+    const preview=page.locator('.receipt-allocation-preview');
+    const bounds=await preview.boundingBox();assert(bounds.y+bounds.height<870);
+    await page.screenshot({path:path.join(output,'receipt-preview-final.png'),fullPage:false});
+    await close();assert.deepEqual(errors,[]);
+    console.log(JSON.stringify({inspection:'passed',previewFullyVisible:true,zeroPendingReminderHidden:true}));
+    await browser.close();process.exit(0);
+  }
+  await page.goto(origin+'/#projects');await idle();
+  assert(await page.evaluate(()=>state.boot.demo));
+  for(const label of ['合同约定额','已确认收入','已回款','已开票','未回款','累计成本','项目毛利'])
+    assert(await page.locator('#records th').getByText(label,{exact:true}).count());
+  await page.screenshot({path:path.join(output,'project-ledger.png'),fullPage:false});
+  await page.locator(`[data-ledger-id="${fixture.project}"][data-ledger-kind="profit"]`).click();
+  await page.waitForFunction(()=>editor.open&&document.querySelector('#editor-body')?.textContent.includes('175.00'));
+  assert.match(await page.locator('#editor-body').innerText(),/175\.00/);
+  await close();checks.push('seven project metrics and reconciled profit drill-down');
+
+  await page.goto(origin+'/#finance');await idle();
+  await page.locator('[data-tab="receipts"]').click();await idle();
+  await page.locator('#new-record').click();await page.waitForSelector('#editor[open]');
+  await pick('project_id','合成验收钢平台工程');
+  await page.waitForFunction(()=>form.elements.entity_id.value==='1');
+  assert.equal(await page.locator('select[name="allocation_scope"]').inputValue(),'project');
+  assert.equal(await page.locator('select[name="contract_id"]').isVisible(),false);
+  await page.locator('input[name="amount"]').fill('90');
+  await page.locator('input[name="receipt_date"]').fill('2026-10-16');
+  await page.waitForFunction(()=>document.querySelector('.receipt-allocation-preview')?.textContent.includes('合成后续合同'));
+  const preview=await page.locator('.receipt-allocation-preview').innerText();
+  assert.match(preview,/10\.00/);assert.match(preview,/60\.00/);assert.match(preview,/20\.00/);
+  await page.screenshot({path:path.join(output,'receipt-preview.png'),fullPage:false});
+  await save();
+  const data=await page.evaluate(id=>api('project_ledger?'+query({id})),fixture.project);
+  assert.equal(Number(data.summary.receipt_minor),18000);
+  assert(data.details.receipts.rows.length===2);
+  assert(data.details.outstanding.rows.length===1);
+  assert.equal(data.details.outstanding.rows[0].id,fixture.unsigned);
+  assert.equal(Number(data.summary.receivable_minor),2000);
+  checks.push('visible default project receipt preview and save consume oldest contracts in order');
+
+  await page.goto(origin+'/#contracts');await idle();
+  await page.locator('#contract-new').click();await page.waitForSelector('#editor[open]');
+  await page.locator('input[name="name"]').fill('合成补签合同');
+  await pick('customer_partner_id','合成验收建设单位');
+  await pick('project_id','合成验收钢平台工程');
+  await page.locator('select[name="entity_id"]').selectOption('1');
+  await page.locator('input[name="amount"]').fill('40');
+  await page.locator('input[name="sign_date"]').fill('2026-10-16');
+  await save();
+  const contracts=await page.evaluate(()=>api('rows?module=contracts'));
+  const signed=contracts.rows.find(row=>row.name==='合成补签合同');assert(signed);
+  const allocations=await page.evaluate(()=>api('rows?module=allocations'));
+  assert(allocations.rows.some(row=>row.contract_id===signed.id&&row.project_id===fixture.project&&Number(row.allocated_amount_minor)===4000));
+  checks.push('contract form automatically creates one project allocation');
+
+  await page.goto(origin+'/#projects');await idle();
+  await page.locator(`[data-ledger-id="${fixture.project}"][data-ledger-kind="settlements"]`).first().click();
+  await page.locator(`[data-ledger-link="${fixture.unsigned}"]`).click();
+  await page.waitForFunction(()=>editor.open&&document.querySelector('#dialog-title')?.textContent.includes('补关联合同'));
+  await pick('contract_id','合成补签合同');
+  await page.locator('textarea[name="reason"]').fill('合成核对补签原件');
+  await page.locator('#editor-save').click();
+  await page.waitForFunction(()=>editor.open&&document.querySelector('#dialog-title')?.textContent.includes('确认预览'));
+  await page.screenshot({path:path.join(output,'link-preview.png'),fullPage:false});
+  await page.locator('input[name="operation-confirmed"]').check();await page.locator('#editor-save').click();
+  await page.waitForFunction(()=>!editor.open);await idle();
+  const after=await page.evaluate(id=>api('project_ledger?'+query({id})),fixture.project);
+  assert.equal(after.project.unsigned_count,0);
+  assert.equal(Number(after.summary.settlement_minor),20000);assert.equal(Number(after.summary.receipt_minor),18000);
+  checks.push('later signed contract links original income and receipt without duplicate business');
+  await page.setViewportSize({width:390,height:844});await page.goto(origin+'/#projects');await idle();
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  await page.screenshot({path:path.join(output,'project-mobile.png'),fullPage:false});
+  checks.push('narrow screen confines horizontal overflow to the table');
+  assert.deepEqual(errors,[]);
+  await fs.writeFile(path.join(output,'report.json'),JSON.stringify({checks,errors},null,2));
+  console.log(JSON.stringify({checks,errors}));
+}catch(error){
+  await page.screenshot({path:path.join(output,'failure.png'),fullPage:false}).catch(()=>{});
+  await fs.writeFile(path.join(output,'report.json'),JSON.stringify({checks,errors,failure:error.stack},null,2));
+  throw error;
+}finally{await browser.close();}

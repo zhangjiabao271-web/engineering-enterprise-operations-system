@@ -50,7 +50,7 @@ SPECS = {
                    field('planned_start_date','计划开工','date'),field('planned_end_date','计划完工','date'),field('address','项目地址'),NOTES]},
     'contracts': {'title':'合同台账','list':contracts.list_contracts,'get':contracts.get_contract,'create':contracts.create_contract,'update':contracts.update_contract,
         'scope':True,'attachment':'contract','columns':[('contract_no','合同编号'),('name','合同名称'),('customer_name_snapshot','客户'),('entity_name','经营主体'),('ownership_source','归属依据'),('pricing_mode','计价方式'),('tax_inclusive_amount_minor','约定金额'),('settled_minor','已确认收入'),('status','合同状态')],
-        'fields':[field('name','合同名称',required=True),field('contract_no','合同编号'),select('customer_partner_id','客户档案','customers'),select('entity_id','经营主体（项目自动沿用）','entities'),
+        'fields':[field('name','合同名称',required=True),field('contract_no','合同编号'),select('customer_partner_id','客户档案','customers'),select('entity_id','经营主体（项目自动沿用）','entities'),select('project_id','归属项目（单项目自动关联，多项目可稍后分配）','projects'),
                   choice('contract_type','合同类型',contracts.CONTRACT_TYPES,'project'),choice('pricing_mode','计价方式',contracts.PRICING_MODES,'fixed'),AMOUNT,
                   field('control_limit','控制上限（可留空）','money'),field('sign_date','签约日期','date',required=True,default=TODAY),field('start_date','合同开始','date'),field('end_date','合同结束','date'),
                   select('parent_contract_id','补充协议所属合同','contracts'),choice('status','合同状态',{'draft':'草稿','active':'履约中','completed':'已完成'},'draft'),NOTES]},
@@ -58,8 +58,8 @@ SPECS = {
         'columns':[('contract_no','合同'),('project_name','项目'),('allocated_amount_minor','分配金额'),('notes','关联说明')],
         'fields':[select('contract_id','合同','contracts',True),PROJECT,AMOUNT,NOTES]},
     'settlements': {'title':'收入确认','list':contracts.list_settlements,'get':contracts.get_settlement,'create':contracts.create_settlement,'update':contracts.update_settlement,
-        'scope':True,'attachment':'settlement','columns':[('settlement_no','确认编号'),('settlement_date','确认日期'),('project_name','项目'),('contract_no','合同'),('amount_minor','确认金额'),('status','状态')],
-        'fields':[PROJECT,select('contract_id','合同（现金工程可空）','contracts'),AMOUNT,field('settlement_date','确认日期','date',required=True,default=TODAY),field('basis','确认依据',required=True),NOTES]},
+        'scope':True,'attachment':'settlement','columns':[('settlement_date','确认日期'),('project_name','项目'),('amount_minor','已确认金额'),('income_source','确认来源'),('contract_state','合同状态'),('contract_no','合同'),('settlement_no','确认编号')],
+        'fields':[PROJECT,select('contract_id','对应合同（未签可留空，后续补关联）','contracts'),AMOUNT,field('settlement_date','确认日期','date',required=True,default=TODAY),field('business_date','业务形成日期（可选，决定先收哪笔）','date'),field('basis','结算或客户确认依据',required=True),NOTES]},
     'suppliers': {'title':'供应商','list':partners.list_suppliers,'get':partners.get_supplier,'create':partners.create_supplier,'update':partners.update_supplier,
         'columns':[('name','供应商'),('category','主营类别'),('supplier_kind','类型'),('contact','联系人'),('contact_phone','电话'),('status','状态')],
         'fields':[field('name','供应商名称',required=True),field('category','主营类别'),choice('supplier_kind','供应商类型',partners.SUPPLIER_KIND_LABELS,'unclassified'),field('contact','联系人'),field('contact_phone','联系电话'),NOTES]},
@@ -74,7 +74,8 @@ SPECS = {
                   choice('price_basis','报价口径',{'exclusive':'未税价','inclusive':'含税价'},'exclusive'),field('tax_rate_percent','税率（%）','number',default='0'),NOTES]},
     'purchases': {'title':'采购管理','list':procurement.list_purchase_orders,'get':procurement.get_purchase_order,'scope':True,'attachment':'purchase','special':'purchase',
         'columns':[('purchase_date','采购日期'),('material_details','材料名称 / 规格'),('project_name','项目'),('supplier_name','供应商'),('total_amount_cents','含税总额'),('payment_status','付款状态'),('invoice_status','发票状态'),('order_no','采购单号')],
-        'fields':[PROJECT,select('supplier_id','供应商','suppliers'),field('merchant_name_snapshot','零星商户名称'),field('purchase_date','采购日期','date',required=True,default=TODAY),
+        'fields':[choice('allocation_method','项目归集方式',{'direct':'单项目归集','equal':'多项目均摊（耗材 / 共用材料）','unassigned':'待归集（稍后分配）'},'direct'),
+                  select('project_id','所属项目（单项目时必选）','projects'),select('supplier_id','供应商','suppliers'),field('merchant_name_snapshot','零星商户名称'),field('purchase_date','采购日期','date',required=True,default=TODAY),
                   choice('purchase_type','采购类型',['正式采购','零星采购'],'正式采购'),field('purchaser','经办人'),field('freight_amount','运费（元）','money',default='0'),
                   choice('payment_method','付款方式',['银行转账','对公转账','现金','微信','支付宝','员工垫付','未记录','待确认'],'待确认'),choice('payment_status','付款状态',['未确认','未付款','部分付款','已付款'],'未确认'),
                   choice('invoice_status','票据状态',['未确认','有发票','收据','无发票','未开票','已开票','无需发票'],'未确认'),NOTES]},
@@ -98,7 +99,7 @@ SPECS = {
                   field('invoice_date','开票日期','date',required=True,default=TODAY),field('buyer_name','购买方'),field('tax_rate_percent','税率（%）','number',default='0'),NOTES]},
     'receipts': {'title':'回款台账','list':finance.list_receipts,'get':finance.get_receipt,'create':finance.create_receipt,'update':finance.update_receipt,'scope':True,'attachment':'receipt',
         'columns':[('receipt_no','回款编号'),('receipt_date','回款日期'),('project_name','项目'),('entity_name','经营主体'),('payer_name_snapshot','付款人'),('amount_minor','到账金额'),('payment_method','收款方式'),('status','状态')],
-        'fields':[PROJECT,select('contract_id','合同','contracts'),select('settlement_id','对应收入确认','settlements'),select('invoice_id','对应发票（可空）','invoices'),select('entity_id','经营主体（未确认可留空）','entities'),AMOUNT,
+        'fields':[PROJECT,choice('allocation_scope','回款抵扣方式',{'project':'按项目先后顺序抵扣','contract':'指定合同或已确认业务'},'project'),select('contract_id','指定合同（合同待补业务可留空）','contracts'),select('settlement_id','对应收入确认','settlements'),select('invoice_id','对应发票（可空）','invoices'),select('entity_id','经营主体','entities'),AMOUNT,
                   field('receipt_date','实际到账日期','date',required=True,default=TODAY),field('payer_name','实际付款人'),choice('payment_method','收款方式',['银行转账','现金','微信','支付宝'],'银行转账'),
                   field('allow_advance','明确作为预收款（须人工核对）','checkbox',default=False),NOTES],
         'limitation':'回款更正和作废均保留历史；有关联资金流水或已结清的记录须先核对联动，不能直接绕过。'},
@@ -140,10 +141,10 @@ for module in ('suppliers','customers'):
     SPECS[module]['fields'].extend([field('contact_department','联系人部门'),field('contact_title','联系人职务'),field('contact_email','联系人邮箱'),field('contact_wechat','联系人微信')])
 
 NAVIGATION = [
-    ('经营决策',[('home','经营驾驶舱'),('profit','项目经营核算'),('governance','数据治理'),('entities','经营主体')]),
-    ('合同资金',[('contracts','合同与结算'),('cashflow','资料现金流分析'),('finance','开票与回款'),('funds','资金与计划'),('cost','成本台账')]),
+    ('经营决策',[('home','经营驾驶舱'),('governance','待办与核对'),('entities','经营主体')]),
+    ('合同资金',[('contracts','合同与结算'),('finance','开票与回款'),('funds','资金与计划'),('cost','成本台账')]),
     ('项目履约',[('projects','项目台账'),('construction','施工与验收'),('purchases','采购管理'),('labor','人工与工天')]),
-    ('供应链资料',[('suppliers','供应商'),('customers','客户档案'),('offers','材料与报价'),('compare','报价对比')]),
+    ('供应链资料',[('suppliers','供应商'),('customers','客户档案'),('offers','材料与报价')]),
     ('数据工具',[('assistant','经营助手'),('tools','数据导入导出')]),
 ]
 
@@ -204,22 +205,25 @@ def options(project_id=None):
     invoice_rows = finance.list_invoices(project_id=project_id)
     invoice_settlements = {}
     with db_read() as conn:
+        from services.entity_ownership import OwnershipResolver
+        resolver = OwnershipResolver(conn)
+        project_entities = {row['id']: resolver.project(row['id'])['entity_id'] for row in project_rows}
         for row in conn.execute('''SELECT a.invoice_id,a.settlement_id FROM invoice_settlement_allocations a
             JOIN settlements s ON s.id=a.settlement_id WHERE s.status='active' '''):
             invoice_settlements.setdefault(row['invoice_id'], []).append(row['settlement_id'])
     return {
         'projects':[{'value':row['id'],'label':f'{row["name"]} · {row["project_code"]}',
-                     'business_mode':row['business_mode']} for row in project_rows],
+                     'business_mode':row['business_mode'],'entity_id':project_entities[row['id']]} for row in project_rows],
         'active_projects':items([r for r in project_rows if r['status'] in ('进行中','筹备中')], lambda r:f'{r["name"]} · {r["project_code"]}'),
         'contracts':[{'value':row['id'],'label':f'{row["contract_no"]} · {row["name"]}',
-                      'income_mode':row['income_mode']} for row in contract_rows],
+                      'income_mode':row['income_mode'],'customer_partner_id':row['customer_partner_id']} for row in contract_rows],
         'customers':items(partners.list_customers(), lambda r:r.get('legal_name') or r.get('name','')),
         'suppliers':items(partners.list_suppliers(), lambda r:r['name']),
         'offers':[{'value':row['id'], 'label':offer_option_label(row), 'supplier_id':row['supplier_id']}
                   for row in partners.list_supplier_offers()],
         'workers':items(worker_rows, lambda r:r['name']),
         'active_workers':items([r for r in worker_rows if r['status']=='在职'], lambda r:r['name']),
-        'settlements':[{'value':row['id'],'label':row['settlement_no'],
+        'settlements':[{'value':row['id'],'label':f"{row['settlement_date']} · {row['contract_state']} · ¥{row['amount_minor']/100:,.2f} · {row['settlement_no']}",
                         'project_id':row['project_id'],'contract_id':row['contract_id']}
                        for row in settlement_rows],
         'invoices':[{'value':row['id'],'label':row['invoice_no'],
@@ -258,17 +262,28 @@ def prepare_purchase_items(items):
     return prepared
 
 
-def purchase_preview(items, freight='0'):
+def purchase_preview(items, freight='0', *, allocation_method=None, project_ids=None):
     """Reuse authoritative item math without creating or updating a ledger row."""
     amounts = [procurement.calculate_purchase_item_amounts({}, item)
                for item in prepare_purchase_items(items)]
     freight_cents = money_input(freight)
     material = sum(row['line_amount_cents'] for row in amounts)
-    return {'items': amounts, 'material_amount_cents': material,
+    allocations = []
+    if allocation_method == 'equal':
+        allocations = procurement.build_equal_allocation_plan(material + freight_cents, project_ids)
+        with db_read() as conn:
+            projects_by_id = {row['id']: dict(row) for row in conn.execute(
+                'SELECT id, name, project_code FROM projects')}
+        for line in allocations:
+            project = projects_by_id.get(line['project_id'])
+            if not project:
+                raise ValueError('部分分摊项目不存在，请刷新后重试')
+            line.update(project_name=project['name'], project_code=project['project_code'])
+    return {'items': amounts, 'material_amount_cents': material, 'allocations': allocations,
             'freight_amount_cents': freight_cents, 'total_amount_cents': material + freight_cents}
 
 
-def rows(module, project_id=None, keyword=''):
+def rows(module, project_id=None, keyword='', supplier_id=None, customer_id=None, year=None):
     if module not in SPECS:
         raise ValueError('未知业务模块')
     spec = SPECS[module]
@@ -303,6 +318,21 @@ def rows(module, project_id=None, keyword=''):
         result = [r for r in result if r.get('project_id') == project_id]
     if keyword and module != 'purchases':
         result = [r for r in result if keyword.casefold() in json.dumps(r, ensure_ascii=False, default=str).casefold()]
+    if supplier_id:
+        if module not in ('purchases', 'offers', 'input_invoices'):
+            raise ValueError('当前台账不支持供应商范围')
+        result = [row for row in result if row.get('supplier_id') == int(supplier_id)]
+    if customer_id:
+        if module != 'projects':
+            raise ValueError('请从客户概览进入项目台账查看客户范围')
+        from services.customer_business_scope import project_ids_for_customer
+        ids = project_ids_for_customer(customer_id)
+        result = [row for row in result if row['id'] in ids]
+    if year:
+        date_key = {'purchases':'purchase_date', 'input_invoices':'invoice_date'}.get(module)
+        if not date_key or len(str(year)) != 4 or not str(year).isdigit():
+            raise ValueError('当前台账不支持此业务年度筛选')
+        result = [row for row in result if str(row.get(date_key) or '')[:4] == str(year)]
     return result
 
 
@@ -326,6 +356,14 @@ def get_record(module, record_id):
                 row['_receipt_income_owned'] = bool(conn.execute('''SELECT 1
                     FROM receipt_confirmed_settlements l JOIN settlements s ON s.id=l.settlement_id
                     WHERE l.receipt_id=? AND s.status='active' ''', (record_id,)).fetchone())
+            if module == 'contracts':
+                links = contracts.list_allocations(contract_id=record_id)
+                row['project_id'] = links[0]['project_id'] if len(links) == 1 else None
+                row['_project_linked'] = bool(links)
+    if module == 'purchases':
+        allocations = procurement.get_purchase_allocations(record_id)
+        row = {**row, 'allocations': allocations,
+               'project_ids': [line['project_id'] for line in allocations]}
     result = dict(row)
     result['_version'] = digest(json.loads(json.dumps(row, ensure_ascii=False, default=lambda value: sorted(value) if isinstance(value,set) else str(value))))
     aliases = {'allocated_amount_minor':'amount','amount_minor':'amount','tax_inclusive_amount_minor':'amount','control_limit_minor':'control_limit',
@@ -364,6 +402,9 @@ def save_record(module, data, record_id=None, expected=None):
         if not expected or previous['_version'] != expected:
             raise ValueError('记录版本已变化，请刷新并核对后再修改；原输入未提交')
     values = {**previous, **data}
+    if module == 'receipts' and not record_id and 'allocation_scope' not in data:
+        values['allocation_scope'] = 'contract' if any(data.get(key) for key in
+            ('contract_id','settlement_id','invoice_id','settlement_allocations')) else 'project'
     if module=='costs' and record_id and 'project_id' in data and (int(data['project_id']) if data['project_id'] else None) != previous.get('project_id'):
         raise ValueError('费用项目分摊请通过成本归集操作调整；本次未改变费用或项目关联')
     for item in schema()[module]['fields']:
@@ -438,17 +479,16 @@ def save_record(module, data, record_id=None, expected=None):
     return spec['create'](values)
 
 
-def dashboards(view, project_id=None, month=None):
+def dashboards(view, project_id=None, month=None, year=None, customer_id=None):
+    if view in ('customers', 'suppliers'):
+        from services.partner_overview_service import get_overview
+        return get_overview(view, year=year, project_id=project_id)
     if view == 'home':
         from services.cockpit_service import get_overview
         return get_overview(project_id, month)
     if view == 'profit':
-        if project_id:
-            result = profit.get_project_summary(project_id)
-            return {'projects':[{'id': project_id, 'project_name':result['project']['name'], **result}], 'details':result}
-        result = profit.get_portfolio_summary()
-        result['projects'] = [{'id':r['project']['id'], 'project_name':r['project']['name'], **r} for r in result['projects']]
-        return result
+        from services.project_accounting_service import get_profit_dashboard
+        return get_profit_dashboard(project_id, customer_id=customer_id)
     if view == 'finance':
         return finance.get_finance_dashboard(project_id)
     if view == 'governance':

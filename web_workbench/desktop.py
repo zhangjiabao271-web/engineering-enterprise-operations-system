@@ -69,6 +69,22 @@ def single_window(database):
         kernel.CloseHandle(handle)
 
 
+def disable_native_autofill(window):
+    """Business selectors own their suggestions, not the browser's saved contacts."""
+    control = window.native.webview
+
+    def configure():
+        settings = control.CoreWebView2.Settings
+        settings.IsGeneralAutofillEnabled = False
+        settings.IsPasswordAutosaveEnabled = False
+
+    if control.InvokeRequired:
+        from System import Action
+        control.Invoke(Action(configure))
+    else:
+        configure()
+
+
 def run_window(webview, *, read_only, demo, profile):
     from web_workbench.runtime import local_server
     webview.settings['ALLOW_DOWNLOADS'] = True
@@ -81,10 +97,11 @@ def run_window(webview, *, read_only, demo, profile):
         elif read_only:
             title += ' · 只读'
         width, height = window_size()
-        webview.create_window(title, server.origin, width=width, height=height,
+        window = webview.create_window(title, server.origin, width=width, height=height,
                               min_size=(min(960, width), min(680, height)), background_color='#F5F5F7',
                               maximized=True, text_select=True,
                               js_api=PresentationPreferences(profile / 'ui-preferences.json'))
+        window.events.before_load += disable_native_autofill
         webview.start(gui='edgechromium', debug=False, private_mode=False,
                       storage_path=str(profile), icon=str(ROOT / 'app.ico'))
 

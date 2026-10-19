@@ -2,6 +2,8 @@
 
 // Names for service-only facts that are not part of an editable form schema.
 const factLabels = {
+  gross_profit_minor:'账面毛利',confirmed_gross_profit_minor:'已确认毛利',pending_gross_profit_minor:'待完善项目账面差额',
+  accounting_status:'核算状态',accounting_note:'核算依据',accountable_count:'已可核算项目',pending_count:'待完善项目',
   receipt_income_impact:'回款关联收入影响',income_history:'自动补足收入更正历史',
   receipt_income_action:'关联收入处理',receipt_income_reason:'更正说明',
   materials:'材料名称', material_details:'材料 / 规格',
@@ -10,6 +12,8 @@ const factLabels = {
   before_entity:'原经营主体', after_entity:'确认后经营主体', change:'归属变化',
   contract_ids:'关联合同编号', contract_names:'关联合同', project_ids:'关联项目编号', updated_count:'本次确认笔数',
   year:'业务年度', month:'月份', date:'日期', period:'月份', period_start:'期间开始', period_end:'期间结束',
+  business_date:'业务形成日期',receivable_date:'应收抵扣顺序日期',income_source:'确认来源',contract_state:'合同状态',
+  allocation_scope:'回款抵扣方式',contract_amount_minor:'整份合同金额',cost_minor:'累计成本',unsigned_count:'待补合同业务笔数',unsigned_minor:'待补合同业务金额',
   yearly_business_minor:'年度业务额（已确认收入）', yearly_invoice_minor:'年度已开票',
   yearly_receipt_minor:'年度实际回款', current_receivable_minor:'当前未回款',
   total_business_minor:'累计已确认收入', total_receipt_minor:'累计已回款', latest_business_date:'最近业务日期',
@@ -124,6 +128,7 @@ const factLabels = {
 const factValueLabels = {
   income_mode:{manual:'人工确认收入',invoice:'按开票确认收入',receipt:'按实际回款确认收入'},
   method:{direct:'单项目归集',equal:'多项目均摊',manual:'手工金额分摊',unassigned:'待归集'},
+  allocation_scope:{project:'按项目先后顺序抵扣',contract:'指定合同或已确认业务'},
   allocation_method:{direct:'单项目归集',equal:'多项目均摊',manual:'手工金额分摊',unassigned:'待归集'},
   allocation_status:{assigned:'已归集',unassigned:'待归集',partial:'部分归集'},
   settlement_mode:{quantity:'按数量',weight:'按过磅重量',total:'按整批总额'},
@@ -137,6 +142,7 @@ const factValueLabels = {
 };
 
 function knownFieldLabel(key, module='') {
+  if (module==='purchases' && key==='allocations') return '项目成本分摊明细';
   if (/[\u3400-\u9fff]/.test(key)) return key;
   const schema=state.boot?.schema || {};
   const fromSchema = definition => definition?.fields?.find(field=>field.name===key)?.label ||

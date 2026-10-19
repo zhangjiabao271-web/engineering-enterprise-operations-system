@@ -62,8 +62,10 @@ class QueryToolsTests(unittest.TestCase):
                 ALTER TABLE projects ADD COLUMN invoice_policy TEXT;
                 ALTER TABLE receipts ADD COLUMN automatic_income_allocation INTEGER DEFAULT 0;
                 ALTER TABLE receipts ADD COLUMN amount_minor INTEGER;
+                ALTER TABLE contracts ADD COLUMN status TEXT DEFAULT 'active';
                 UPDATE receipts SET amount_minor=40000;
-                CREATE TABLE contract_project_allocations(project_id INTEGER, allocated_amount_minor INTEGER,status TEXT);
+                CREATE TABLE contract_project_allocations(project_id INTEGER, contract_id INTEGER,
+                    allocated_amount_minor INTEGER,status TEXT);
             ''')
 
     def query(self, dataset='labor', **kwargs):

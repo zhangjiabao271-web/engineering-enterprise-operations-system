@@ -1,0 +1,61 @@
+/* Existing light workbench tokens; no new global component or theme rules. */
+.partner-overview { min-width:0; color:var(--ink); }
+.partner-overview .metrics { margin-bottom:20px; }
+.partner-overview .metric strong { overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.partner-overview .metric small { display:block; white-space:normal; }
+.partner-overview .partner-filters { align-items:end; flex-wrap:wrap; }
+.partner-filters label { display:grid; gap:4px; min-width:120px; }
+.partner-filters .partner-search { flex:1; min-width:200px; }
+.partner-overview .partner-scope { margin:8px 0 12px; color:var(--muted); font-size:12px; }
+.partner-overview #partner-records { width:100%; min-width:1120px; }
+.partner-overview td { vertical-align:top; white-space:normal; overflow-wrap:anywhere; overflow:visible; text-overflow:clip; }
+.partner-overview td small { display:block; font-size:12px; white-space:normal; line-height:1.55; }
+.partner-overview td[data-column=name] { min-width:160px; }
+.partner-overview td[data-column=shares] { min-width:180px; }
+.partner-overview td[data-column=recent] { min-width:180px; }
+.partner-overview td[data-column=contact] { min-width:130px; }
+.partner-overview .partner-name,.partner-overview .partner-text { border:0; background:transparent; padding:4px 0; color:var(--blue); text-align:left; white-space:normal; }
+.partner-overview .partner-name { font-weight:600; font-size:14px; }
+.partner-overview .partner-money { display:inline-block; white-space:nowrap; font-family:"Segoe UI Semibold","Segoe UI",sans-serif; font-variant-numeric:tabular-nums; }
+.partner-overview .partner-text { display:block; font-size:12px; }
+.partner-overview .partner-muted { color:var(--muted); font-size:12px; }
+.partner-overview .partner-share { margin-bottom:8px; font-size:12px; }
+.partner-share-track { display:block; width:100%; height:6px; margin:4px 0; border:0; }
+.partner-share-track::-webkit-meter-bar { background:var(--line); border:0; border-radius:4px; }
+.partner-share-track::-webkit-meter-optimum-value { background:var(--blue); border-radius:4px; }
+.partner-share-track::-moz-meter-bar { background:var(--blue); border-radius:4px; }
+.partner-overview .table-actions { white-space:normal; min-width:140px; }
+.partner-overview .table-actions a { display:inline-block; margin:4px 8px 4px 0; }
+.partner-overview .partner-boundary { padding:16px; background:var(--surface); border:1px solid var(--line); border-radius:12px; }
+.partner-boundary summary { cursor:pointer; font-weight:600; }
+.partner-boundary p { margin-top:8px; color:var(--muted); font-size:13px; }
+.partner-overview button:active { transform:none; }
+.partner-overview button:focus-visible,.partner-overview a:focus-visible,.partner-overview summary:focus-visible { outline:3px solid var(--blue); outline-offset:2px; }
+
+@media (max-width:760px) {
+  .partner-overview .page-head,.partner-overview .head-actions { flex-wrap:wrap; }
+  .partner-overview .page-head>div { min-width:0; width:100%; }
+  .partner-overview .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .partner-overview .metric { min-width:0; padding:12px; }
+  .partner-overview .metric strong { font-size:22px; }
+  .partner-overview .filter-bar { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+  .partner-overview .partner-filters label,.partner-filters .partner-search { min-width:0; }
+  .partner-filters .partner-search { grid-column:1/-1; }
+  .partner-overview input,.partner-overview select { font-size:16px; }
+  .partner-overview .partner-tabs { flex-wrap:wrap; }
+  .partner-overview .table-wrap { overflow:visible; border:0; background:transparent; }
+  .partner-overview #partner-records { display:block; min-width:0; width:100%; }
+  /* Keep semantic column headers for assistive technology, not display:none. */
+  .partner-overview #partner-records thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+  .partner-overview #partner-records tbody { display:grid; gap:16px; }
+  .partner-overview #partner-records tr { display:block; border:1px solid var(--line); border-radius:12px; padding:12px; background:var(--surface); }
+  .partner-overview #partner-records td { display:block; min-width:0; max-width:none; width:100%; border:0; padding:8px 0; text-align:left; }
+  .partner-overview #partner-records td::before { content:attr(data-label); display:block; color:var(--muted); font-size:12px; margin-bottom:4px; }
+  .partner-overview button,.partner-overview select,.partner-overview .table-actions a,.partner-overview .partner-money,.partner-overview td>a { min-height:44px; }
+  .partner-overview .partner-money,.partner-overview td>a { display:inline-flex; align-items:center; }
+  .partner-overview .table-actions { display:flex !important; flex-wrap:wrap; gap:8px; }
+  .partner-overview .table-actions::before { width:100%; }
+  .partner-overview .table-actions a { display:inline-flex; align-items:center; }
+  .partner-overview .partner-share { max-width:100%; }
+  .partner-overview .pagination { flex-wrap:wrap; }
+}

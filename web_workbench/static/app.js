@@ -148,7 +148,7 @@ function fieldHTML(field, value, options = state.boot.options, prefix = '') {
     const searchable = ['projects','active_projects','offers','suppliers','customers','workers','active_workers','contracts'].includes(field.source);
     input = `<select name="${esc(name)}" ${searchable ? 'data-search' : ''} ${required}>${optionList(items,value)}</select>`;
   } else if (field.kind === 'textarea') {
-    input = `<textarea name="${esc(name)}" ${required}>${esc(value)}</textarea>`;
+    input = `<textarea name="${esc(name)}" autocomplete="off" ${required}>${esc(value)}</textarea>`;
   } else if (field.name === 'work_days') {
     const days = ['0.5','1'];
     if (value !== '' && !days.includes(String(value))) days.push(String(value));
@@ -156,7 +156,7 @@ function fieldHTML(field, value, options = state.boot.options, prefix = '') {
   } else {
     const type = field.kind === 'date' ? 'date' : ['money','number','integer'].includes(field.kind) ? 'number' : 'text';
     const step = field.kind === 'integer' ? '1' : 'any';
-    input = `<input name="${esc(name)}" type="${type}" step="${step}" value="${esc(value)}" ${required}>`;
+    input = `<input name="${esc(name)}" type="${type}" autocomplete="off" step="${step}" value="${esc(value)}" ${required}>`;
   }
   return `<label class="form-field ${field.kind === 'textarea' ? 'wide' : ''}"><span class="field-label">${label}</span>${input}</label>`;
 }
@@ -364,7 +364,7 @@ async function editRecord(module, id, defaults={}) {
   if (id) fields = fields.map(field=>({...field,preserve_current:true}));
   const body = (module==='receipts'?notice('经营主体在此确认，不必另去其他页面维护。收入、发票抵扣和真实资金仍分别核算；已关联到账流水的回款，不能单独改金额、日期或收款方式。'):'') +
     `<div class="form-grid">${fields.map(field => fieldHTML(field,record[field.name] ?? (field.name === 'project_id' ? state.project : undefined),options)).join('')}</div>` +
-    (module === 'purchases' ? '<div id="purchase-items"></div><button type="button" id="add-item">添加材料明细</button><output id="purchase-preview" class="purchase-preview" aria-live="polite"></output>' : '') +
+    (module === 'purchases' ? purchaseAllocationHTML(record,options) + '<div id="purchase-items"></div><button type="button" id="add-item">添加材料明细</button><output id="purchase-preview" class="purchase-preview" aria-live="polite"></output>' : '') +
     (!id && ['purchases','worklogs'].includes(module) ? '<label class="confirm-check"><input name="continue-entry" type="checkbox">保存后继续录入（保留项目、日期等共同条件，金额和材料重新填写）</label>' : '') +
     (module==='receipts' && id && record._receipt_income_owned ? '<section id="receipt-income-impact" aria-live="polite"></section>' : '') +
     '<label class="confirm-check"><input name="confirmed" type="checkbox" required>我已核对日期、金额、项目归属及业务依据，确认保存本笔记录。</label>';
@@ -380,6 +380,7 @@ async function editRecord(module, id, defaults={}) {
     if (module === 'contracts' && values.pricing_mode === 'actual') values.amount = '0';
     if (module === 'purchases') {
       values.items = collectPurchaseItems();
+      Object.assign(values,collectPurchaseAllocation());
     }
     const continueEntry = form.elements.namedItem('continue-entry')?.checked;
     await api('save',{module,id,expected:record._version,record:values,form_ticket:ticket.token,confirmed:form.elements.confirmed.checked});
@@ -389,8 +390,14 @@ async function editRecord(module, id, defaults={}) {
     await refreshOptions();
     await renderRoute(false);
     if (continueEntry) {
+      if (module === 'purchases') {
+        const keep = ['allocation_method','project_ids','project_id','supplier_id','merchant_name_snapshot','purchase_date','purchase_type','purchaser','payment_method','payment_status','invoice_status'];
+        await editRecord(module,null,Object.fromEntries(keep.map(name => [name,values[name]])));
+        form.elements.namedItem('continue-entry').checked=true;
+        return;
+      }
       await editRecord(module);
-      const keep = module==='purchases'?['project_id','supplier_id','merchant_name_snapshot','purchase_date','purchase_type','purchaser','payment_method','payment_status','invoice_status']:['project_id','construction_site','work_date','work_type'];
+      const keep = ['project_id','construction_site','work_date','work_type'];
       for (const name of keep) {
         const input = form.elements.namedItem(name);
         if (input) {input.value=values[name]; input.dispatchEvent(new Event('choice-sync'));}
@@ -400,6 +407,7 @@ async function editRecord(module, id, defaults={}) {
     }
   },{cancel:()=>api('write_discard',{token:ticket.token})});
   if (module==='receipts' && id && record._receipt_income_owned) bindReceiptIncomePreview(record);
+  if (module==='offers') bindOfferSupplierTax(record);
   if (module === 'purchases') {
     const host = document.querySelector('#purchase-items');
     (record.items?.length ? record.items : [{}]).forEach(item => host.append(purchaseItem(item,options)));
@@ -409,6 +417,7 @@ async function editRecord(module, id, defaults={}) {
     supplier.addEventListener('change',updateOffers);
     supplier.addEventListener('choice-sync',updateOffers);
     supplier.closest('.search-choice').querySelector('input').addEventListener('input',updateOffers);
+    bindPurchaseAllocation();
     initializePurchasePreview();
   }
   const project = form.elements.namedItem('project_id');
@@ -419,8 +428,21 @@ async function editRecord(module, id, defaults={}) {
   if(['settlements','invoices','receipts'].includes(module))bindFinancialChoices(options,record);
   else if(module==='worklogs')bindWorkdaySite();
   else if(project)bindEditorChoices([project],linkedChoices,() => api('options?' + query({project_id:project.value})));
-  if(module==='contracts')bindContractPricing(Boolean(id));
+  if(module==='contracts'){
+    bindContractPricing(Boolean(id));
+    const target=form.elements.namedItem('project_id');
+    if(id){
+      target.disabled=true;target.dispatchEvent(new Event('choice-sync'));
+      target.closest('label').insertAdjacentHTML('beforeend','<small>已有项目关系通过项目关联／分配维护。</small>');
+    }else target.closest('label').insertAdjacentHTML('beforeend','<small>选一个项目，保存时自动全额关联；据实合同建立据实关系。涉及多个项目时可留空，之后分别分配。</small>');
+  }
+  if(module==='settlements'){
+    form.elements.contract_id.closest('label').insertAdjacentHTML('beforeend','<small>已认可价款可先登记，合同签好后使用“补关联合同”；不会重复增加收入。</small>');
+    form.elements.business_date.closest('label').insertAdjacentHTML('beforeend','<small>留空时：已签合同按签约日期，合同待补业务按确认日期排序。确认日期仍用于收入统计。</small>');
+  }
   if(module==='receipts' && id){
+    const scope=form.elements.namedItem('allocation_scope');
+    if(scope){scope.disabled=true;scope.dispatchEvent(new Event('choice-sync'));}
     for(const name of ['project_id','contract_id']){
       const choice=form.elements.namedItem(name);
       choice.disabled=true;
@@ -429,6 +451,7 @@ async function editRecord(module, id, defaults={}) {
     }
   }
   if (module === 'receipts') {
+    bindReceiptAllocationPreview(record);
     const payer = form.elements.payer_name;
     const contract = form.elements.contract_id;
     let automatic = '';
@@ -470,21 +493,24 @@ function downloadCSV(rows, columns, name) {
 }
 
 const groups = {contracts:['contracts','allocations','settlements'], finance:['invoices','receipts','collection','historical','input_invoices'],
-  funds:['accounts','plans','transactions'], cost:['cost_ledger','costs'],labor:['worklogs','workers','monthly']};
+  projects:['projects','profit'], offers:['offers','compare'],
+  funds:['accounts','plans','transactions','cashflow'], cost:['cost_ledger','costs'],labor:['worklogs','workers','monthly']};
 
 async function renderCollection(module, parent) {
   if (module === 'projects') return renderProjectLedger();
+  if (module === 'contracts') return renderContractLedger();
   state.collection = module;
   const spec = state.boot.schema[module];
   const scoped = spec.scope || module === 'worklogs';
-  const response = await api('rows?' + query({module,project_id:scoped ? state.project : '',keyword:state.keyword || ''}));
+  const context=workbenchRecordScope(module);
+  const response = await api('rows?' + query({module,project_id:scoped ? state.project : '',keyword:state.keyword || '',...context.params}));
   const rows = response.rows;
   state.currentRows = rows;
   state.page = Math.max(0,Math.min(state.page,Math.max(0,Math.ceil(rows.length/40)-1)));
   const title = parent ? ({contracts:'合同与结算',finance:'开票与回款',funds:'资金与计划',cost:'成本台账',labor:'人工与工天'}[parent] || spec.title) : spec.title;
   main.innerHTML = header(title, scoped ? '按项目范围查看，金额与状态取自现有业务事实。' : '全公司基础档案；项目筛选不改变本页档案范围。',
     `${module==='worklogs' && !state.boot.read_only ? '<button class="primary" id="batch-worklogs">批量登记工天</button>' : ''}${spec.can_create && !state.boot.read_only ? `<button class="${module==='worklogs'?'':'primary'}" id="new-record">${module==='worklogs'?'单人登记':'新增'+esc(spec.title)}</button>` : ''}<button id="export-csv">导出台账</button>`) +
-    (groups[parent] ? tabsHTML(parent,module) : '') + (spec.limitation ? notice(spec.limitation,'warning') : '') +
+    (groups[parent] ? tabsHTML(parent,module) : '') + context.html + (spec.limitation ? notice(spec.limitation,'warning') : '') +
     `<div class="filter-bar"><input id="record-search" placeholder="搜索名称、编号或备注" value="${esc(state.keyword || '')}" aria-label="搜索台账"><button id="search-records">查询</button><span class="grow"></span><small>${rows.length} 条记录 · ${scoped && state.project ? '当前项目' : '全公司口径'}</small></div>` +
     table(rows.slice(state.page*40,state.page*40+40),spec.columns,row => recordActions(module,row),'records',module) +
     `<div class="pagination"><span>第 ${state.page+1} 页 / ${Math.max(1,Math.ceil(rows.length/40))} 页</span><button id="prev-page" ${state.page === 0 ? 'disabled' : ''}>上一页</button><button id="next-page" ${(state.page+1)*40 >= rows.length ? 'disabled' : ''}>下一页</button></div>`;
@@ -501,14 +527,15 @@ async function renderCollection(module, parent) {
 }
 
 function tabsHTML(parent, selected) {
-  const titles = {collection:'回款跟进',cost_ledger:'完整成本来源',monthly:'月度工天矩阵'};
-  return `<div class="tabs" role="tablist">${groups[parent].map(key => `<button data-tab="${key}" class="${key === selected ? 'active' : ''}" role="tab" aria-selected="${key === selected}">${esc(state.boot.schema[key]?.title || titles[key])}</button>`).join('')}</div>`;
+  const titles = {projects:'经营台账',profit:'核算分析',offers:'材料报价',compare:'报价对比',cashflow:'资料分析',collection:'回款跟进',cost_ledger:'完整成本来源',costs:'其他费用记录',monthly:'月度工天矩阵'};
+  return `<div class="tabs" role="tablist" aria-label="业务视图">${groups[parent].map(key => `<button data-tab="${key}" class="${key === selected ? 'active' : ''}" role="tab" aria-selected="${key === selected}">${esc(titles[key] || state.boot.schema[key]?.title)}</button>`).join('')}</div>`;
 }
 
 function bindTabs(parent) {
   main.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => {
-    state.page=0;state.keyword='';state.collection=button.dataset.tab;
-    safe(() => renderRoute(false));
+    const params=new URLSearchParams(location.hash.split('?')[1] || '');
+    params.set('tab',button.dataset.tab);
+    location.hash = parent+'?'+params.toString();
   });
 }
 
@@ -549,6 +576,10 @@ function bindRecordActions(module) {
 }
 
 async function renderGroup(parent,module) {
+  state.collection=module;
+  if (module==='profit') return renderDashboard('profit');
+  if (module==='compare') return renderCompare();
+  if (module==='cashflow') return renderCashflow();
   if(module==='monthly') return renderMonthlyView();
   if (module === 'cost_ledger') {
     return renderCostLedger(parent,module);
@@ -566,23 +597,25 @@ async function renderGroup(parent,module) {
 }
 
 async function renderDashboard(view) {
-  const data = await api('dashboard?' + query({view,project_id:state.project}));
+  const context=view==='profit'?workbenchRecordScope('projects'):{params:{},html:''};
+  const data = await api('dashboard?' + query({view,project_id:state.project,...context.params}));
   if (view === 'home') return renderCockpit(data);
-  const titles = {home:'经营驾驶舱',profit:'项目经营核算',governance:'数据治理'};
+  const titles = {profit:'项目台账',governance:'待办与核对'};
   let summary = data.summary;
   if (view === 'profit') {
-    const add = key => data.projects.reduce((total,row) => total+BigInt(row[key] || 0),0n).toString();
-    summary = {settlement_minor:add('settlement_minor'),total_cost_minor:add('total_cost_minor'),gross_profit_minor:add('gross_profit_minor'),receivable_minor:add('receivable_minor')};
+    const totals = data.accounting_summary;
+    summary = {settlement_minor:totals.settlement_minor,total_cost_minor:totals.total_cost_minor,
+      gross_profit_minor:totals.gross_profit_minor,receivable_minor:totals.receivable_minor};
   }
-  const shortcuts = view === 'home' ? '<a href="#finance?tab=receipts">逐笔回款记录</a><a href="#profit">项目核算</a><a href="#assistant">问经营助手</a>' : '';
-  main.innerHTML = header(titles[view],'同一项目、同一数据来源；收入、开票、到账和成本保持各自口径。',shortcuts) + metricCards(summary);
-  if (view === 'home' || view === 'profit') {
-    const columns = [['project_name','独立项目'],['settlement_minor','已确认收入'],['total_cost_minor','总成本'],['gross_profit_minor','已确认毛利'],['receivable_minor','未回款'],['cash_balance_minor','经营净现金']];
-    const projects = (data.projects || []).map(row => ({...row,gross_profit_minor:row.is_accountable===false?'待完善核算':row.gross_profit_minor}));
-    main.innerHTML += `<section class="card"><div class="section-head"><h2>项目经营事实</h2><small>独立核算 · 全周期成本可追溯</small></div>${table(projects,columns,row => `<button data-project="${row.project_id || row.id || row.project?.id}">合同与结算</button><button data-project-cost="${row.project_id || row.id || row.project?.id}">成本明细</button>`)}</section>`;
-    main.querySelectorAll('[data-project]').forEach(button => button.onclick = () => {state.project=button.dataset.project; document.querySelector('#project-scope').value=state.project; location.hash='contracts';});
-    main.querySelectorAll('[data-project-cost]').forEach(button => button.onclick = () => safe(() => openOperation('project_cost_details',{id:button.dataset.projectCost})));
-    if (view === 'home') main.insertAdjacentHTML('beforeend',notice('经营净现金是既有项目经营收支口径；真实银行余额请查看资金与计划中的资金账户。'));
+  main.innerHTML = header(titles[view],'同一项目、同一数据来源；收入、开票、到账和成本保持各自口径。') +
+    (view==='profit'?tabsHTML('projects','profit'):'') + context.html + metricCards(summary);
+  if (view==='profit') {
+    const totals=data.accounting_summary;
+    main.insertAdjacentHTML('beforeend',notice(`账面毛利＝全部已确认收入－全部成本，包含待完善项目。已可核算 ${totals.accountable_count} 个项目，已确认毛利 ${money(totals.confirmed_gross_profit_minor)}；待完善 ${totals.pending_count} 个项目，账面差额 ${money(totals.pending_gross_profit_minor)}。成本不会因资料不全被排除。`));
+    bindTabs('projects');
+    main.insertAdjacentHTML('beforeend',`<section class="card"><div class="section-head"><h2>项目经营事实</h2><small>独立核算 · 点击金额查看原始明细</small></div>${projectAccountingTable(data.projects || [])}</section>`);
+    main.querySelectorAll('[data-ledger-id]').forEach(button=>button.onclick=()=>safe(()=>openProjectLedger(Number(button.dataset.ledgerId),button.dataset.ledgerKind,{backLabel:'返回核算分析'})));
+    main.insertAdjacentHTML('beforeend',notice('账面经营净现金沿用项目经营收支口径，不代表真实银行余额；实际账户余额请到资金与计划查看。'));
   }
   if (view === 'governance') {
     renderGovernance(data);
@@ -641,10 +674,12 @@ function sourceHTML(source) {
 }
 
 async function renderCashflow() {
+  state.collection='cashflow';
   const scope = state.scope;
   const choices = state.boot.options;
-  main.innerHTML = header('资料现金流分析','关联现有合同或项目资料，明确付款条件与资金节奏；草稿不会自动生成账目。') +
+  main.innerHTML = header('资金与计划','从资料提取付款条件和资金节奏；分析草稿不等于实际收付款。') + tabsHTML('funds','cashflow') +
     `<section class="card"><div class="flow-controls"><label>合同范围<select id="flow-contract">${optionList(choices.contracts,scope.contract_id)}</select></label><label>具体项目（可只分析整份合同）<select id="flow-project">${optionList(choices.projects,scope.project_id)}</select></label><button id="load-flow" class="primary">载入资料与分析</button></div><p class="page-note">整份合同和具体项目范围独立保存，避免把多项目合同总额误当作单一项目现金流。</p></section><div id="flow-content"></div>`;
+  bindTabs('funds');
   document.querySelector('#load-flow').onclick = () => safe(async () => {
     state.scope={contract_id:Number(document.querySelector('#flow-contract').value)||null,project_id:Number(document.querySelector('#flow-project').value)||null};
     state.selectedAnalysis=null;await loadCashflow();
@@ -804,6 +839,8 @@ async function refreshOptions() {
 
 async function renderRoute(reset = true) {
   const version=++loadingVersion;
+  const canonical=canonicalWorkbenchHash(location.hash);
+  if (canonical!==location.hash) history.replaceState(history.state,'',canonical);
   const navigationContext = WorkbenchNavigation.prepare(reset);
   state.route=location.hash.slice(1).split('?')[0]||'home';
   document.body.classList.remove('nav-open');
@@ -820,12 +857,13 @@ async function renderRoute(reset = true) {
   if (version!==loadingVersion) return;
   try {
     if (state.route==='assistant') await renderAssistant();
-    else if (['home','profit','governance'].includes(state.route)) await renderDashboard(state.route);
+    else if (['home','governance'].includes(state.route)) await renderDashboard(state.route);
     else if (groups[state.route]) await renderGroup(state.route,state.collection||groups[state.route][0]);
     else if (state.route==='entities') await renderEntities();
     else if (state.route==='cashflow') await renderCashflow();
     else if (state.route==='compare') await renderCompare();
     else if (state.route==='tools') await renderTools();
+    else if (['customers','suppliers'].includes(state.route)) await renderPartnerOverview(state.route);
     else if (state.boot.schema[state.route]) await renderCollection(state.route);
     else main.innerHTML=notice('未知页面，请从左侧选择业务模块。');
     if (version!==loadingVersion) return;

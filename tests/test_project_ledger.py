@@ -110,9 +110,13 @@ class ProjectLedgerTests(unittest.TestCase):
             conn.execute("UPDATE sales_invoices SET status='void'")
             conn.execute("UPDATE settlements SET status='void'")
         project = ledger.list_projects()[0]
-        for key in ledger.MONEY_KEYS + ("settlement_count", "invoice_count", "receipt_count"):
+        for key in ('settlement_minor','invoice_minor','receipt_minor','receivable_minor',
+                    'settlement_count','invoice_count','receipt_count'):
             self.assertEqual(project[key], 0)
-        self.assertTrue(all(not d["rows"] for d in ledger.get_details(1)["details"].values()))
+        details = ledger.get_details(1)['details']
+        self.assertTrue(all(not details[key]['rows'] for key in ('settlements','invoices','receipts','outstanding')))
+        self.assertEqual(project['allocated_minor'], 50000000)
+        self.assertEqual(project['gross_profit_minor'], -project['cost_minor'])
 
     def test_multiple_allocations_count_a_receipt_once(self):
         receipt_id = self.receipt("100.00")

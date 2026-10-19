@@ -94,6 +94,37 @@ class WorkdayMonthlyServiceTests(unittest.TestCase):
         )
         self.assertEqual(result["record_count"], 0)
 
+    def test_active_workers_first_then_period_workdays_descending(self):
+        suffix = uuid4().hex[:8]
+        workers = {
+            "active_low": self.labor.add_worker({"name": f"A在职低-{suffix}", "status": "在职"}),
+            "retired_high": self.labor.add_worker({"name": f"A离职高-{suffix}", "status": "离职"}),
+            "active_high": self.labor.add_worker({"name": f"Z在职高-{suffix}", "status": "在职"}),
+            "retired_low": self.labor.add_worker({"name": f"Z离职低-{suffix}", "status": "离职"}),
+            "tie_first": self.labor.add_worker({"name": f"同名在职-{suffix}", "status": "在职"}),
+            "tie_second": self.labor.add_worker({"name": f"同名在职-{suffix}", "status": "在职"}),
+        }
+        for key, days in (("active_low", 0.5), ("retired_high", 1),
+                          ("active_high", 1), ("retired_low", 1),
+                          ("tie_first", 1), ("tie_second", 1)):
+            self._add_log(workers[key], "2101-03-01", days)
+        self._add_log(workers["active_high"], "2101-03-02", 0.5, overtime=True)
+        self._add_log(workers["retired_high"], "2101-03-02", 1)
+        self._add_log(workers["active_low"], "2101-03-03", 1)
+        void_log = self._add_log(workers["active_low"], "2101-03-02", 1)
+        self.labor.delete_work_logs([void_log])
+
+        result = self.labor.get_worker_monthly_workdays("2101-03-01", "2101-03-02")
+
+        self.assertEqual([row["worker_id"] for row in result["workers"]],
+                         [workers[key] for key in ("active_high", "tie_first", "tie_second",
+                                                   "active_low", "retired_high", "retired_low")])
+        self.assertEqual([row["work_days"] for row in result["workers"]], [1.5, 1, 1, 0.5, 2, 1])
+        self.assertEqual(result["record_count"], 8)
+        self.assertEqual(result["work_days"], 7)
+        self.assertEqual(result["month_totals"], {"2101-03": 7})
+        self.assertEqual(result["overtime_days"], 0.5)
+
 
 @unittest.skipUnless(
     os.environ.get("SUPPLY_CHAIN_GUI_TESTS") == "1",

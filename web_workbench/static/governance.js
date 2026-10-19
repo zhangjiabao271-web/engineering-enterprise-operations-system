@@ -42,7 +42,7 @@ function governanceSourceTable(rows, module, actions) {
 
 function renderGovernance(data) {
   const summary = data.summary;
-  main.innerHTML = header('数据治理','先看清来源，再确认归属；不会按材料名称自动猜项目。') +
+  main.innerHTML = header('待办与核对','先看清来源，再确认归属；不会按材料名称自动猜项目。') +
     metricCards({purchase_record_count:summary.purchase_record_count,purchase_amount_minor:summary.purchase_amount_minor,
       labor_record_count:summary.labor_record_count,labor_amount_minor:summary.labor_amount_minor}) +
     notice('待归集采购和工天是全公司范围，不受右上角项目筛选影响。已完成多项目均摊的采购不算待归集；确认归集后才更新项目成本。');
@@ -62,7 +62,7 @@ function renderGovernance(data) {
     [['name','项目'],['project_code','项目编码'],['customer_name','客户'],['contract_count','合同数'],['settlement_count','收入确认数']],
     row=>`<button type="button" data-governance-project="${row.id}">查看项目台账</button>`,'governance-projects')}</section>`);
   main.querySelectorAll('[data-governance-detail]').forEach(button=>button.onclick=()=>safe(()=>detailRecord(
-    button.dataset.governanceDetail,Number(button.dataset.id),{back:closeEditor,backLabel:'返回数据治理'})));
+    button.dataset.governanceDetail,Number(button.dataset.id),{back:closeEditor,backLabel:'返回待办与核对'})));
   main.querySelectorAll('[data-governance-attachment]').forEach(button=>button.onclick=()=>safe(()=>attachments(button.dataset.governanceAttachment,Number(button.dataset.id))));
   main.querySelectorAll('[data-governance-assign]').forEach(button=>button.onclick=()=>safe(()=>openOperation(
     button.dataset.governanceAssign,{ids:[Number(button.dataset.id)]})));

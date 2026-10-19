@@ -128,6 +128,21 @@ class WebWorkbenchTests(unittest.TestCase):
             self.assertEqual(self.request('purchase_preview', {'items':invalid})[0], 400)
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_consumable_allocation_script_and_http_preview_are_read_only(self):
+        with urllib.request.urlopen(self.server.origin + '/purchase-allocation.js') as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn('bindPurchaseAllocation', response.read().decode('utf-8'))
+        second = self.business.projects.create_project({'name': '合成分摊项目'})
+        before = self.path.read_bytes()
+        data = {'items': [{'material_name_snapshot': '合成耗材', 'quantity': '1',
+            'unit_price': '10.01', 'price_basis': 'inclusive', 'cost_category': '材料费'}],
+            'allocation_method': 'equal', 'project_ids': [1, second], 'freight': '0.02'}
+        status, response = self.request('purchase_preview', data)
+        self.assertEqual(status, 200, response)
+        self.assertEqual([row['amount_minor'] for row in response['result']['allocations']], ['502', '501'])
+        self.assertEqual(self.request('purchase_preview', dict(data, project_ids=[1]))[0], 400)
+        self.assertEqual(self.path.read_bytes(), before)
+
     def test_entry_options_keep_completed_for_edit_not_new_work_or_cost(self):
         original = self.business.get_record('projects', 1)
         self.business.projects.update_project(1, {**original, 'status':'已完工'})

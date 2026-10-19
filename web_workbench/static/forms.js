@@ -122,25 +122,72 @@ function watchLinkedChoice(select, changed, pending=changed) {
   select.closest('.search-choice')?.querySelector('input')?.addEventListener('input',pending);
 }
 
+function bindOfferSupplierTax(record={}) {
+  const supplier=form.elements.namedItem('supplier_id');
+  const tax=form.elements.namedItem('tax_rate_percent');
+  const lookup=createEditorLookup();
+  let automatic=null;
+  const hint=document.createElement('small');
+  hint.className='form-help';
+  hint.textContent='新增报价默认使用供应商档案税率，可按本次报价修改；已有报价保留原税率。';
+  tax.closest('.form-field').append(hint);
+  const clear=()=>{
+    lookup.cancel();
+    if(automatic!==null && tax.value===automatic)tax.value='';
+    automatic=null;
+  };
+  const update=()=>{
+    clear();
+    const owner=supplier.value;
+    if(!owner)return;
+    return lookup.run(()=>api('record?'+query({module:'suppliers',id:owner})),row=>{
+      if(supplier.value!==owner)return;
+      tax.value=String(row.default_tax_rate_percent ?? 0);
+      automatic=tax.value;
+      form.elements.namedItem('confirmed').checked=false;
+      tax.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+  };
+  tax.addEventListener('input',()=>{lookup.cancel();automatic=null;});
+  watchLinkedChoice(supplier,update,clear);
+  if(!record.id && supplier.value && (record.tax_rate_percent==null || record.tax_rate_percent===''))return update();
+}
+
 function bindFinancialChoices(options, record={}) {
   const project=form.elements.project_id;
   const contract=form.elements.contract_id;
   const settlement=form.elements.settlement_id;
   const invoice=form.elements.invoice_id;
+  const scope=form.elements.allocation_scope;
+  const entity=form.elements.entity_id;
   const lookup=createEditorLookup();
   let current=options;
   const cash=()=>current.projects.some(row=>String(row.value)===project.value&&row.business_mode==='cash');
+  const projectMode=()=>scope?.value==='project'&&!cash();
   const matches=row=>String(row.project_id)===project.value&&(row.contract_id===null?'':String(row.contract_id))===contract.value;
-  const ready=()=>Boolean(project.value&&(cash()||contract.value));
+  const ready=()=>Boolean(project.value&&(cash()||contract.value||!form.elements.invoice_no));
+  let suggestedEntity='';
+  const visibility=()=>{
+    for(const input of [contract,settlement,invoice].filter(Boolean)){
+      input.closest('.form-field').hidden=projectMode();
+      if(projectMode()){input.value='';input.disabled=true;input.dispatchEvent(new Event('choice-sync'));}
+    }
+    if(!projectMode()){contract.disabled=cash()||!project.value||Boolean(record.id);contract.dispatchEvent(new Event('choice-sync'));}
+    if(scope)scope.closest('.form-field').hidden=cash();
+    const advance=form.elements.namedItem('allow_advance');
+    if(advance)advance.closest('.form-field').hidden=projectMode();
+  };
 
   const updateInvoices=(preserve=false)=>{
     if(!invoice)return;
+    if(projectMode())return visibility();
     let rows=current.invoices.filter(matches);
     if(settlement?.value)rows=rows.filter(row=>row.settlement_ids.map(String).includes(settlement.value));
     replaceLinkedOptions(invoice,rows,{disabled:!ready()||cash(),preserve,placeholder:cash()?'零星工程无需关联发票':undefined});
   };
   const updateSettlements=(preserve=false)=>{
     if(!settlement)return;
+    if(projectMode())return visibility();
     const selectedInvoice=invoice&&current.invoices.find(row=>String(row.value)===invoice.value);
     let rows=current.settlements.filter(matches);
     if(selectedInvoice)rows=rows.filter(row=>selectedInvoice.settlement_ids.includes(row.value));
@@ -149,7 +196,7 @@ function bindFinancialChoices(options, record={}) {
     replaceLinkedOptions(settlement,rows,{selected,disabled:!ready()||Boolean(selectedInvoice),preserve,
       placeholder:selectedInvoice?'收入确认由所选发票确定':undefined});
   };
-  const updateChildren=(preserve=false)=>{updateSettlements(preserve);updateInvoices(preserve);};
+  const updateChildren=(preserve=false)=>{visibility();updateSettlements(preserve);updateInvoices(preserve);};
   const resetChildren=()=>{
     if(settlement)replaceLinkedOptions(settlement,[],{disabled:true});
     if(invoice)replaceLinkedOptions(invoice,[],{disabled:true});
@@ -159,7 +206,14 @@ function bindFinancialChoices(options, record={}) {
     if(!project.value)return;
     return lookup.run(()=>api('options?'+query({project_id:project.value})),fresh=>{
       current=fresh;
-      replaceLinkedOptions(contract,cash()?[]:current.contracts,{disabled:cash()});
+      replaceLinkedOptions(contract,cash()?[]:current.contracts,{disabled:cash(),
+        selected:!projectMode()&&current.contracts.length===1?String(current.contracts[0].value):'',
+        placeholder:scope?'合同待补时可选择对应已确认业务':'合同待补，可暂不选择'});
+      const owner=current.projects.find(row=>String(row.value)===project.value)?.entity_id;
+      if(entity&&(!entity.value||entity.value===suggestedEntity)){
+        entity.value=owner?String(owner):'';suggestedEntity=entity.value;
+        entity.dispatchEvent(new Event('choice-sync'));
+      }
       updateChildren();
     });
   };
@@ -167,9 +221,39 @@ function bindFinancialChoices(options, record={}) {
   watchLinkedChoice(contract,()=>{resetChildren();updateChildren();},resetChildren);
   watchLinkedChoice(settlement,()=>updateInvoices());
   watchLinkedChoice(invoice,()=>updateSettlements());
+  scope?.addEventListener('change',()=>{resetChildren();contract.value='';contract.dispatchEvent(new Event('choice-sync'));updateChildren();});
+  if(entity&& !record.id && !entity.value){
+    entity.value=String(current.projects.find(row=>String(row.value)===project.value)?.entity_id||'');
+    suggestedEntity=entity.value;entity.dispatchEvent(new Event('choice-sync'));
+  }
   if(cash())replaceLinkedOptions(contract,[],{disabled:true});
   else contract.disabled=!project.value;
   updateChildren(Boolean(record.id));
+}
+
+function bindReceiptAllocationPreview(record={}) {
+  const output=document.createElement('section');
+  output.className='receipt-allocation-preview';output.setAttribute('aria-live','polite');
+  form.elements.namedItem('amount').closest('.form-field').after(output);
+  let timer;
+  let generation=0;
+  const refresh=()=>{
+    const version=++generation;clearTimeout(timer);
+    const values=Object.fromEntries(['project_id','contract_id','settlement_id','invoice_id','entity_id','amount','receipt_date','allocation_scope']
+      .map(name=>[name,form.elements.namedItem(name)?.value||'']));
+    if(values.allocation_scope!=='project'||!values.project_id||!values.amount||!values.receipt_date){output.replaceChildren();return;}
+    output.textContent='正在核对本笔回款抵扣顺序…';
+    timer=setTimeout(async()=>{
+      try{
+        const result=await api('receipt_preview',{record:values,id:record.id});
+        if(version!==generation||!output.isConnected)return;
+        output.innerHTML='<h3>本次回款将抵扣</h3>'+result.rows.map(row=>
+          `<p><span>${esc(row.contract_name||'')} ${esc(row.settlement_no)}${row.receivable_date?' · 业务日期 '+esc(row.receivable_date):''}</span><strong>${esc(money(row.amount_minor))}</strong></p>`).join('')+
+          '<small>同一项目、同一经营主体内先补旧应收；超出部分保留为预收款。补录更早到账或更早业务时，自动抵扣顺序会相应更新。</small>';
+      }catch(error){if(version===generation&&output.isConnected)output.textContent=error.message;}
+    },180);
+  };
+  form.addEventListener('change',refresh);form.addEventListener('input',refresh);refresh();
 }
 
 function bindWorkdaySite() {
@@ -224,24 +308,28 @@ function collectPurchaseItems() {
 function initializePurchasePreview() {
   const container = editor.querySelector('#purchase-items');
   const total = editor.querySelector('#purchase-preview');
+  const allocation = editor.querySelector('#purchase-allocation-preview');
   let version = 0;
   let timer;
   const update = () => {
     const current = ++version;
     clearTimeout(timer);
     total.textContent = '正在核对金额…';
+    if (allocation) allocation.textContent = form.elements.allocation_method.value === 'equal' ? '正在核对项目份额…' : '';
     for (const output of container.querySelectorAll('.item-preview')) output.textContent = '正在核对…';
     timer = setTimeout(async () => {
       try {
-        const result = await api('purchase_preview', {items: collectPurchaseItems(), freight: form.elements.freight_amount.value || '0'});
+        const result = await api('purchase_preview', {items: collectPurchaseItems(), freight: form.elements.freight_amount.value || '0', ...collectPurchaseAllocation()});
         if (current !== version || !total.isConnected) return;
         result.items.forEach((item, index) => {
           container.children[index].querySelector('.item-preview').textContent = `本条材料 ${money(item.line_amount_cents)} · 其中税额 ${money(item.tax_amount_cents)}`;
         });
         total.textContent = `材料 ${money(result.material_amount_cents)} + 运费 ${money(result.freight_amount_cents)} = 整单 ${money(result.total_amount_cents)}`;
+        renderPurchaseAllocationPreview(result);
       } catch (error) {
         if (current !== version || !total.isConnected) return;
         total.textContent = '请完善数量、单价和税率后核对整单金额：' + error.message;
+        if (allocation) allocation.textContent = form.elements.allocation_method.value === 'equal' ? error.message : '';
       }
     }, 180);
   };
@@ -249,5 +337,7 @@ function initializePurchasePreview() {
   container.addEventListener('change', update);
   new MutationObserver(update).observe(container, {childList: true});
   form.elements.freight_amount.addEventListener('input', update);
+  form.elements.allocation_method?.addEventListener('change', update);
+  editor.querySelector('#purchase-allocation')?.addEventListener('change', update);
   update();
 }

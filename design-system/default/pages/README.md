@@ -16,6 +16,7 @@
 | `home_page.py` | `operations-dashboard.md` |
 | `import_export_page.py` | `import-export.md` |
 | `input_invoice_page.py` | `input-invoices.md` |
+| 本机工作台 `entities.js` | `operating-entities.md` |
 | `product_page.py` | `material-catalog.md` |
 | `project_page.py` | `project-management.md` |
 | `project_profit_page.py` | `project-profit-center.md` |

@@ -30,10 +30,8 @@
 
 ### 服务异常边界
 
-- 每日自检与助手确认录入专项见 `tests/test_operating_attention.py`、`tests/test_assistant_entries.py`；只使用临时合成账本，覆盖缺数、范围、日期冻结、重复确认、取消、账本变化与整批回滚。协助录入不改变查账模式的只读边界。
-- 浏览器专项先启动 `scripts/accept_proactive_fixture.py --output qa/全新目录`，再用 Node 运行 `scripts/accept_proactive_workbench.mjs 地址 qa/该目录/browser`。夹具仅用模拟模型，不能冒充真实模型语义验收；真实模型抽查仅使用 `scripts/accept_entry_model.py` 的虚构描述，不发送正式账目。
-- 经营主体与业务边界专项见 `tests/test_operating_entity_dashboard.py`、`tests/test_operating_entity_http.py`、`tests/test_business_boundary_guards.py` 及 `tests/test_web_linkages.py`。归属、客户和资金约束由服务验证，不由页面跳过。
-- 迁移640只新增管理状态表；已有630账本的演练与正式升级使用 `scripts/upgrade_proactive_workbench.py`，先在线备份和隔离逐表对账，显式 `--apply` 才升级正式库，不清理用户旧备份。
+- 本机主动服务专项：`tests/test_operating_attention.py`、`tests/test_assistant_entries.py`，覆盖自检人工确认、跨日、变化重开、忽略恢复、草稿缺数、范围、版本、整笔回滚和重复确认。`db.connection.use_write_transaction` 仅供已开启的独立事务组合原业务服务；不能跨库或由只读快照进入写入。
+- 实际页面验收先运行 `scripts/accept_proactive_fixture.py --output qa/全新目录`，再运行 `scripts/accept_proactive_workbench.mjs 地址 qa/该目录/browser`。只使用合成账本和模拟模型，不能冒充真实模型语义验收。迁移640只增加核对、跟进与草稿状态；正式启用前在线备份、副本升级、历史事实逐表对账及外键检查，不在打开的正式窗口中迁移。
 
 - 页面只处理服务层的 `ValueError` 业务提示，不直接识别 `sqlite3` 异常。
 - 服务写入先做明确业务校验；仍可能因并发或数据库约束失败时，仅将可识别的唯一键、外键、检查约束及已知业务触发器错误翻译成面向用户的 `ValueError`。新写入操作可复用 `services/_constraint_errors.py`，提供该操作自己的提示语。
@@ -53,15 +51,28 @@
 - 弹窗竞态专项见 `scripts/accept_web_urgent_audit.mjs 地址 qa/全新目录`，仅连接上述合成验收服务器。覆盖延迟响应下的项目/报价切换、关闭后重开、关联查询中禁止提交、材料行移除及保存失败恢复；保存中关闭/Escape和重复提交必须被拦截。`--reproduce` 用于保留修复前失败证据，不代表验收通过。
 - 完整写入验收先用 `scripts/accept_web_write_matrix.py --output qa/全新目录` 创建合成账本，再用 `scripts/accept_web_write_matrix.mjs 地址 qa/全新目录/browser` 检查每项落库、取消及重复确认。不能只查看总数或输出末尾；须确认全部 `matrix` 项的 `status` 为 `passed` 且 `errors` 为空。
 - 本机工作台稳定性专项见 `tests/test_workbench_stabilization.py`（同期间成本、分摊、主体与资金保护）和 `scripts/test_editor_lifecycle.mjs`（弹窗迟到响应）。成本／主体实际浏览器验收使用 `scripts/accept_workbench_stabilization.mjs 地址 qa/全新输出目录 qa/合成预览.pdf`，只连接上述合成夹具服务；各复位验收脚本顺序执行，不能同时重置同一测试库。
+- 经营主体合同继承与看板专项见 `tests/test_operating_entity_dashboard.py`、`tests/test_operating_entity_http.py`。实际浏览器验收先用 `scripts/accept_operating_entity_fixture.py --output qa/全新目录` 生成合成账本，再运行 `scripts/accept_operating_entities.mjs 地址 qa/该目录/browser`；覆盖确认、取消、状态刷新、明细对账、批量、迟到响应与手机布局。只连接该合成服务，不批量确认正式历史主体归属。
 - 正式切换先运行 `scripts/prepare_desktop_cutover.py --output qa/全新隔离目录`，在线备份并把四类引用文件全部重定向到隔离附件目录。恢复演练使用 `scripts/accept_web_backup.mjs`，只接受合成账本或 `qa` 下隔离副本；正式库不做测试记账或恢复。
 - 资料语义理解专项见 `tests/test_document_understanding.py`：用合成PDF/文本和模拟模型验收，不为测试上传真实合同或读取真实密钥。网页首次读取明确发送 `use_model:true`，不增加重新识别步骤；人工摘录和旧离线路径不外发。PDF全页送入视觉模型，严格校验完整JSON、页码与证据，金额及累计比例由系统复算。输出与文件、项目/合同/主体版本共同绑定，迟到结果不得重开旧弹窗。正式资料仅经人工核对后关联，转计划仍需独立明确确认。
 - 完整 ZIP 恢复先分片上传、版本/文件哈希/完整性/外键与覆盖范围预检，再要求明确输入确认文字。预览后账本或文件变化须重新预览；恢复前保全原数据库和附件，成功后旋转表单令牌并清除旧助手任务，状态不明确时停止写入。专项见 `tests/test_web_backup.py`；只读入口拒绝恢复。
 - 切换证据可用 `scripts/verify_desktop_cutover.py` 检查正式账本与隔离基线、下载 ZIP、写入矩阵、窗口模式和已释放端口，输出仅保存到 `qa` 的新文件，不包含会话令牌或模型设置。
 - 改动完成后检查本次差异。正式桌面验收需运行新进程验证；重启前保留用户未保存输入，不直接结束正在使用的进程。
+- 网页录入级联专项见 `tests/test_web_linkages.py` 和 `scripts/accept_web_linkages.mjs 地址 qa/全新输出目录`。浏览器仅连 `accept_web_write_matrix.py` 合成服务，覆盖主体继承后的余额、项目／合同／收入／发票候选、PDF表单、回款重新分配、单人／批量地点及年度合同默认值；PDF识别响应使用合成结果，只验证本轮表单联动，不冒充真实PDF识别验收。
+- 历史归属边界专项见 `tests/test_business_boundary_guards.py`；覆盖主体继承对资金／进项票的保护、补充协议上级、未知／冲突、批量回滚、客户一致性及回款归属锁定。`scripts/accept_business_boundaries.mjs 地址 qa/全新输出目录` 只连接上述合成服务，检查真实弹窗错误、保留输入、正常更正、取消不写、锁定搜索框及手机说明。补充协议上级更换后派生发票抵扣刷新由 `tests/test_web_linkages.py` 验证，不改实际到账或项目收入。
 - 发布是独立动作，遵循用户已有授权。检查开源目录差异、隐私和 CI；本地测试通过不代表 GitHub CI 已通过。
 
 - 回款补足收入更正专项：`tests/test_receipt_income_corrections.py` 与 `scripts/test_receipt_income.mjs`；合成浏览器先运行 `scripts/accept_receipt_correction_fixture.py --output qa/全新目录`，再运行 `scripts/accept_receipt_corrections.mjs 地址 qa/该目录/browser`。验证明确选择、取消、关联保护和同事务追溯，不向正式账本提交更正测试。
-- 新账本初始化与隐私专项：`tests/test_initial_setup_privacy.py`。已有账本不重新初始化；历史迁移保持原样。发布前运行 `python scripts/check_release_privacy.py`，扫描跟踪及未忽略的文件、匿名种子和疑似敏感内容；输出不打印敏感值。
+- 新账本初始化与隐私专项：`tests/test_initial_setup_privacy.py`。已有账本不重新初始化；历史迁移保持原样。在发布仓库根目录运行 `python scripts/check_release_privacy.py`；维护者可用 `--private-ledger` 指定本机账本做只读主体名称比对。正式数据不进入发布包。
+
+合同客户分组专项：`tests/test_contract_ledger.py` 覆盖签约年份与全周期累计、客户／主体／项目范围、有效分配过滤、多合同分摊及逐笔对账。先运行 `scripts/accept_contract_ledger_fixture.py --output qa/全新目录`，再运行 `scripts/accept_contract_ledger.mjs 地址 qa/该目录`；只连接生成的合成账本，验收客户翻页返回、金额明细、附件预览和计数刷新、取消不写及窄屏布局。导航状态另运行 `scripts/test_workbench_navigation.mjs`。
+
+现金与未签业务汇总专项：`tests/test_contract_cash_business.py` 和合同台账HTTP测试覆盖全业务/仅合同/未关联范围、约定不当收入、预收不抵其他项目、部分发票归属守恒、拆分回款、主体冲突、作废状态及只读对账。用 `scripts/accept_contract_cash_fixture.py --output qa/全新目录` 创建合成账本，再运行 `node scripts/accept_contract_cash.mjs 地址 qa/该目录` 验收四卡懒加载明细、客户下原记录、范围切换、主体/搜索和窄屏。只调整查询与展示，不批量补合同关联、不重建收入回款、不增加迁移。
+
+项目业务主线专项：`tests/test_project_business_flow.py` 覆盖自动合同关系、未签业务、跨合同顺序抵扣、补录重排、明确指定、预收、跨项目／主体隔离、补签历史与事务回滚。界面先运行 `scripts/accept_project_business_fixture.py --output qa/全新目录`，再运行 `node scripts/accept_project_business.mjs 地址 qa/该目录`；只连合成服务。迁移650只增加规则与追溯结构，旧回款默认保留指定范围；正式启用前在线备份、隔离升级、原事实逐表对账，并在交互录入锁释放后执行。
+
+采购耗材均摊专项：`tests/test_purchase_consumable_allocations.py` 覆盖整单含运费守恒、混合材料类别、修改／取消归集、版本历史和成本明细。实际浏览器验收先用 `scripts/accept_purchase_supplier_fixture.py --output qa/全新目录` 启动合成服务，再运行 `node scripts/accept_purchase_consumables.mjs 地址 qa/该目录/browser`；覆盖默认未完工范围、勾选、尾差、迟到预览、连续录入和历史项目保留。只连合成账本，不重分摊正式历史采购。
+
+工作区收拢专项：`tests/test_project_accounting.py`、`tests/test_partner_overview.py`、`tests/test_workbench_information_architecture.py`，覆盖账面与已确认毛利分层、全部成本守恒、客户业务年度与合同签约年区别、有效分配及客户/供应商精确范围；运行 `node scripts/test_workbench_navigation.mjs` 检查旧链接与返回状态。界面验收仅使用 `scripts/accept_workspace_fixture.py --output qa/全新目录` 合成账本及 `node scripts/accept_workspace_consolidation.mjs 地址 qa/该目录`，不以测试录入修改正式账本。
 
 ## 模型更新时
 

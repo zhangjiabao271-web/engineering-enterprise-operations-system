@@ -155,15 +155,29 @@ async function openOperation(name,context={},viewOptions={}) {
   if (name==='collection_followup') context={...await api('operation_read?'+query({name:'collection_case',id:context.id})),...context};
   if(name==='receipt_allocation') {
     const receipt=await api('record?'+query({module:'receipts',id:context.id}));
+    if(receipt.allocation_scope==='project'){
+      openEditor('按项目顺序抵扣',notice('本笔回款自动先抵扣旧应收。调整到账金额或日期后会自动重新分配。')+
+        table(receipt.allocations.filter(row=>row.status==='active'),[['settlement_no','对应收入'],['allocated_amount_minor','本次抵扣金额']]),null);return;
+    }
     context.project_id=receipt.project_id;
     context.contract_id=receipt.contract_id;
     context.allocations=receipt.allocations.filter(row=>row.settlement_id && row.status==='active').map(row=>({settlement_id:row.settlement_id,amount:minorInput(row.allocated_amount_minor)}));
     context.allow_advance=BigInt(receipt.advance_minor || 0)>0n;
   }
+  if(name==='settlement_contract'){
+    const original=await request.read('record?'+query({module:'settlements',id:context.id}));
+    if(original.contract_id||original.source_type==='cash_job')throw new Error('这笔业务无需补关联合同。');
+    context.project_id=original.project_id;
+  }
   if(name==='allocation_update') context.amount=(await api('record?'+query({module:'allocations',id:context.id}))).amount;
   if(name==='cost_allocate') {
     const current=await api('operation_read?'+query({name:'cost_allocations',id:context.id}));context.method=current.method;context.project_ids=current.lines.map(row=>row.project_id);
     if(current.method==='manual') context.allocations=current.lines.map(row=>({project_id:row.project_id,amount:minorInput(row.amount_minor)}));
+  }
+  if(name==='purchase_allocate') {
+    const current=await request.read('record?'+query({module:'purchases',id:context.id}));
+    context.method=current.allocation_method;
+    context.project_ids=current.project_id ? [current.project_id] : current.project_ids;
   }
   const currentOptions=await request.read('options?'+query({project_id:context.project_id || state.project}));
   const options=await operationOptions(definition,context,currentOptions);
@@ -264,16 +278,21 @@ function installAdvancedControls() {
     main.insertAdjacentHTML('beforeend','<section class="card"><button id="void-receipt-history">查看已作废回款记录</button><small>记录、金额、日期及作废原因仍保留，不参与有效回款合计。</small></section>');
     document.querySelector('#void-receipt-history').onclick=()=>safe(()=>openOperation('receipt_history'));
   }
-  const modules={funds:['funds','accounts','entities'],governance:['governance','entities'],labor:['workers','worklogs'],tools:['entities']}[route] || [];
+  const modules={entities:['entities'],funds:['funds','accounts'],governance:['governance'],labor:['workers','worklogs']}[route] || [];
   if (modules.length) {
     const actions=Object.entries(state.boot.operations || {}).filter(([name,definition])=>
       modules.includes(definition.module) && !definition.read && !state.boot.read_only &&
-      !['fund_archive','worker_delete'].includes(name) && !(name==='labor_batch' && state.collection==='worklogs'));
-    main.insertAdjacentHTML('beforeend',`<section class="card"><h2>经营操作 · 核对后执行</h2><div class="head-actions">${actions.map(([name,definition])=>`<button data-operation="${name}">${esc(definition.title)}</button>`).join('')}</div><button id="read-business">查看业务明细与历史</button></section>`);
+      !['fund_archive','worker_delete'].includes(name) && !(name==='labor_batch' && state.collection==='worklogs') && !(route==='entities' && name==='entity_assign'));
+    main.insertAdjacentHTML('beforeend',`<section class="card"><h2>${route==='entities'?'主体档案设置':'相关业务操作'}</h2><div class="head-actions">${actions.map(([name,definition])=>`<button data-operation="${name}">${esc(definition.title)}</button>`).join('')}</div></section>`);
     bindOperationActions(main);
+  }
+  if (['funds','governance'].includes(route)) main.insertAdjacentHTML('beforeend','<p class="page-note">业务主体归属请到 <a href="#entities">经营主体</a> 统一确认，合同关联项目自动继承。</p>');
+  if (route==='purchases') main.querySelector('.page-head .head-actions')?.insertAdjacentHTML('beforeend','<a class="button" href="#finance?tab=input_invoices">进项发票</a>');
+  if (route==='tools') {
+    installExcelControls();
+    main.insertAdjacentHTML('beforeend','<details class="card"><summary>高级核对工具</summary><p class="page-note">仅供维护时按记录编号排查；日常请点击原台账的金额和明细。</p><button id="read-business">按记录编号查询业务历史</button></details>');
     document.querySelector('#read-business').onclick=()=>safe(openReadConsole);
   }
-  if (route==='tools') installExcelControls();
   if(route==='finance') installPDFControls();
 }
 

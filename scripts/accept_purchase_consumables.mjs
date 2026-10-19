@@ -1,0 +1,141 @@
+// Real browser controls over a fresh synthetic purchase-supplier fixture only.
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url);
+const {chromium}=require('playwright');
+const [origin,outputArg]=process.argv.slice(2);
+assert(/^http:\/\/127\.0\.0\.1:\d+$/.test(origin));
+const output=path.resolve(outputArg);
+assert(output.startsWith(path.resolve('qa')+path.sep));
+await fs.mkdir(output);
+const browser=await chromium.launch({...(process.env.WORKBENCH_BROWSER ? {executablePath:process.env.WORKBENCH_BROWSER} : {}),headless:true});
+const page=await browser.newPage({viewport:{width:1366,height:768},reducedMotion:'reduce'});
+const checks=[],errors=[];
+page.on('pageerror',error=>errors.push(error.message));
+page.on('request',request=>{if(!request.url().startsWith(origin))errors.push('Unexpected external request');});
+const read=name=>page.evaluate(name=>api(name),name);
+const selected=()=>page.locator('[name="purchase-project"]:checked').evaluateAll(rows=>rows.map(row=>row.value));
+async function close(){await page.locator('#editor-cancel').click();await page.waitForFunction(()=>!editor.open);}
+async function settledPreview(count){
+  await page.waitForFunction(count=>document.querySelectorAll('#purchase-allocation-preview li').length===count,count);
+}
+try{
+  await page.goto(origin+'/#purchases');await page.locator('#new-record').waitFor();
+  assert(await page.evaluate(()=>state.boot.demo&&!state.boot.read_only));
+  // Synthetic setup adds status boundaries without touching any formal ledger.
+  await page.evaluate(async()=>{
+    for(const [index,status] of ['进行中','筹备中','已完工','已关闭'].entries()){
+      const ticket=await api('write_ticket?'+query({kind:'save',module:'projects'}));
+      await api('save',{module:'projects',record:{name:'合成均摊边界'+index,status},form_ticket:ticket.token,confirmed:true});
+    }
+  });
+  const options=await read('options'),active=options.active_projects.map(row=>String(row.value));
+  assert(active.length>=3);
+  const before=(await read('qa_state')).digest;
+  await page.locator('#new-record').click();await page.locator('.purchase-item').waitFor();
+  await page.locator('[name="allocation_method"]').selectOption('equal');
+  assert.deepEqual((await selected()).sort(),[...active].sort());
+  const candidates=await page.locator('[name="purchase-project"]').evaluateAll(rows=>rows.map(row=>row.value));
+  assert.deepEqual(candidates.sort(),[...active].sort());
+  assert(!await page.locator('[name="project_id"] + input').isVisible());
+  checks.push('材料采购可选择均摊，默认只勾选未完工项目，不列出已完工与已关闭项目');
+  await page.locator('[name="purchase_type"]').selectOption('零星采购');
+  await page.locator('[name="merchant_name_snapshot"]').fill('合成均摊耗材店');
+  await page.locator('[name="payment_method"]').selectOption('现金');
+  await page.locator('[name="payment_status"]').selectOption('已付款');
+  await page.locator('[name="invoice_status"]').selectOption('有发票');
+  await page.locator('[name="freight_amount"]').fill('0.02');
+  await page.locator('[name="item-material_name_snapshot"]').fill('合成耗材焊条');
+  await page.locator('[name="item-unit_snapshot"]').fill('箱');
+  await page.locator('[name="item-unit_price"]').fill('100.01');
+  await page.locator('[name="item-tax_percent"]').fill('13');
+  await page.locator('[data-allocation-select="none"]').click();
+  await page.waitForFunction(()=>document.querySelector('#purchase-allocation-preview').textContent.includes('至少需要选择两个项目'));
+  for(const id of active.slice(0,2))await page.locator(`[name="purchase-project"][value="${id}"]`).check();
+  await settledPreview(2);
+  assert.match(await page.locator('#purchase-allocation-preview').innerText(),/100\.03/);
+  const amounts=await page.locator('#purchase-allocation-preview strong').allTextContents();
+  assert.deepEqual(amounts,['¥50.02','¥50.01']);
+  checks.push('可取消参与项目，少于两项显示明确提示，材料加运费精确分配到分');
+  let release,started,finished;
+  const held=new Promise(resolve=>{release=resolve;});
+  const pending=new Promise(resolve=>{started=resolve;});
+  const completed=new Promise(resolve=>{finished=resolve;});
+  let intercepted=false;
+  const delayPreview=async route=>{
+    if(intercepted)return route.continue();
+    intercepted=true;
+    const response=await route.fetch();started();await held;
+    await route.fulfill({response});finished();
+  };
+  await page.route('**/api/purchase_preview',delayPreview);
+  await page.locator('[name="freight_amount"]').fill('0.03');
+  await pending;
+  await page.locator(`[name="purchase-project"][value="${active[2]}"]`).check();
+  await settledPreview(3);
+  release();await completed;await page.unroute('**/api/purchase_preview',delayPreview);
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('#purchase-allocation-preview li').count(),3);
+  await page.locator(`[name="purchase-project"][value="${active[2]}"]`).uncheck();
+  await page.locator('[name="freight_amount"]').fill('0.02');
+  await settledPreview(2);
+  checks.push('快速调整项目时忽略迟到的旧份额，不让旧预览覆盖新选择');
+  assert.equal((await read('qa_state')).digest,before);
+  await page.locator('#purchase-allocation').scrollIntoViewIfNeeded();
+  await page.screenshot({path:path.join(output,'desktop.png')});
+  await page.setViewportSize({width:390,height:844});
+  await page.locator('#purchase-allocation-preview').scrollIntoViewIfNeeded();
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  const geometry=await page.locator('#purchase-allocation').boundingBox();
+  assert(geometry.width<390);
+  await page.screenshot({path:path.join(output,'narrow.png')});
+  checks.push('窄屏勾选与份额可读，保存按钮固定可见，无整页横向溢出');
+  await page.setViewportSize({width:1366,height:768});
+  await page.locator('[name="allocation_method"]').selectOption('direct');
+  assert(!await page.locator('#purchase-allocation').isVisible());
+  await page.locator('[name="allocation_method"]').selectOption('equal');
+  await settledPreview(2);
+  assert.deepEqual((await selected()).sort(),active.slice(0,2).sort());
+  await page.locator('[name="continue-entry"]').check();
+  await page.locator('[name="confirmed"]').check();
+  await page.locator('#editor-save').click();
+  await page.waitForFunction(()=>editor.open&&!editorSubmitting&&editor.querySelector('[name="item-material_name_snapshot"]')?.value==='');
+  assert.equal(await page.locator('[name="allocation_method"]').inputValue(),'equal');
+  assert.deepEqual((await selected()).sort(),active.slice(0,2).sort());
+  assert.equal(await page.locator('[name="freight_amount"]').inputValue(),'0');
+  assert.equal(await page.locator('[name="confirmed"]').isChecked(),false);
+  await close();
+  const rows=await read('rows?module=purchases&keyword='+encodeURIComponent('合成耗材焊条'));
+  assert.equal(rows.rows.length,1);
+  const order=await read('record?'+new URLSearchParams({module:'purchases',id:rows.rows[0].id}));
+  assert.equal(order.project_id,null);
+  assert.equal(order.items[0].cost_category,'材料费');
+  assert.equal(order.total_amount_cents,'10003');
+  assert.equal(order.allocations.reduce((sum,row)=>sum+BigInt(row.amount_minor),0n),10003n);
+  checks.push('保存一张原始采购单、两条项目份额，不更改材料类别；继续录入保留选定范围且清空金额与确认');
+  await page.locator(`[data-action="edit"][data-id="${order.id}"]`).click();
+  await page.locator('#purchase-allocation').waitFor();
+  assert.deepEqual((await selected()).sort(),active.slice(0,2).sort());
+  await settledPreview(2);
+  const after=(await read('qa_state')).digest;
+  await close();
+  assert.equal((await read('qa_state')).digest,after);
+  checks.push('编辑旧单正确回显均摊范围，取消不写账');
+  await page.evaluate(async id=>{
+    const record=await api('record?'+query({module:'projects',id}));
+    const ticket=await api('write_ticket?'+query({kind:'save',module:'projects',id,expected:record._version}));
+    await api('save',{module:'projects',id,expected:record._version,record:{...record,status:'已完工'},form_ticket:ticket.token,confirmed:true});
+  },active[0]);
+  await page.locator(`[data-action="edit"][data-id="${order.id}"]`).click();
+  await page.locator('#purchase-allocation').waitFor();
+  assert.deepEqual((await selected()).sort(),active.slice(0,2).sort());
+  assert.match(await page.locator('#purchase-allocation').innerText(),/历史归集项目/);
+  await settledPreview(2);await close();
+  checks.push('原参与项目后来完工仍保留原份额，不静默取消或扩展归集范围');
+  assert.deepEqual(errors,[]);
+}catch(error){errors.push(error.stack);await page.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});}
+finally{await fs.writeFile(path.join(output,'results.json'),JSON.stringify({synthetic:true,checks,errors},null,2));await browser.close();}
+console.log(JSON.stringify({synthetic:true,checks,errors},null,2));
+if(errors.length)process.exitCode=1;

@@ -24,7 +24,7 @@ MAX_BODY = 28 * 1024 * 1024
 PDF_PREVIEW_GETS = frozenset({'/api/attachment_pdf_info', '/api/attachment_pdf_page'})
 READ_ONLY_POSTS = frozenset({
     '/api/assistant/new', '/api/assistant/ask', '/api/assistant/stop',
-    '/api/assistant/scope', '/api/assistant/confirm', '/api/purchase_preview',
+    '/api/assistant/scope', '/api/assistant/confirm', '/api/purchase_preview', '/api/receipt_preview',
     '/api/backup/create', '/api/backup/restore_start', '/api/backup/restore_chunk',
     '/api/backup/restore_preview', '/api/backup/restore_discard',
     '/api/cashflow/preview', '/api/cashflow/attachment_preview', '/api/cashflow/discard',
@@ -110,7 +110,7 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             query = {k:v[0] for k,v in parse_qs(urlsplit(self.path).query,keep_blank_values=True).items()}
             if not path.startswith('/api/'):
-                if path in ('/cockpit.js', '/cockpit.css', '/entities.js', '/entities.css','/attention.js','/attention.css','/entry-draft.js','/governance.js','/governance.css','/receipt-income.js'):
+                if path in ('/cockpit.js', '/cockpit.css', '/entities.js', '/entities.css','/attention.js','/attention.css','/entry-draft.js','/governance.js','/governance.css','/receipt-income.js','/contract-ledger.js','/contract-ledger.css','/contract-project-business.js','/purchase-allocation.js','/partners.js','/partners.css'):
                     filename = path[1:]
                     self.send_content((STATIC/filename).read_bytes(), mimetypes.guess_type(filename)[0]+'; charset=utf-8')
                     return
@@ -179,16 +179,37 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/options':
             self.send_json(business.options(project_id))
         elif path == '/api/rows':
-            self.send_json({'rows':business.rows(query['module'],project_id,query.get('keyword',''))})
+            self.send_json({'rows':business.rows(query['module'],project_id,query.get('keyword',''),
+                supplier_id=query.get('supplier_id') or None,customer_id=query.get('customer_id') or None,
+                year=query.get('year') or None)})
         elif path == '/api/attention':
             from services.operating_attention_service import overview
             self.send_json(overview(project_id))
         elif path == '/api/project_ledger':
             self.send_json(business.project_ledger.get_details(int(query['id'])))
+        elif path == '/api/contract_ledger':
+            from services.contract_ledger_service import get_overview
+            self.send_json(get_overview(project_id=project_id, customer_key=query.get('customer',''),
+                year=query.get('year',''), status=query.get('status',''),
+                entity_id=query.get('entity_id',''), keyword=query.get('keyword',''),business_scope=query.get('business_scope')))
+        elif path == '/api/contract_business_detail':
+            from services.contract_ledger_service import get_business_details
+            self.send_json(get_business_details(project_id=project_id,customer_key=query.get('customer',''),
+                year=query.get('year',''),status=query.get('status',''),entity_id=query.get('entity_id',''),
+                keyword=query.get('keyword',''),business_scope=query.get('business_scope')))
+        elif path == '/api/contract_project_business':
+            from services.contract_ledger_service import get_project_business_details
+            self.send_json(get_project_business_details(int(query['id']),scope_project_id=project_id,
+                entity_id=query.get('entity_id','')))
+        elif path == '/api/contract_ledger_detail':
+            from services.contract_ledger_service import get_details
+            self.send_json(get_details(int(query['id']),project_id,entity_id=query.get('entity_id',''),
+                business_scope=query.get('business_scope','contracts')))
         elif path == '/api/record':
             self.send_json(business.get_record(query['module'],int(query['id'])))
         elif path == '/api/dashboard':
-            self.send_json(business.dashboards(query['view'],project_id,query.get('month') or None))
+            self.send_json(business.dashboards(query['view'],project_id,query.get('month') or None,
+                year=query.get('year') or None,customer_id=query.get('customer_id') or None))
         elif path == '/api/cockpit_detail':
             from services.cockpit_service import get_detail
             self.send_json(get_detail(query['metric'], project_id, query.get('month') or None))
@@ -334,7 +355,11 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError('经营助手操作不存在。')
         from services import web_workbench_service as business
         if path == '/api/purchase_preview':
-            return business.purchase_preview(data.get('items'), data.get('freight', '0'))
+            return business.purchase_preview(data.get('items'), data.get('freight', '0'),
+                allocation_method=data.get('allocation_method'), project_ids=data.get('project_ids'))
+        if path == '/api/receipt_preview':
+            return {'rows': business.finance.preview_receipt_allocations(data.get('record', {}),
+                exclude_receipt_id=int(data['id']) if data.get('id') else None)}
         from services import document_cashflow_service as cashflow
         scope = {k:int(data[k]) if data.get(k) else None for k in ('contract_id','project_id')}
         from web_workbench.cashflow_sources import SOURCE_PATHS, post_source

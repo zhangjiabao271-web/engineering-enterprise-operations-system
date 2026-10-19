@@ -4,7 +4,11 @@ from pathlib import Path
 
 def main():
     database_path = Path(__file__).resolve().parent.parent / "supplier_data.db"
-    conn = sqlite3.connect(database_path)
+    # Read-only URI: this check must never touch the live ledger, not even to
+    # create a WAL checkpoint. The previous read-write connection could bump the
+    # database file while the user had the application open.
+    conn = sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only=ON")
     integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
     version = conn.execute(

@@ -11,17 +11,22 @@ async function evidenceOperation(values, after) {
   },{label:'预览变更'});
 }
 
-async function attachments(module,id,history=false) {
+async function attachments(module,id,history=false,options={}) {
   const request=beginEditorRequest();
   const entity=state.boot.schema[module].attachment;
   const rows=await request.read('attachments?'+query({entity,id,history:history?'1':''}));
   const ticket=state.boot.read_only?null:await request.read('write_ticket?'+query({kind:'upload_attachment',entity,id}));
   const content=rows.map(row=>`<article class="list-note"><strong>${esc(row.original_name)}</strong><p>${esc(row.category)} · ${row.status==='void'?'已移出，原文件保留':row.file_exists?'文件在本机':'文件缺失'}</p><p class="source-note">${esc(row.description)}</p><div class="attachment-actions">${attachmentPreviewButton(row)}${row.file_exists?`<a href="/api/attachment?${query({id:row.id,history:row.status==='void'?'1':''})}" target="_blank" rel="noopener">下载原附件</a>`:''}${!state.boot.read_only?`<button type="button" data-evidence-id="${row.id}" data-evidence-action="${row.status==='void'?'attachment_restore':'attachment_void'}" ${!row.file_exists && row.status==='void'?'disabled':''}>${row.status==='void'?'恢复到附件列表':'移出附件'}</button>`:''}</div>${row.file_exists && !row.preview_kind?'<small>此格式暂不支持预览，可下载原附件查看。</small>':''}</article>`).join('') || '<p class="muted">暂无业务附件</p>';
-  openEditor('业务附件 · 文件保留',`<button id="attachment-history" type="button">${history?'仅看有效附件':'查看已移出附件'}</button>`+content+(!state.boot.read_only?`<label class="form-field">添加本地附件<input type="file" name="attachment" required></label>${fieldHTML({name:'category',label:'资料分类',default:'业务附件'})}${fieldHTML({name:'description',label:'说明'})}`:''),state.boot.read_only?null:async()=>{
-    await api('upload_attachment',{entity,id,form_ticket:ticket.token,...await fileData(form.elements.attachment.files[0]),category:form.elements.category.value,description:form.elements.description.value,confirmed:true});cancelEditor=null;await attachments(module,id,history);toast('原附件保存在本机。');
+  const reload = async (showHistory=history) => {
+    if (module==='contracts' && state.route==='contracts') await renderRoute(false);
+    await attachments(module,id,showHistory,options);
+  };
+  openEditor('业务附件 · 文件保留',(options.back?`<button id="attachment-context-back" type="button">← ${esc(options.backLabel || '返回明细')}</button>`:'')+`<button id="attachment-history" type="button">${history?'仅看有效附件':'查看已移出附件'}</button>`+content+(!state.boot.read_only?`<label class="form-field">添加本地附件<input type="file" name="attachment" required></label>${fieldHTML({name:'category',label:'资料分类',default:'业务附件'})}${fieldHTML({name:'description',label:'说明'})}`:''),state.boot.read_only?null:async()=>{
+    await api('upload_attachment',{entity,id,form_ticket:ticket.token,...await fileData(form.elements.attachment.files[0]),category:form.elements.category.value,description:form.elements.description.value,confirmed:true});cancelEditor=null;await reload();toast('原附件保存在本机。');
   },{label:'保存附件',cancel:()=>ticket&&api('write_discard',{token:ticket.token})});
-  document.querySelector('#attachment-history').onclick=()=>safe(()=>attachments(module,id,!history));
-  editor.querySelectorAll('[data-evidence-id]').forEach(button=>button.onclick=()=>safe(()=>evidenceOperation({action:button.dataset.evidenceAction,entity,id,attachment_id:Number(button.dataset.evidenceId)},()=>attachments(module,id,true))));
+  document.querySelector('#attachment-context-back')?.addEventListener('click',()=>safe(options.back));
+  document.querySelector('#attachment-history').onclick=()=>safe(()=>attachments(module,id,!history,options));
+  editor.querySelectorAll('[data-evidence-id]').forEach(button=>button.onclick=()=>safe(()=>evidenceOperation({action:button.dataset.evidenceAction,entity,id,attachment_id:Number(button.dataset.evidenceId)},()=>reload(true))));
 }
 
 async function constructionPhotos(id,filter='全部',history=false) {
@@ -60,8 +65,12 @@ async function loadMonthlyMatrix() {
 }
 
 async function renderCompare() {
-  const {rows}=await api('rows?module=offers');
-  main.innerHTML=header('报价对比','复用原报价与客商评价；最低含税价仅在材料、规格、单位一致的组内比较。')+`<div class="filter-bar"><input id="compare-filter" placeholder="材料名称" aria-label="材料名称"><input id="compare-spec" placeholder="规格" aria-label="规格"><select id="compare-unit" aria-label="单位"><option value="">全部单位（分别比较）</option>${[...new Set(rows.map(row=>row.unit))].map(unit=>`<option>${esc(unit)}</option>`).join('')}</select></div><div id="comparison"></div>`;
+  state.collection='compare';
+  const context=workbenchRecordScope('offers');
+  const {rows}=await api('rows?'+query({module:'offers',...context.params}));
+  main.innerHTML=header('材料与报价','相同材料、规格和单位内比较；报价不替代采购实际成交价。')+tabsHTML('offers','compare')+`<div class="filter-bar"><input id="compare-filter" placeholder="材料名称" aria-label="材料名称"><input id="compare-spec" placeholder="规格" aria-label="规格"><select id="compare-unit" aria-label="单位"><option value="">全部单位（分别比较）</option>${[...new Set(rows.map(row=>row.unit))].map(unit=>`<option>${esc(unit)}</option>`).join('')}</select></div><div id="comparison"></div>`;
+  main.querySelector('.tabs').insertAdjacentHTML('afterend',context.html);
+  bindTabs('offers');
   const update=()=>{
     const name=document.querySelector('#compare-filter').value.trim().toLowerCase(),spec=document.querySelector('#compare-spec').value.trim().toLowerCase(),unit=document.querySelector('#compare-unit').value;
     const selected=rows.filter(row=>row.name.toLowerCase().includes(name) && row.specification.toLowerCase().includes(spec) && (!unit || row.unit===unit)).sort((a,b)=>BigInt(a.tax_inclusive_price_minor)<BigInt(b.tax_inclusive_price_minor)?-1:BigInt(a.tax_inclusive_price_minor)>BigInt(b.tax_inclusive_price_minor)?1:0);

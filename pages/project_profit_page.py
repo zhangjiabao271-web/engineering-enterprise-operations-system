@@ -308,11 +308,11 @@ class ProjectProfitPage:
             f"经营阶段：{guidance['stage_label']} · "
             f"待补：{guidance['gap_text'] or '资料已形成闭环'}"
         )
-        self.refresh_summary(summary)
+        self.refresh_summary(summary, guidance["is_accountable"])
         self.refresh_entries(project_id)
         self.refresh_portfolio()
 
-    def refresh_summary(self, data):
+    def refresh_summary(self, data, accountable=True):
         self.kpi_vars["settlement"].set(
             self.money(data["settlement_minor"])
         )
@@ -326,11 +326,17 @@ class ProjectProfitPage:
             f"其中运费 {self.money(data['purchase_freight_minor'])} · "
             f"人工 {self.money(data['labor_cost_minor'])}"
         )
-        self.kpi_vars["profit"].set(self.money(data["gross_profit_minor"]))
-        profit_state = "毛利" if data["gross_profit_minor"] >= 0 else "亏损"
-        self.kpi_hint_vars["profit"].set(
-            f"{profit_state} · 毛利率 {self.percent(data['gross_margin_percent'])}"
-        )
+        if accountable:
+            self.kpi_vars["profit"].set(self.money(data["gross_profit_minor"]))
+            profit_state = "毛利" if data["gross_profit_minor"] >= 0 else "亏损"
+            self.kpi_hint_vars["profit"].set(
+                f"{profit_state} · 毛利率 {self.percent(data['gross_margin_percent'])}"
+            )
+        else:
+            self.kpi_vars["profit"].set("待结算")
+            self.kpi_hint_vars["profit"].set(
+                "结算或合同分配待补充，暂不给出毛利结论"
+            )
         self.kpi_vars["cash"].set(self.money(data["cash_balance_minor"]))
         self.kpi_hint_vars["cash"].set(
             f"回款 {self.money(data['receipt_minor'])} · "

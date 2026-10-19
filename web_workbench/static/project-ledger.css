@@ -7,6 +7,7 @@
 .ledger-project-name:hover { color: var(--blue); background: transparent; }
 .ledger-project small, .ledger-project-state { display: block; margin-top: 5px; font-size: 11px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
 .ledger-project-state { margin-top: 3px; }
+.ledger-followup { display: block; margin-top: 7px; max-width: 280px; text-align: left; white-space: normal; font-size: 11px; color: var(--blue); }
 .ledger-amount { border: 1px solid transparent; padding: 7px 9px; min-width: 122px; text-align: right; background: transparent; }
 .ledger-amount strong { display: block; font: 600 17px/1.5 "Segoe UI",sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.015em; }
 .ledger-amount.receipts strong { color: var(--green); }
@@ -39,6 +40,14 @@
 .project-ledger-detail-table [data-column="basis"], .project-ledger-detail-table [data-column="notes"] { min-width: 160px; max-width: 300px; white-space: normal; overflow-wrap: anywhere; }
 .project-ledger-detail-table .amount { min-width: 115px; }
 #record-detail-back { margin-bottom: 16px; }
+#project-accounting small { display:block; margin-top:6px; line-height:1.65; color:var(--muted); white-space:normal; min-width:160px; max-width:320px; }
+.receipt-allocation-preview { grid-column: 1 / -1; padding: 14px 16px; margin: 4px 0; background: var(--soft-blue); border-radius: 12px; }
+.receipt-allocation-preview:empty { display: none; }
+.receipt-allocation-preview h3 { margin: 0 0 10px; font-size: 14px; }
+.receipt-allocation-preview p { display: flex; justify-content: space-between; gap: 18px; margin: 8px 0; }
+.receipt-allocation-preview span { min-width: 0; overflow-wrap: anywhere; }
+.receipt-allocation-preview strong { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.receipt-allocation-preview small { display: block; color: var(--muted); line-height: 1.7; }
 @media (max-width: 760px) {
   .ledger-detail-meta { align-items: flex-start; flex-direction: column; }
   .ledger-detail-title { align-items: flex-start; flex-direction: column; gap: 5px; }

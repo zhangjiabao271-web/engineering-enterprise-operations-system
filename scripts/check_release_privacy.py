@@ -15,6 +15,15 @@ def release_files(root):
     return [name for name in result.stdout.split('\0') if name]
 
 
+# Directories that only ever hold local business material, never release content.
+PRIVATE_DIRECTORIES = ('qa', 'backups', 'attachments', '.local', 'output', 'exports')
+# Business documents and archives are never release content, whatever their name.
+FORBIDDEN_SUFFIXES = ('.db', '.sqlite', '.sqlite3', '.pdf', '.doc', '.docx', '.xls', '.xlsx',
+                      '.ppt', '.pptx', '.zip', '.7z', '.rar')
+# Application assets shipped on purpose; every other binary is treated as business material.
+APPLICATION_ASSETS = ('.ico',)
+
+
 def check_files(root, files, private_names=()):
     findings = []
     forbidden = {'.env', 'config.ini', 'ai_credentials.dat', 'supplier_data.db'}
@@ -22,7 +31,9 @@ def check_files(root, files, private_names=()):
     for relative in files:
         path = root / relative
         parts = Path(relative).parts
-        if path.name in forbidden or path.suffix.lower() in ('.db','.sqlite','.sqlite3') or any(part in ('qa','backups','attachments','.local') for part in parts):
+        suffix = path.suffix.lower()
+        if (path.name in forbidden or suffix in FORBIDDEN_SUFFIXES
+                or any(part in PRIVATE_DIRECTORIES for part in parts)):
             findings.append((relative, 'private-artifact'))
             continue
         if path.name.startswith('.tmp_'):
@@ -31,8 +42,17 @@ def check_files(root, files, private_names=()):
         if not path.is_file():
             continue
         try:
-            content = path.read_text(encoding='utf-8')
-        except (UnicodeError, OSError):
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        try:
+            content = raw.decode('utf-8')
+        except UnicodeDecodeError:
+            # A binary that is not an approved application asset is business
+            # material (scanned contract, photo, workbook); never print its name
+            # together with content because there is no reviewable text.
+            if suffix not in APPLICATION_ASSETS:
+                findings.append((relative, 'binary-artifact'))
             continue
         if secrets.search(content):
             findings.append((relative, 'possible-secret'))
@@ -72,7 +92,8 @@ def main():
         print(f'{file}: {rule}')
     if findings:
         raise SystemExit(1)
-    print(f'PASS: release privacy; {len(files)} files, anonymous entity seeds, no private artifacts or detected credentials.')
+    print(f'PASS: release privacy; {len(files)} files, anonymous entity seeds, '
+          f'no private or binary artifacts and no detected credentials.')
 
 
 if __name__ == '__main__':

@@ -56,8 +56,8 @@ function renderCockpit(data) {
   main.querySelector('.cockpit-projects').addEventListener('toggle',event=>{
     const host = event.currentTarget.querySelector('.cockpit-project-table');
     if (!event.currentTarget.open || host.childElementCount) return;
-    const projects = cockpit.projects.map(row=>({...row,gross_profit_minor:row.is_accountable?row.gross_profit_minor:'待完善核算'}));
-    host.innerHTML = table(projects,[['project_name','独立项目'],['settlement_minor','已确认收入'],['receipt_minor','已回款'],['invoice_minor','已开票'],['total_cost_minor','项目成本'],['gross_profit_minor','已确认毛利']],row=>`<button type="button" data-cockpit-ledger="${row.project_id}">经营明细</button><button type="button" data-cockpit-cost="${row.project_id}">成本明细</button>`,'cockpit-project-records');
+    const projects = cockpit.projects.map(row=>({...row,accounting_status:row.is_accountable?'已可核算':row.gap_text || '待完善核算'}));
+    host.innerHTML = notice('表内账面毛利包含待完善项目的收入及成本差额；顶部已确认毛利卡片仅汇总已可核算项目。') + table(projects,[['project_name','独立项目'],['settlement_minor','已确认收入'],['receipt_minor','已回款'],['invoice_minor','已开票'],['total_cost_minor','项目成本'],['gross_profit_minor','账面毛利'],['accounting_status','核算状态']],row=>`<button type="button" data-cockpit-ledger="${row.project_id}">经营明细</button><button type="button" data-cockpit-cost="${row.project_id}">成本明细</button>`,'cockpit-project-records');
     host.querySelectorAll('[data-cockpit-ledger]').forEach(button=>button.onclick=()=>safe(()=>openProjectLedger(Number(button.dataset.cockpitLedger))));
     host.querySelectorAll('[data-cockpit-cost]').forEach(button=>button.onclick=()=>safe(()=>openOperation('project_cost_details',{id:button.dataset.cockpitCost})));
   });

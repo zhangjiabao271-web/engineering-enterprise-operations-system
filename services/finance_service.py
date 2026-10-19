@@ -913,9 +913,9 @@ def _receipt_allocations(conn, receipt_id):
 def _receipt_record(conn, receipt_id):
     return conn.execute(
         """SELECT r.*, MIN(ra.project_id) AS project_id,
-                  MIN(ra.contract_id) AS contract_id,
+                  CASE WHEN r.allocation_scope='project' THEN NULL ELSE MIN(ra.contract_id) END AS contract_id,
                   MIN(ra.invoice_id) AS invoice_id,
-                  CASE WHEN COUNT(*)=1 THEN MIN(ra.settlement_id) END
+                  CASE WHEN r.allocation_scope<>'project' AND COUNT(*)=1 THEN MIN(ra.settlement_id) END
                       AS settlement_id,
                   SUM(ra.allocated_amount_minor) AS allocation_amount_minor,
                   SUM(CASE WHEN ra.settlement_id IS NULL
@@ -928,7 +928,7 @@ def _receipt_record(conn, receipt_id):
            JOIN receipt_allocations ra ON ra.receipt_id=r.id
            JOIN projects p ON p.id=ra.project_id
            LEFT JOIN business_partners bp ON bp.id=p.customer_partner_id
-           WHERE r.id=?
+           WHERE r.id=? AND ra.status='active'
            GROUP BY r.id""",
         (int(receipt_id),),
     ).fetchone()
@@ -991,9 +991,9 @@ def list_receipts(project_id=None):
     with db_read() as conn:
         sql = """
             SELECT r.*, MIN(ra.project_id) AS project_id,
-                   MIN(ra.contract_id) AS contract_id,
+                   CASE WHEN r.allocation_scope='project' THEN NULL ELSE MIN(ra.contract_id) END AS contract_id,
                    MIN(ra.invoice_id) AS invoice_id,
-                   CASE WHEN COUNT(*)=1 THEN MIN(ra.settlement_id) END
+                   CASE WHEN r.allocation_scope<>'project' AND COUNT(*)=1 THEN MIN(ra.settlement_id) END
                        AS settlement_id,
                    SUM(ra.allocated_amount_minor) AS allocated_amount_minor,
                    SUM(CASE WHEN ra.settlement_id IS NULL
@@ -1009,7 +1009,7 @@ def list_receipts(project_id=None):
             JOIN projects p ON p.id=ra.project_id
             LEFT JOIN contracts c ON c.id=ra.contract_id
             LEFT JOIN settlements s ON s.id=ra.settlement_id
-            WHERE r.status='active'
+            WHERE r.status='active' AND ra.status='active'
         """
         params = []
         if project_id:
@@ -1342,6 +1342,16 @@ def preview_receipt_allocations(data, exclude_receipt_id=None):
     invoice_id = int(data.get("invoice_id") or 0) or None
     amount_minor = _minor(data.get("amount"))
     with db_read() as conn:
+        if data.get('allocation_scope') == 'project':
+            from services import project_receipt_service as project_receipts
+            entity_id = project_receipts.receipt_entity(conn, project_id, data.get('entity_id'), exclude_receipt_id)
+            rows = project_receipts.preview(conn, project_id, entity_id, amount_minor,
+                _date(data.get('receipt_date'), '回款日期'), exclude_receipt_id)
+            if project_receipts.receipt_income_contract(conn, project_id):
+                for row in rows:
+                    if row['settlement_id'] is None:
+                        row['settlement_no'] = '保存后按既有年度合同规则补足实际结算'
+            return rows
         receipt_driven = invoice_income_service.is_receipt_driven(conn, contract_id)
         planning_data = dict(data)
         if (receipt_driven and not invoice_id and not data.get('settlement_id')
@@ -1403,7 +1413,7 @@ def _insert_receipt_allocations(
                 str(uuid4()),
                 receipt_id,
                 project_id,
-                contract_id,
+                allocation.get('contract_id', contract_id),
                 invoice_id,
                 allocation["settlement_id"],
                 allocation["amount_minor"],
@@ -1464,6 +1474,9 @@ def create_receipt(data):
     settlement_id = int(data.get("settlement_id") or 0) or None
     amount_minor = _minor(data.get("amount"))
     receipt_date = _date(data.get("receipt_date"), "回款日期")
+    allocation_scope = data.get('allocation_scope', 'contract')
+    if allocation_scope not in ('contract', 'project'):
+        raise ValueError('回款抵扣方式无效')
 
     with db_transaction(immediate=True) as conn:
         try:
@@ -1480,6 +1493,13 @@ def create_receipt(data):
             if not project:
                 raise ValueError("请选择有效项目")
             is_cash = project["business_mode"] == "cash"
+            project_fifo = allocation_scope == 'project' and not is_cash
+            project_entity_id = None
+            if project_fifo:
+                from services import project_receipt_service as project_receipts
+                if contract_id or invoice_id or settlement_id or data.get('settlement_allocations') is not None:
+                    raise ValueError('按项目顺序抵扣时无需指定合同、收入或发票；指定业务请改用指定合同方式')
+                project_entity_id = project_receipts.receipt_entity(conn, project_id, data.get('entity_id'))
             now = _now()
             if is_cash:
                 contract_id = None
@@ -1508,10 +1528,13 @@ def create_receipt(data):
                     ).fetchone()
                     if not settlement:
                         raise ValueError("所选完工金额确认与零星现金工程不一致")
-            else:
+            elif not project_fifo:
                 if not contract_id:
-                    raise ValueError("正式合同工程必须选择合同项目分配")
-                if not conn.execute('''SELECT 1 FROM contract_project_allocations
+                    if not settlement_id or not conn.execute('''SELECT 1 FROM settlements
+                        WHERE id=? AND project_id=? AND contract_id IS NULL AND status='active' ''',
+                        (settlement_id, project_id)).fetchone():
+                        raise ValueError('请选择合同，或选择该项目合同待补的已确认业务')
+                elif not conn.execute('''SELECT 1 FROM contract_project_allocations
                     WHERE contract_id=? AND project_id=? AND status='active' ''',
                     (contract_id, project_id)).fetchone():
                     raise ValueError('所选合同尚未关联到该项目')
@@ -1519,7 +1542,7 @@ def create_receipt(data):
             allocation_data["settlement_id"] = settlement_id
             automatic = not invoice_id and not settlement_id and data.get('settlement_allocations') is None
             allocation_data['allow_advance'] = automatic
-            allocations = _plan_receipt_allocations(
+            allocations = project_receipts.preview(conn, project_id, project_entity_id, amount_minor, receipt_date) if project_fifo else _plan_receipt_allocations(
                 conn,
                 project_id=project_id,
                 contract_id=contract_id,
@@ -1548,8 +1571,8 @@ def create_receipt(data):
                     now,
                 ),
             ).lastrowid
-            conn.execute('UPDATE receipts SET automatic_income_allocation=? WHERE id=?',
-                         (int(automatic), receipt_id))
+            conn.execute('UPDATE receipts SET automatic_income_allocation=?,allocation_scope=? WHERE id=?',
+                         (int(automatic), 'project' if project_fifo else 'contract', receipt_id))
             _insert_receipt_allocations(
                 conn,
                 receipt_id,
@@ -1560,12 +1583,14 @@ def create_receipt(data):
                 notes,
                 now,
             )
+            _save_operating_entity(conn, 'receipts', receipt_id,
+                                   {**data, 'entity_id': project_entity_id} if project_fifo else data)
+            income_contract = project_receipts.receipt_income_contract(conn, project_id) if project_fifo else contract_id
             if automatic:
-                _confirm_receipt_shortfall(conn, receipt_id, project_id, contract_id,
+                _confirm_receipt_shortfall(conn, receipt_id, project_id, income_contract,
                                           receipt_date, amount_minor)
             from services.advance_receipt_service import reconcile
             reconcile(conn, project_id, contract_id)
-            _save_operating_entity(conn, 'receipts', receipt_id, data)
             _reconcile_customer_invoice_receipts(
                 conn, _receipt_customer_id(conn, receipt_id), now
             )
@@ -1592,6 +1617,9 @@ def update_receipt(receipt_id, data):
             receipt = _receipt_record(conn, receipt_id)
             if not receipt or receipt["status"] != "active":
                 raise ValueError("有效回款记录不存在")
+            if data.get('allocation_scope', receipt['allocation_scope']) != receipt['allocation_scope']:
+                raise ValueError('已保存回款的抵扣方式不可直接切换，请保留原方式核对')
+            project_fifo = receipt['allocation_scope'] == 'project'
             from services import receipt_income_service as receipt_income
             income_impact = receipt_income.preview(conn, [receipt_id], amount_minor=amount_minor)
             income_action = data.get('receipt_income_action')
@@ -1607,6 +1635,9 @@ def update_receipt(receipt_id, data):
             from services.cash_closure_service import guard_receipt_change
             guard_receipt_change(conn, receipt['project_id'])
             previous_customer_id = _receipt_customer_id(conn, receipt_id)
+
+            if project_fifo and (requested_invoice_id or data.get('settlement_id') or data.get('settlement_allocations') is not None):
+                raise ValueError('本笔回款按项目顺序抵扣，不能直接改为指定收入或发票')
 
             is_cash = receipt["business_mode"] == "cash"
             invoice_id = None if is_cash else requested_invoice_id
@@ -1628,15 +1659,22 @@ def update_receipt(receipt_id, data):
                     raise ValueError("现金回款缺少有效的完工金额确认，不能修改")
                 allocation_data["settlement_id"] = next(iter(settlement_ids))
 
-            allocations = _plan_receipt_allocations(
-                conn,
-                project_id=receipt["project_id"],
-                contract_id=receipt["contract_id"],
-                invoice_id=invoice_id,
-                amount_minor=amount_minor,
-                data=allocation_data,
-                exclude_receipt_id=receipt_id,
-            )
+            if project_fifo:
+                from services import project_receipt_service as project_receipts
+                project_entity_id = project_receipts.receipt_entity(conn, receipt['project_id'], data.get('entity_id'), receipt_id)
+                allocations = project_receipts.preview(conn, receipt['project_id'], project_entity_id,
+                                                       amount_minor, receipt_date, receipt_id)
+                automatic = True
+            else:
+                allocations = _plan_receipt_allocations(
+                    conn,
+                    project_id=receipt["project_id"],
+                    contract_id=receipt["contract_id"],
+                    invoice_id=invoice_id,
+                    amount_minor=amount_minor,
+                    data=allocation_data,
+                    exclude_receipt_id=receipt_id,
+                )
 
             now = _now()
             _insert_receipt_revision(conn, receipt, "update", now)
@@ -1681,13 +1719,14 @@ def update_receipt(receipt_id, data):
             )
             conn.execute('UPDATE receipts SET automatic_income_allocation=? WHERE id=?',
                          (int(automatic), receipt_id))
+            _save_operating_entity(conn, 'receipts', receipt_id, data)
+            income_contract = project_receipts.receipt_income_contract(conn, receipt['project_id']) if project_fifo else receipt['contract_id']
             if automatic:
                 _confirm_receipt_shortfall(conn, receipt_id, receipt['project_id'],
-                                          receipt['contract_id'], receipt_date, amount_minor)
+                                          income_contract, receipt_date, amount_minor)
             from services.advance_receipt_service import reconcile
             receipt_income.apply(conn, income_impact, income_action, income_reason)
             reconcile(conn, receipt['project_id'], receipt['contract_id'])
-            _save_operating_entity(conn, 'receipts', receipt_id, data)
             _reconcile_customer_ids(
                 conn,
                 {previous_customer_id, _receipt_customer_id(conn, receipt_id)},
